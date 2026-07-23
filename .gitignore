@@ -1,0 +1,28 @@
+# Playwright browser profile (cookies, cache, sessions)
+.playwright-profile/
+
+# Scraped output
+Google\ AI\ Studio/*/
+!_old_flat/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Temp files
+/tmp/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Test output
+test_*/
