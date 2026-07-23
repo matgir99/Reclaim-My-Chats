@@ -1,15 +1,21 @@
 #!/usr/bin/env python3.14
 """
-Scrape DeepSeek Chat conversations — text, thinking, and images.
+Scrape DeepSeek Chat conversations from IndexedDB.
 
-Pure DOM-based extraction. Each chat is a SPA; messages load into the DOM
-with class-based markers for user vs assistant turns.
+DeepSeek stores all chat history in the browser's IndexedDB ('deepseek-chat' 
+database, 'history-message' store). Each record contains the full conversation
+in raw markdown (including proper LaTeX delimiters), fragment types (REQUEST,
+THINK, RESPONSE, SEARCH), and citation metadata with URLs.
 
-Each chat saved in its own folder: <slug>/<slug>.md
+This is the clean download path — equivalent to Google AI Studio's RPC approach.
+No DOM scraping needed.
 
 USAGE:
-  python3.14 scrape_deepseek.py              # Full library
-  python3.14 scrape_deepseek.py --url <URL>  # Single chat
+  python3.14 scrape_deepseek.py              # Full library from IndexedDB
+  python3.14 scrape_deepseek.py --url <URL>  # Single chat (URL is used to find
+                                               the local data by ID)
+
+Each chat saved in its own folder: <slug>/<slug>.md
 """
 
 import argparse
@@ -32,15 +38,8 @@ BASE_URL = "https://chat.deepseek.com/"
 SCRIPT_DIR = Path(__file__).resolve().parent
 USER_DATA_DIR = str(SCRIPT_DIR.parent / ".playwright-profile")
 
-# DeepSeek-specific DOM selectors
-MESSAGE_SEL = '.ds-message'
-USER_MESSAGE_CLASS = 'd29f3d7d'    # user messages have this class
-USER_TEXT_SEL = '.fbb737a4'         # user text inside message
-THINKING_SEL = '._74c0879'           # model reasoning
-ANSWER_SEL = '.ds-markdown.ds-assistant-message-main-content'  # final answer
 
-
-# -- Browser --
+# -- Browser & IndexedDB --
 def ensure_logged_in(page):
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=60000)
     time.sleep(3)
@@ -51,7 +50,7 @@ def ensure_logged_in(page):
         print("=" * 50 + "\n")
         try:
             page.wait_for_function(
-                """() => document.querySelector('.ds-message, textarea) !== null""",
+                """() => document.querySelector('.ds-message, textarea') !== null""",
                 timeout=300000
             )
             print("Logged in!\n")
@@ -60,267 +59,209 @@ def ensure_logged_in(page):
             raise RuntimeError("Login timeout")
 
 
-# -- Chat list --
-def get_chat_list(page) -> list[dict]:
-    print("Scanning sidebar...")
-    page.goto(BASE_URL, wait_until="domcontentloaded", timeout=60000)
-    time.sleep(3)
+def read_all_from_indexeddb(page) -> list[dict]:
+    """Read all chat records from IndexedDB's history-message store."""
+    # Wait for IndexedDB to be populated
+    time.sleep(2)
     
-    # Scroll the sidebar to load all chats
-    for _ in range(20):
-        page.evaluate("""() => {
-            const sidebar = document.querySelector('[class*="sidebar"]');
-            if (sidebar) sidebar.scrollTo(0, sidebar.scrollHeight);
-        }""")
-        time.sleep(0.8)
-    
-    chats = page.evaluate("""() => {
-        const R = [], S = new Set();
-        document.querySelectorAll('a[href*="/a/chat/s/"]').forEach(a => {
-            const href = a.href || '';
-            const id = href.split('/a/chat/s/')[1]?.split('?')[0];
-            if (id && !S.has(id)) {
-                S.add(id);
-                R.push({
-                    id,
-                    url: href.split('?')[0],
-                    title: (a.innerText || '').trim().substring(0, 200) || '(no title)',
-                });
-            }
+    records = page.evaluate("""() => {
+        return new Promise((resolve, reject) => {
+            const req = indexedDB.open('deepseek-chat');
+            req.onsuccess = (e) => {
+                const db = e.target.result;
+                const tx = db.transaction('history-message', 'readonly');
+                const store = tx.objectStore('history-message');
+                const getAll = store.getAll();
+                getAll.onsuccess = () => {
+                    db.close();
+                    // Return minimal data; we'll extract text later
+                    const summaries = getAll.result.map(rec => {
+                        const session = rec.data?.chat_session || {};
+                        return {
+                            id: session.id || 'unknown',
+                            title: session.title || '',
+                            updated_at: session.updated_at,
+                            model_type: session.model_type || '',
+                        };
+                    });
+                    resolve(summaries);
+                };
+                getAll.onerror = () => {
+                    db.close();
+                    reject('getAll failed');
+                };
+            };
+            req.onerror = () => reject('Cannot open IndexedDB');
         });
-        return R;
     }""")
-    return chats
+    return records
 
 
-def extract_messages(page) -> list[dict]:
-    """Extract all messages currently in the DOM.
-    Uses HTML-to-Markdown converter for proper formula handling."""
-    # Single evaluate call with both the converter and extraction logic
-    messages = page.evaluate("""() => {
-        // HTML-to-Markdown converter for DeepSeek's rendered HTML
-        function htmlToMarkdown(container) {
-            if (!container) return '';
-            function walk(node) {
-                let out = '';
-                if (node.nodeType === 3) {
-                    out += node.textContent || '';
-                } else if (node.nodeType === 1) {
-                    const tag = node.tagName.toLowerCase();
-                    const cls = (node.className || '').toString();
-                    if (cls.includes('katex-display')) {
-                        const ann = node.querySelector('annotation[encoding="application/x-tex"]');
-                        if (ann) { out += '\\n\\n$$' + ann.textContent.trim() + '$$\\n\\n'; }
-                    } else if (cls.includes('katex')) {
-                        const ann = node.querySelector('annotation[encoding="application/x-tex"]');
-                        if (ann) { out += '$' + ann.textContent.trim() + '$'; }
-                    } else if (cls.includes('ds-markdown-cite')) {
-                        out += node.textContent.trim();
-                    } else if (/^h([1-6])$/.test(tag)) {
-                        const level = parseInt(tag[1]);
-                        out += '\\n\\n' + '#'.repeat(level) + ' ' + walkChildren(node).trim() + '\\n\\n';
-                    } else if (tag === 'p') {
-                        out += '\\n\\n' + walkChildren(node).trim() + '\\n\\n';
-                    } else if (tag === 'strong' || tag === 'b') {
-                        out += '**' + walkChildren(node) + '**';
-                    } else if (tag === 'em' || tag === 'i') {
-                        out += '*' + walkChildren(node) + '*';
-                    } else if (tag === 'code' && node.parentElement?.tagName?.toLowerCase() !== 'pre') {
-                        out += '`' + node.textContent + '`';
-                    } else if (tag === 'pre') {
-                        const codeEl = node.querySelector('code');
-                        const langMatch = codeEl?.className?.match(/language-(\\w+)/);
-                        const lang = langMatch ? langMatch[1] : '';
-                        const text = (codeEl || node).textContent || '';
-                        out += '\\n\\n```' + lang + '\\n' + text.trimEnd() + '\\n```\\n\\n';
-                    } else if (tag === 'blockquote') {
-                        const text = walkChildren(node).trim();
-                        out += '\\n\\n> ' + text.replace(/\\n/g, '\\n> ') + '\\n\\n';
-                    } else if (tag === 'li') {
-                        out += walkChildren(node).trim();
-                    } else if (tag === 'ul') {
-                        out += '\\n';
-                        for (const li of node.children) {
-                            if (li.tagName === 'LI') out += '- ' + walkChildren(li).trim() + '\\n';
-                        }
-                        out += '\\n';
-                    } else if (tag === 'ol') {
-                        out += '\\n';
-                        let idx = parseInt(node.getAttribute('start') || '1');
-                        for (const li of node.children) {
-                            if (li.tagName === 'LI') out += (idx++) + '. ' + walkChildren(li).trim() + '\\n';
-                        }
-                        out += '\\n';
-                    } else if (tag === 'hr') {
-                        out += '\\n\\n---\\n\\n';
-                    } else if (tag === 'a') {
-                        const href = node.getAttribute('href') || '';
-                        const text = walkChildren(node).trim();
-                        if (href && !href.startsWith('#') && href !== text) {
-                            out += '[' + text + '](' + href + ')';
-                        } else { out += text; }
-                    } else if (tag === 'img') {
-                        const alt = node.getAttribute('alt') || '';
-                        const src = node.getAttribute('src') || '';
-                        if (src) out += '![' + alt + '](' + src + ')';
-                    } else if (tag === 'table') {
-                        out += '\\n\\n';
-                        const rows = node.querySelectorAll('tr');
-                        for (let r = 0; r < rows.length; r++) {
-                            const cells = rows[r].querySelectorAll('td, th');
-                            out += '| ' + Array.from(cells).map(c => walkChildren(c).trim().replace(/\\n/g, ' ')).join(' | ') + ' |\\n';
-                            if (r === 0) out += '| ' + Array.from(cells).map(() => '---').join(' | ') + ' |\\n';
-                        }
-                        out += '\\n';
-                    } else if (tag === 'span') {
-                        out += walkChildren(node);
-                    } else if (tag === 'br') {
-                        out += '\\n';
+def read_single_chat_from_indexeddb(page, chat_id: str) -> dict | None:
+    """Read a single chat record by its UUID."""
+    result = page.evaluate("""(chatId) => {
+        return new Promise((resolve, reject) => {
+            const req = indexedDB.open('deepseek-chat');
+            req.onsuccess = (e) => {
+                const db = e.target.result;
+                const tx = db.transaction('history-message', 'readonly');
+                const store = tx.objectStore('history-message');
+                const getAll = store.getAll();
+                getAll.onsuccess = () => {
+                    const records = getAll.result;
+                    const found = records.find(r => r.data?.chat_session?.id === chatId);
+                    db.close();
+                    if (found) {
+                        resolve(found);
                     } else {
-                        out += walkChildren(node);
+                        resolve(null);
                     }
-                }
-                return out;
-            }
-            function walkChildren(parent) {
-                let out = '';
-                for (const child of parent.childNodes) out += walk(child);
-                return out;
-            }
-            let raw = walkChildren(container);
-            raw = raw.replace(/\\n{3,}/g, '\\n\\n');
-            raw = raw.replace(/\\n\\n\\$\\$/g, '\\n\\$\\$');
-            raw = raw.replace(/\\$\\$\\n\\n/g, '\\$\\$\\n');
-            raw = raw.replace(/\\n\\n(#{1,6}\\s)/g, '\\n$1');
-            return raw.trim();
-        }
-
-        // -- Extract messages --
-        const msgEls = document.querySelectorAll('.ds-message');
-        const results = [];
-        msgEls.forEach(msg => {
-            const cls = (msg.className || '').toString();
-            const isUser = cls.includes('d29f3d7d');
-            if (isUser) {
-                const textEl = msg.querySelector('.fbb737a4');
-                let text = '';
-                if (textEl) {
-                    const paras = textEl.querySelectorAll('p');
-                    if (paras.length > 0) {
-                        text = Array.from(paras).map(p => p.textContent.trim()).join('\\n\\n');
-                    } else {
-                        text = textEl.innerText.trim();
-                    }
-                }
-                if (text) results.push({role: 'user', text, thinking: '', turnIndex: results.length});
-            } else {
-                const thinkingEl = msg.querySelector('._74c0879');
-                const answerEl = msg.querySelector('.ds-markdown.ds-assistant-message-main-content');
-                let thinking = '';
-                if (thinkingEl) {
-                    // Extract structured thinking: header + search status + content
-                    const headerEl = thinkingEl.querySelector('._245c867');
-                    const searchEl = thinkingEl.querySelector('._60aa7fb, ._8185737');
-                    const thinkContent = thinkingEl.querySelector('.ds-think-content .ds-markdown');
-                    let parts = [];
-                    if (headerEl) parts.push(headerEl.innerText.trim());
-                    if (searchEl) parts.push(searchEl.innerText.trim());
-                    if (thinkContent) parts.push(htmlToMarkdown(thinkContent));
-                    // Fallback: use full thinkingEl for chats without .ds-think-content
-                    if (!thinkContent && parts.length === 0) {
-                        parts.push(htmlToMarkdown(thinkingEl));
-                    }
-                    thinking = parts.filter(Boolean).join('\\n\\n');
-                }
-                const answer = answerEl ? htmlToMarkdown(answerEl) : '';
-                if (thinking || answer) results.push({role: 'assistant', text: answer, thinking, turnIndex: results.length});
-            }
+                };
+                getAll.onerror = () => { db.close(); reject('getAll failed'); };
+            };
+            req.onerror = () => reject('Cannot open IndexedDB');
         });
-        return results;
-    }""")
-    return messages
+    }""", chat_id)
+    return result
 
 
-def load_all_messages(page) -> int:
-    """Scroll through entire chat to trigger virtual scroller to load all messages.
-    Returns number of messages found."""
-    prev_count = 0
-    for attempt in range(60):
-        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-        time.sleep(0.5)
-        current = page.evaluate("""() => document.querySelectorAll('.ds-message').length""")
-        if current == prev_count and attempt > 5:
-            break
-        prev_count = current
-    return current
-
-
-def extract_images(page, chat_dir: Path) -> list[dict]:
-    """Screenshot images found in assistant messages."""
-    attachments = []
-    images = page.evaluate("""() => {
-        const results = [];
-        // Find images inside assistant messages (not in sidebar)
-        document.querySelectorAll('.ds-markdown img').forEach((img, i) => {
-            if (img.naturalWidth > 50) {
-                results.push({index: i, w: img.naturalWidth, h: img.naturalHeight});
-            }
-        });
-        return results;
-    }""")
-    
-    if not images:
-        return attachments
-    
-    chat_dir.mkdir(parents=True, exist_ok=True)
-    img_els = page.query_selector_all('.ds-markdown img')
-    
-    saved = 0
-    for i, el in enumerate(img_els):
-        try:
-            if el.get_attribute('naturalWidth') == '0':
-                continue
-            saved += 1
-            filename = f"image_{saved}.png"
-            filepath = chat_dir / filename
-            el.screenshot(path=str(filepath))
-            attachments.append({
-                'type': 'image',
-                'filename': filename,
-                'size': filepath.stat().st_size,
-            })
-        except Exception:
-            pass
-    
-    return attachments
-
-
-# -- Saving --
+# -- Formatting --
 def slugify(title: str) -> str:
     return re.sub(r'[^\w\s-]', '', title)[:60].strip()
 
-def save_chat(messages, attachments, chat_info, out_dir: Path) -> Path:
-    title = chat_info.get('title', '')
-    slug = slugify(title) or chat_info['id'][:20]
+
+def build_citation_map(fragments: list[dict]) -> dict[int, dict]:
+    """Build citation index -> {url, title} map from SEARCH fragments."""
+    citemap = {}
+    for frag in fragments:
+        if frag.get('type') == 'SEARCH':
+            for result in frag.get('results', []):
+                idx = result.get('cite_index')
+                if idx:
+                    citemap[idx] = {
+                        'url': result.get('url', ''),
+                        'title': result.get('title', ''),
+                        'snippet': result.get('snippet', ''),
+                    }
+    return citemap
+
+
+def replace_citations(text: str, citemap: dict[int, dict]) -> str:
+    """Replace [citation:N] with [-N](url) in markdown text."""
+    def replacer(match):
+        n = int(match.group(1))
+        info = citemap.get(n, {})
+        url = info.get('url', '')
+        if url:
+            return f'[-{n}]({url})'
+        return f'[-{n}]'
+    return re.sub(r'\[citation:(\d+)\]', replacer, text)
+
+
+def process_chat_record(record: dict) -> dict:
+    """Process a raw IndexedDB record into structured messages."""
+    data = record.get('data', record)
+    session = data.get('chat_session', {})
+    messages = data.get('chat_messages', [])
+    
+    title = session.get('title', '')
+    chat_id = session.get('id', '')
+    
+    turns = []
+    # Collect all SEARCH fragments across the conversation for citation mapping
+    all_fragments = []
+    for msg in messages:
+        all_fragments.extend(msg.get('fragments', []))
+    
+    citemap = build_citation_map(all_fragments)
+    
+    for msg in messages:
+        role = msg.get('role', '').upper()
+        fragments = msg.get('fragments', [])
+        
+        if role == 'USER':
+            # User messages have a REQUEST fragment
+            for frag in fragments:
+                if frag.get('type') == 'REQUEST' and frag.get('content'):
+                    turns.append({
+                        'role': 'user',
+                        'text': frag['content'].strip(),
+                        'thinking': '',
+                    })
+                    break
+        
+        elif role == 'ASSISTANT':
+            thinking_parts = []
+            answer_text = ''
+            
+            for frag in fragments:
+                ftype = frag.get('type', '')
+                
+                if ftype == 'THINK':
+                    # Build thinking header
+                    elapsed = frag.get('elapsed_secs', 0)
+                    if elapsed:
+                        thinking_parts.append(f'Thought for {round(elapsed)} seconds')
+                    
+                    # Search info
+                    search_frag = next((f for f in fragments if f.get('type') == 'SEARCH'), None)
+                    if search_frag:
+                        n_results = len(search_frag.get('results', []))
+                        n_queries = len(search_frag.get('queries', []))
+                        if n_results:
+                            thinking_parts.append(f'Read {n_results} web pages')
+                    
+                    thinking_parts.append('')
+                    
+                    # Thinking content with citations
+                    content = frag.get('content', '')
+                    if content:
+                        content = replace_citations(content, citemap)
+                    thinking_parts.append(content)
+                
+                elif ftype == 'RESPONSE':
+                    answer_text = frag.get('content', '')
+                    if answer_text:
+                        answer_text = replace_citations(answer_text, citemap)
+            
+            thinking = '\n\n'.join(thinking_parts).strip() if thinking_parts else ''
+            
+            if thinking or answer_text:
+                turns.append({
+                    'role': 'assistant',
+                    'text': answer_text,
+                    'thinking': thinking,
+                })
+    
+    return {
+        'id': chat_id,
+        'title': title,
+        'turns': turns,
+        'citation_count': len(citemap),
+    }
+
+
+def save_chat(processed: dict, out_dir: Path) -> Path:
+    title = processed['title']
+    slug = slugify(title) or processed['id'][:20]
     chat_dir = out_dir / slug
     chat_dir.mkdir(parents=True, exist_ok=True)
+    
     md = chat_dir / f"{slug}.md"
     c = 1
     while md.exists():
         md = chat_dir / f"{slug}_{c}.md"; c += 1
+    
     ts = time.strftime('%Y-%m-%d %H:%M:%S')
-    imgs = [a for a in attachments if a['type'] == 'image']
+    url = f"https://chat.deepseek.com/a/chat/s/{processed['id']}"
     
     with open(md, 'w') as f:
-        f.write(f"# {title}\n\n**Source:** {chat_info['url']}\n\n**Scraped:** {ts}\n\n")
-        if imgs:
-            f.write("## Images\n\n")
-            for a in imgs:
-                f.write(f"- ![{a.get('alt', 'image')}]({a['filename']})\n")
-            f.write("\n")
+        f.write(f"# {title}\n\n")
+        f.write(f"**Source:** {url}\n\n")
+        f.write(f"**Scraped:** {ts}\n\n")
         f.write("---\n\n")
         
-        for t in messages:
+        for t in processed['turns']:
             if t['role'] == 'user':
                 f.write(f"## User\n\n{t['text']}\n\n---\n\n")
             else:
@@ -328,24 +269,23 @@ def save_chat(messages, attachments, chat_info, out_dir: Path) -> Path:
                     f.write(f"<details>\n<summary>Thinking</summary>\n\n{t['thinking']}\n\n</details>\n\n")
                 if t.get('text'):
                     f.write(f"## Assistant\n\n{t['text']}\n\n---\n\n")
+    
     return md
 
 
 # -- Main --
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--url", help="Scrape single chat URL")
+    ap.add_argument("--url", help="Scrape single chat URL (uses local IndexedDB data)")
     ap.add_argument("-o", "--output-dir", default=str(SCRIPT_DIR))
-    ap.add_argument("--include-thinking", action="store_true",
-                    help="Include model thinking in output (default: hidden in <details>)")
     args = ap.parse_args()
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     os.makedirs(USER_DATA_DIR, exist_ok=True)
-
+    
     with sync_playwright() as p:
         ctx = p.chromium.launch_persistent_context(
-            user_data_dir=USER_DATA_DIR, headless=False,
+            user_data_dir=USER_DATA_DIR, headless=True,
             executable_path="/usr/bin/google-chrome-stable",
             args=["--disable-blink-features=AutomationControlled",
                   "--disable-features=AutomationControlled", "--disable-dev-shm-usage"],
@@ -353,61 +293,79 @@ def main():
         )
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
         ensure_logged_in(page)
-
+        
         if args.url:
-            chats = [{'id': args.url.split('/')[-1][:40], 'url': args.url, 'title': ''}]
+            # Extract chat ID from URL
+            chat_id = args.url.split('/a/chat/s/')[-1].split('?')[0][:40]
+            print(f"Looking up chat {chat_id} in IndexedDB...")
+            records = [read_single_chat_from_indexeddb(page, chat_id)]
+            if records[0] is None:
+                print(f"ERROR: Chat {chat_id} not found in local IndexedDB.")
+                print("Make sure you've opened this chat in the browser before.")
+                ctx.close()
+                sys.exit(1)
         else:
-            chats = get_chat_list(page)
-        if not chats:
-            print("No chats."); ctx.close(); return
-
-        print(f"\n{'='*50}\n  {len(chats)} chats\n{'='*50}\n")
-        done = failed = imgs_total = 0
-
-        for i, chat in enumerate(chats):
-            label = (chat['title'] or chat['id'])[:60]
+            print("Reading chat list from IndexedDB...")
+            summaries = read_all_from_indexeddb(page)
+            print(f"Found {len(summaries)} chats. Loading full records...")
+            
+            # Read all full records
+            records = page.evaluate("""() => {
+                return new Promise((resolve, reject) => {
+                    const req = indexedDB.open('deepseek-chat');
+                    req.onsuccess = (e) => {
+                        const db = e.target.result;
+                        const tx = db.transaction('history-message', 'readonly');
+                        const store = tx.objectStore('history-message');
+                        const getAll = store.getAll();
+                        getAll.onsuccess = () => {
+                            db.close();
+                            resolve(getAll.result);
+                        };
+                        getAll.onerror = () => { db.close(); reject('getAll failed'); };
+                    };
+                    req.onerror = () => reject('Cannot open IndexedDB');
+                });
+            }""")
+        
+        if not records:
+            print("No chats found.")
+            ctx.close()
+            return
+        
+        print(f"\n{'='*50}\n  Processing {len(records)} chats\n{'='*50}\n")
+        
+        done = failed = 0
+        total_chars = 0
+        
+        for i, rec in enumerate(records):
+            processed = process_chat_record(rec)
+            label = (processed['title'] or processed['id'])[:60]
+            
             try:
-                page.goto(chat['url'], wait_until="domcontentloaded", timeout=60000)
-                time.sleep(3)
+                md_path = save_chat(processed, out_dir)
                 
-                # Get title from page if missing
-                if not chat.get('title'):
-                    chat['title'] = page.evaluate("""() => {
-                        const t = document.title || '';
-                        const dash = t.lastIndexOf(' - DeepSeek');
-                        return dash > 0 ? t.substring(0, dash).trim() : t;
-                    }""") or chat['id'][:20]
+                users = sum(1 for t in processed['turns'] if t['role'] == 'user')
+                assistants = sum(1 for t in processed['turns'] if t['role'] == 'assistant')
+                chars = sum(len(t['text']) for t in processed['turns'])
+                total_chars += chars
+                cit = f", {processed['citation_count']} citations" if processed['citation_count'] else ""
                 
-                # Load all messages via scrolling
-                msg_count = load_all_messages(page)
-                
-                # Extract
-                messages = extract_messages(page)
-                attachments = extract_images(page, out_dir / slugify(chat['title'] or chat['id']))
-                
-                imgs = len(attachments)
-                imgs_total += imgs
-                users = sum(1 for m in messages if m['role'] == 'user')
-                assistants = sum(1 for m in messages if m['role'] == 'assistant')
-                chars = sum(len(m['text']) for m in messages)
-                extra = f", {imgs} img" if imgs else ""
-                
-                save_chat(messages, attachments, chat, out_dir)
-                print(f"[{i+1}/{len(chats)}] {label}")
-                print(f"  -> {len(messages)}t ({users}u/{assistants}a), {chars:,} chars{extra}")
+                print(f"[{i+1}/{len(records)}] {label}")
+                print(f"  -> {len(processed['turns'])}t ({users}u/{assistants}a), {chars:,} chars{cit}")
                 done += 1
             except Exception as e:
                 print(f"  -> FAILED: {e}")
                 traceback.print_exc()
                 failed += 1
-            time.sleep(0.2)
-
+        
         print(f"\n{'='*50}")
         print(f"  Done: {done} ok, {failed} failed")
-        print(f"  Images: {imgs_total}")
+        print(f"  Total text: {total_chars:,} chars")
         print(f"  Output: {out_dir}")
         print(f"{'='*50}")
         ctx.close()
+
 
 if __name__ == "__main__":
     main()
