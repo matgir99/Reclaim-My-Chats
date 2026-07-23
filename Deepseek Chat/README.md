@@ -4,25 +4,28 @@ Extracts all conversations from [chat.deepseek.com](https://chat.deepseek.com/) 
 
 ## How it works
 
-**DOM-based extraction** — DeepSeek Chat is a SPA (single-page application). Messages are identified by CSS class patterns:
+**IndexedDB-based extraction** — DeepSeek stores all chat history in the browser's IndexedDB (`deepseek-chat` database, `history-message` store). Each record contains the full conversation in raw markdown with proper LaTeX delimiters (`$...$`, `$$...$$`), fragment types, and citation metadata with URLs.
 
-- **User messages**: `.d29f3d7d.ds-message` with text in `.fbb737a4`
-- **Assistant thinking**: `div._74c0879` (DeepSeek-R1 reasoning)
-- **Assistant answer**: `div.ds-markdown.ds-assistant-message-main-content` (final response)
+This is the clean download path — equivalent to Google AI Studio's RPC interception approach. No DOM scraping needed.
 
-The scraper scrolls through the entire chat to trigger the virtual scroller to load all messages, then extracts text from each turn. Thinking blocks are wrapped in `<details>` tags (collapsed by default).
+### Data structure
+
+Each IndexedDB record:
+- `data.chat_session` — chat metadata (id, title, model_type, updated_at)
+- `data.chat_messages[]` — message array, each with `fragments[]`:
+  - `REQUEST` — user message text
+  - `THINK` — model reasoning (with elapsed time)
+  - `RESPONSE` — final answer in raw markdown
+  - `SEARCH` — search queries + results with citation URLs
 
 ## Usage
 
 ```bash
-# Full library
+# Full library (reads from IndexedDB)
 python3.14 scrape_deepseek.py
 
-# Single chat
+# Single chat (looks up by UUID in IndexedDB)
 python3.14 scrape_deepseek.py --url "https://chat.deepseek.com/a/chat/s/..."
-
-# Include thinking inline (not collapsed)
-python3.14 scrape_deepseek.py --include-thinking
 ```
 
 ## Output format
@@ -35,30 +38,28 @@ python3.14 scrape_deepseek.py --include-thinking
 Markdown structure:
 ```markdown
 # Chat Title
-
 **Source:** https://chat.deepseek.com/a/chat/s/...
-**Scraped:** 2026-07-23 19:50:02
+**Scraped:** 2026-07-24 00:25:12
+---
+
+## User
+User prompt text...
 
 ---
 
 <details>
 <summary>Thinking</summary>
-Model reasoning...
+Thought for 11 seconds
+Read 10 web pages
+Model reasoning with citations...
 </details>
 
 ## Assistant
-Model response...
-
----
-
-## User
-User prompt...
-
----
+Model response with proper $\\LaTeX$ formulas and citations...
 ```
 
 ## Limitations
 
-- **Images** are detected but rarely present in DeepSeek chats (text-focused platform).
-- **Thinking/Reasoning** is collapsed in `<details>` by default; use `--include-thinking` to show inline.
-- **Authentication** uses the shared `.playwright-profile/` (persistent browser cookies).
+- **Authentication** uses the shared `.playwright-profile/` (persistent browser cookies). Must be logged in at least once.
+- **IndexedDB** is local — only chats that have been loaded in the browser are available.
+- **Citations** are mapped to URLs from SEARCH fragments; not all chats have search enabled.
