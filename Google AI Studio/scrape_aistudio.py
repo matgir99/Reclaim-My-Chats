@@ -3,10 +3,10 @@
 Scrape Google AI Studio conversations — text, images, and documents.
 
 Two-pass approach:
-  Pass 1 (fast): Intercept RPC for text. Check content-length header.
-  Pass 2 (slow, only for heavy chats): Scroll DOM to screenshot images.
+  Pass 1 (fast): Intercept RPC for text.
+  Pass 2 (if images detected OR RPC failed): Scroll DOM for text + screenshot images.
 
-Each chat saved in its own folder: <title>/<title>.md + image_*.png
+Each chat saved in its own folder: <slug>/<slug>.md + image_*.png
 
 USAGE:
   python3.14 scrape_aistudio.py              # Full library
@@ -14,25 +14,24 @@ USAGE:
 """
 
 import argparse
-import base64
 import json
 import os
 import re
 import sys
 import time
+import traceback
 from pathlib import Path
 
 try:
     from playwright.sync_api import sync_playwright, TimeoutError as PwTimeout
 except ImportError:
-    print("ERROR: playwright needed. pip3.14 install --break-system-packages playwright")
+    print("ERROR: playwright needed.")
     sys.exit(1)
 
 # -- Config --
 LIBRARY_URL = "https://aistudio.google.com/library"
-SCRIPT_DIR = Path(__file__).parent
+SCRIPT_DIR = Path(__file__).resolve().parent
 USER_DATA_DIR = str(SCRIPT_DIR / ".playwright-profile")
-LARGE_RESPONSE_THRESHOLD = 1_000_000  # 1 MB -> do DOM pass
 
 THOUGHT_INDICATORS = [
     'Research', 'Search', 'Analyzing', 'Reviewing', 'Investigating',
@@ -51,17 +50,13 @@ THOUGHT_INDICATORS = [
 
 
 # -- Browser helpers --
-def _cdp(page, method, params=None):
+def clear_cache(page):
     try:
         s = page.context.new_cdp_session(page)
-        r = s.send(method, params)
+        s.send('Network.clearBrowserCache')
         s.detach()
-        return r
     except Exception:
-        return None
-
-def clear_cache(page):
-    _cdp(page, 'Network.clearBrowserCache')
+        pass
 
 def ensure_logged_in(page):
     page.goto(LIBRARY_URL, wait_until="domcontentloaded", timeout=60000)
@@ -81,23 +76,24 @@ def ensure_logged_in(page):
 
 # -- RPC interception (Pass 1) --
 def intercept_rpc(page, chat_url: str) -> tuple[dict | None, int]:
+    """Intercept ResolveDriveResource RPC. Returns (parsed_data, content_length)."""
     clear_cache(page)
-    response_info = {}
-    def on_response(response):
+    rinfo = {}
+    def _on_response(response):
         if 'ResolveDriveResource' in response.url:
             try:
-                response_info['cl'] = int(response.headers.get('content-length', '0'))
+                rinfo['cl'] = int(response.headers.get('content-length', '0'))
             except Exception:
                 pass
-    page.on('response', on_response)
-    data = None
+    page.on('response', _on_response)
     try:
         with page.expect_response(lambda r: 'ResolveDriveResource' in r.url, timeout=45000) as resp_info:
             page.goto(chat_url, wait_until="domcontentloaded", timeout=60000)
-        data = resp_info.value.json()
+        return parse_rpc(resp_info.value.json()), rinfo.get('cl', 0)
     except Exception:
-        pass
-    return parse_rpc(data) if data else None, response_info.get('cl', 0)
+        return None, rinfo.get('cl', 0)
+    finally:
+        page.remove_listener('response', _on_response)
 
 def parse_rpc(data) -> dict:
     try:
@@ -125,22 +121,22 @@ def parse_rpc(data) -> dict:
         return {"title": "", "turns": [], "error": str(e)}
 
 
-# -- DOM extraction (Pass 2, heavy chats only) --
-def extract_from_dom(page, chat_dir: Path) -> tuple[list[dict], list[dict]]:
-    """Scroll every turn, extract text + screenshot ms-image-chunk elements."""
-    attachments = []
+# -- DOM extraction (Pass 2: text + images + doc links) --
+def extract_all_from_dom(page, chat_dir: Path) -> tuple[list[dict], list[dict]]:
+    """Scroll through every turn: extract text AND screenshot ms-image-chunk elements."""
     turns = []
+    attachments = []
     seen_texts = set()
     chat_dir.mkdir(parents=True, exist_ok=True)
 
-    n = page.evaluate("""
-        () => { const s = document.querySelector('.chat-session-content');
-                return s ? s.querySelectorAll('.chat-turn-container').length : 0; }
-    """)
-    page.evaluate("""
-        () => { const s = document.querySelector('.chat-session-content');
-                if (s) s.scrollTo(0, 0); }
-    """)
+    n = page.evaluate("""() => {
+        const s = document.querySelector('.chat-session-content');
+        return s ? s.querySelectorAll('.chat-turn-container').length : 0;
+    }""")
+    page.evaluate("""() => {
+        const s = document.querySelector('.chat-session-content');
+        if (s) s.scrollTo(0, 0);
+    }""")
     time.sleep(0.3)
 
     saved_imgs = 0
@@ -148,52 +144,52 @@ def extract_from_dom(page, chat_dir: Path) -> tuple[list[dict], list[dict]]:
 
     for i in range(n):
         # Scroll turn into view
-        page.evaluate(f"""() => {{
+        page.evaluate(f"""(i) => {{
             const s = document.querySelector('.chat-session-content');
             const turns = s?.querySelectorAll('.chat-turn-container');
-            if (turns && turns[{i}]) turns[{i}].scrollIntoView({{block:'center',behavior:'instant'}});
-        }}""")
+            if (turns && turns[i]) turns[i].scrollIntoView({{block:'center',behavior:'instant'}});
+        }}""", i)
         time.sleep(0.35)
 
-        # If this turn has an image chunk, screenshot it
-        has_img = page.evaluate(f"""() => {{
+        # ---- Screenshot image if present ----
+        has_img = page.evaluate(f"""(i) => {{
             const turns = document.querySelectorAll('.chat-turn-container');
-            return turns[{i}]?.querySelector('ms-image-chunk') !== null;
-        }}""")
+            return turns[i]?.querySelector('ms-image-chunk') !== null;
+        }}""", i)
         if has_img:
             try:
-                page.wait_for_function(f"""() => {{
+                page.wait_for_function(f"""(i) => {{
                     const turns = document.querySelectorAll('.chat-turn-container');
-                    const t = turns[{i}];
+                    const t = turns[i];
                     if (!t) return true;
                     const img = t.querySelector('ms-image-chunk img, img');
                     return !img || (img.complete && img.naturalWidth > 50);
-                }}""", timeout=15000)
+                }}""", i, timeout=15000)
             except Exception:
                 pass
-            handle = page.evaluate_handle(f"""() => {{
+            handle = page.evaluate_handle(f"""(i) => {{
                 const turns = document.querySelectorAll('.chat-turn-container');
-                return turns[{i}]?.querySelector('ms-image-chunk');
-            }}""")
+                return turns[i]?.querySelector('ms-image-chunk');
+            }}""", i)
             if handle:
                 try:
-                    filename = f"image_{saved_imgs + 1}.png"
+                    saved_imgs += 1
+                    filename = f"image_{saved_imgs}.png"
                     filepath = chat_dir / filename
                     handle.screenshot(path=str(filepath))
                     attachments.append({
                         'type': 'image', 'filename': filename,
                         'size': filepath.stat().st_size,
                     })
-                    saved_imgs += 1
                 except Exception as e:
                     print(f"      Image error: {e}")
                 handle.dispose()
 
-        # Extract text
-        result = page.evaluate(f"""() => {{
+        # ---- Extract text ----
+        result = page.evaluate(f"""(i) => {{
             const indicators = {indicators_js};
             const turns = document.querySelectorAll('.chat-turn-container');
-            const t = turns[{i}];
+            const t = turns[i];
             if (!t) return {{text:'',role:'unknown',is_thought:false}};
             const cls = (t.className || '').toString().toLowerCase();
             let role = cls.includes(' user') ? 'user' : (cls.includes(' model') ? 'model' : 'unknown');
@@ -213,7 +209,7 @@ def extract_from_dom(page, chat_dir: Path) -> tuple[list[dict], list[dict]]:
                 }}
             }}
             return {{text, role, is_thought}};
-        }}""")
+        }}""", i)
 
         if result.get('text') and len(result['text']) > 10:
             key = result['text'][:100]
@@ -224,7 +220,7 @@ def extract_from_dom(page, chat_dir: Path) -> tuple[list[dict], list[dict]]:
                     'len': len(result['text']), 'is_thought': result['is_thought'],
                 })
 
-    # Document links
+    # ---- Document links ----
     docs = page.evaluate("""() => {
         const s = document.querySelector('.chat-session-content');
         if (!s) return [];
@@ -244,12 +240,23 @@ def extract_from_dom(page, chat_dir: Path) -> tuple[list[dict], list[dict]]:
     return turns, attachments
 
 
-# -- Library scraping --
+def page_has_images(page) -> bool:
+    try:
+        n = page.evaluate("""() => {
+            const s = document.querySelector('.chat-session-content');
+            return s ? s.querySelectorAll('ms-image-chunk').length : 0;
+        }""")
+        return n > 0
+    except Exception:
+        return False
+
+
+# -- Library --
 def get_chat_list(page) -> list[dict]:
     print("Scanning library...")
-    for _ in range(30):
+    for _ in range(35):
         page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-        time.sleep(1.5)
+        time.sleep(1.2)
     links = page.evaluate("""() => {
         const R = [], S = new Set();
         document.querySelectorAll('a[href*="/prompts/"]').forEach(a => {
@@ -336,10 +343,12 @@ def main():
         done = failed = heavy = imgs_total = docs_total = 0
 
         for i, chat in enumerate(chats):
+            label = (chat['title'] or chat['id'])[:55]
             try:
-                label = (chat['title'] or chat['id'])[:55]
-                parsed, content_len = intercept_rpc(page, chat['url'])
+                # Pass 1: fast RPC for text
+                parsed, _ = intercept_rpc(page, chat['url'])
 
+                # If RPC failed, full DOM fallback
                 if parsed is None:
                     print(f"[{i+1}/{len(chats)}] {label} [DOM fallback]")
                     clear_cache(page)
@@ -348,20 +357,20 @@ def main():
                         page.wait_for_selector('.chat-session-content .chat-turn-container', timeout=30000)
                     except Exception:
                         pass
-                    time.sleep(3)
+                    time.sleep(4)
                     title = page.evaluate("""() => {
                         const h1 = document.querySelector('h1');
                         return h1 ? h1.innerText.trim() : '';
                     }""") or chat.get('title', '')
                     slug = slugify(title) or chat['id'][:20]
-                    turns, attachments = extract_from_dom(page, out_dir / slug)
+                    turns, attachments = extract_all_from_dom(page, out_dir / slug)
                     parsed = {"title": title, "turns": turns}
                     heavy += 1
                 else:
+                    # RPC succeeded — but check for images
                     chat['title'] = parsed.get('title') or chat.get('title', '')
-                    if content_len > LARGE_RESPONSE_THRESHOLD:
-                        print(f"[{i+1}/{len(chats)}] {label} [heavy {content_len/1e6:.0f}MB]")
-                        _, attachments = extract_from_dom(page, out_dir / slugify(chat['title']))
+                    if page_has_images(page):
+                        _, attachments = extract_all_from_dom(page, out_dir / slugify(chat['title']))
                         heavy += 1
                     else:
                         attachments = []
@@ -375,13 +384,14 @@ def main():
                 chars = sum(t['len'] for t in real)
                 extra = f", {imgs} img" if imgs else ""
                 extra += f", {docs} doc" if docs else ""
-                md = save_chat(parsed.get('turns', []), attachments, chat, out_dir)
+                save_chat(parsed.get('turns', []), attachments, chat, out_dir)
                 print(f"  -> {len(real)}t ({u}u/{m}m), {chars:,} chars{extra}")
                 done += 1
             except Exception as e:
                 print(f"  -> FAILED: {e}")
+                traceback.print_exc()
                 failed += 1
-            time.sleep(0.3)
+            time.sleep(0.2)
 
         print(f"\n{'='*50}")
         print(f"  Done: {done} ok, {failed} failed, {heavy} heavy")
