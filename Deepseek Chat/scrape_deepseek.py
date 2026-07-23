@@ -93,39 +93,149 @@ def get_chat_list(page) -> list[dict]:
     return chats
 
 
-# -- Extraction --
 def extract_messages(page) -> list[dict]:
-    """Extract all messages currently in the DOM."""
+    """Extract all messages currently in the DOM.
+    Uses HTML-to-Markdown converter for proper formula handling."""
+    # Single evaluate call with both the converter and extraction logic
     messages = page.evaluate("""() => {
+        // HTML-to-Markdown converter for DeepSeek's rendered HTML
+        function htmlToMarkdown(container) {
+            if (!container) return '';
+            function walk(node) {
+                let out = '';
+                if (node.nodeType === 3) {
+                    out += node.textContent || '';
+                } else if (node.nodeType === 1) {
+                    const tag = node.tagName.toLowerCase();
+                    const cls = (node.className || '').toString();
+                    if (cls.includes('katex-display')) {
+                        const ann = node.querySelector('annotation[encoding="application/x-tex"]');
+                        if (ann) { out += '\\n\\n$$' + ann.textContent.trim() + '$$\\n\\n'; }
+                    } else if (cls.includes('katex')) {
+                        const ann = node.querySelector('annotation[encoding="application/x-tex"]');
+                        if (ann) { out += '$' + ann.textContent.trim() + '$'; }
+                    } else if (cls.includes('ds-markdown-cite')) {
+                        out += node.textContent.trim();
+                    } else if (/^h([1-6])$/.test(tag)) {
+                        const level = parseInt(tag[1]);
+                        out += '\\n\\n' + '#'.repeat(level) + ' ' + walkChildren(node).trim() + '\\n\\n';
+                    } else if (tag === 'p') {
+                        out += '\\n\\n' + walkChildren(node).trim() + '\\n\\n';
+                    } else if (tag === 'strong' || tag === 'b') {
+                        out += '**' + walkChildren(node) + '**';
+                    } else if (tag === 'em' || tag === 'i') {
+                        out += '*' + walkChildren(node) + '*';
+                    } else if (tag === 'code' && node.parentElement?.tagName?.toLowerCase() !== 'pre') {
+                        out += '`' + node.textContent + '`';
+                    } else if (tag === 'pre') {
+                        const codeEl = node.querySelector('code');
+                        const langMatch = codeEl?.className?.match(/language-(\\w+)/);
+                        const lang = langMatch ? langMatch[1] : '';
+                        const text = (codeEl || node).textContent || '';
+                        out += '\\n\\n```' + lang + '\\n' + text.trimEnd() + '\\n```\\n\\n';
+                    } else if (tag === 'blockquote') {
+                        const text = walkChildren(node).trim();
+                        out += '\\n\\n> ' + text.replace(/\\n/g, '\\n> ') + '\\n\\n';
+                    } else if (tag === 'li') {
+                        out += walkChildren(node).trim();
+                    } else if (tag === 'ul') {
+                        out += '\\n';
+                        for (const li of node.children) {
+                            if (li.tagName === 'LI') out += '- ' + walkChildren(li).trim() + '\\n';
+                        }
+                        out += '\\n';
+                    } else if (tag === 'ol') {
+                        out += '\\n';
+                        let idx = parseInt(node.getAttribute('start') || '1');
+                        for (const li of node.children) {
+                            if (li.tagName === 'LI') out += (idx++) + '. ' + walkChildren(li).trim() + '\\n';
+                        }
+                        out += '\\n';
+                    } else if (tag === 'hr') {
+                        out += '\\n\\n---\\n\\n';
+                    } else if (tag === 'a') {
+                        const href = node.getAttribute('href') || '';
+                        const text = walkChildren(node).trim();
+                        if (href && !href.startsWith('#') && href !== text) {
+                            out += '[' + text + '](' + href + ')';
+                        } else { out += text; }
+                    } else if (tag === 'img') {
+                        const alt = node.getAttribute('alt') || '';
+                        const src = node.getAttribute('src') || '';
+                        if (src) out += '![' + alt + '](' + src + ')';
+                    } else if (tag === 'table') {
+                        out += '\\n\\n';
+                        const rows = node.querySelectorAll('tr');
+                        for (let r = 0; r < rows.length; r++) {
+                            const cells = rows[r].querySelectorAll('td, th');
+                            out += '| ' + Array.from(cells).map(c => walkChildren(c).trim().replace(/\\n/g, ' ')).join(' | ') + ' |\\n';
+                            if (r === 0) out += '| ' + Array.from(cells).map(() => '---').join(' | ') + ' |\\n';
+                        }
+                        out += '\\n';
+                    } else if (tag === 'span') {
+                        out += walkChildren(node);
+                    } else if (tag === 'br') {
+                        out += '\\n';
+                    } else {
+                        out += walkChildren(node);
+                    }
+                }
+                return out;
+            }
+            function walkChildren(parent) {
+                let out = '';
+                for (const child of parent.childNodes) out += walk(child);
+                return out;
+            }
+            let raw = walkChildren(container);
+            raw = raw.replace(/\\n{3,}/g, '\\n\\n');
+            raw = raw.replace(/\\n\\n\\$\\$/g, '\\n\\$\\$');
+            raw = raw.replace(/\\$\\$\\n\\n/g, '\\$\\$\\n');
+            raw = raw.replace(/\\n\\n(#{1,6}\\s)/g, '\\n$1');
+            return raw.trim();
+        }
+
+        // -- Extract messages --
         const msgEls = document.querySelectorAll('.ds-message');
         const results = [];
-        
         msgEls.forEach(msg => {
             const cls = (msg.className || '').toString();
             const isUser = cls.includes('d29f3d7d');
-            
             if (isUser) {
                 const textEl = msg.querySelector('.fbb737a4');
-                const text = (textEl?.innerText || '').trim();
-                if (text) {
-                    results.push({role: 'user', text, thinking: '', turnIndex: results.length});
+                let text = '';
+                if (textEl) {
+                    const paras = textEl.querySelectorAll('p');
+                    if (paras.length > 0) {
+                        text = Array.from(paras).map(p => p.textContent.trim()).join('\\n\\n');
+                    } else {
+                        text = textEl.innerText.trim();
+                    }
                 }
+                if (text) results.push({role: 'user', text, thinking: '', turnIndex: results.length});
             } else {
                 const thinkingEl = msg.querySelector('._74c0879');
                 const answerEl = msg.querySelector('.ds-markdown.ds-assistant-message-main-content');
-                const thinking = (thinkingEl?.innerText || '').trim();
-                const answer = (answerEl?.innerText || '').trim();
-                if (thinking || answer) {
-                    results.push({
-                        role: 'assistant',
-                        text: answer,
-                        thinking: thinking,
-                        turnIndex: results.length,
-                    });
+                let thinking = '';
+                if (thinkingEl) {
+                    // Extract structured thinking: header + search status + content
+                    const headerEl = thinkingEl.querySelector('._245c867');
+                    const searchEl = thinkingEl.querySelector('._60aa7fb, ._8185737');
+                    const thinkContent = thinkingEl.querySelector('.ds-think-content .ds-markdown');
+                    let parts = [];
+                    if (headerEl) parts.push(headerEl.innerText.trim());
+                    if (searchEl) parts.push(searchEl.innerText.trim());
+                    if (thinkContent) parts.push(htmlToMarkdown(thinkContent));
+                    // Fallback: use full thinkingEl for chats without .ds-think-content
+                    if (!thinkContent && parts.length === 0) {
+                        parts.push(htmlToMarkdown(thinkingEl));
+                    }
+                    thinking = parts.filter(Boolean).join('\\n\\n');
                 }
+                const answer = answerEl ? htmlToMarkdown(answerEl) : '';
+                if (thinking || answer) results.push({role: 'assistant', text: answer, thinking, turnIndex: results.length});
             }
         });
-        
         return results;
     }""")
     return messages
