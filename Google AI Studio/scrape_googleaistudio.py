@@ -34,18 +34,41 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 USER_DATA_DIR = str(SCRIPT_DIR / ".playwright-profile")
 
 THOUGHT_INDICATORS = [
-    'Research', 'Search', 'Analyzing', 'Reviewing', 'Investigating',
-    'Scrutinizing', 'Checking', 'Examining', 'Refining', 'Evaluating',
-    'Formulating', 'Planning', 'Verifying', 'Compiling', 'Synthesizing',
-    'Gathering', 'Assessing', 'Pinpointing', 'Exploring', 'Defining',
-    'Comparing', 'Processing', 'Generating', 'Creating', 'Setting',
-    'Navigating', 'Opening', 'Extracting', 'Beginning', 'Starting',
-    'Preparing', 'Organizing', 'Summarizing', 'Translating', 'Calculating',
-    'Computing', 'Identifying', 'Locating', 'Finding', 'Retrieving',
-    'Comprehending', 'Understanding', 'Drafting', 'Outlining', 'Diving',
-    'Estimating', 'Crunching', 'Tackling', 'Working', 'Breaking',
-    'Deciding', 'Looking', 'Figuring', 'Sorting', 'Filtering',
-    'Pulling', 'Focusing', 'Scoping', 'Mapping',
+    # All model thoughts start with a bold gerund/verb heading.
+    # We match if the bold word starts with any of these stems.
+    'Research', 'Search', 'Analyz', 'Review', 'Investigat',
+    'Scrutiniz', 'Check', 'Examin', 'Refin', 'Evaluat',
+    'Formulat', 'Plan', 'Verif', 'Compil', 'Synthes',
+    'Gather', 'Assess', 'Pinpoint', 'Explor', 'Defin',
+    'Compar', 'Process', 'Generat', 'Creat', 'Sett',
+    'Navigat', 'Open', 'Extract', 'Beginn', 'Begin', 'Start',
+    'Prepar', 'Organiz', 'Summariz', 'Translat', 'Calculat',
+    'Comput', 'Identif', 'Locat', 'Find', 'Retriev',
+    'Comprehend', 'Understand', 'Draft', 'Outlin', 'Div',
+    'Estimat', 'Crunche', 'Tackl', 'Work', 'Break',
+    'Decid', 'Look', 'Figur', 'Sort', 'Filter',
+    'Pull', 'Focus', 'Scop', 'Map', 'Hon', 'Brainstorm',
+    'Deconstruct', 'Construct', 'Polish', 'Detail',
+    'Decipher', 'Interpret', 'Consider', 'Initiat', 'Clarif',
+    'Unpack', 'Establish', 'Address', 'Fram', 'Determin',
+    'Connect', 'Unravel', 'Dissect', 'Decompos', 'Encapsul',
+    'Elucidat', 'Re-evaluat', 'Reexamin', 'Reconsider',
+    'Synthesiz', 'Consolidat', 'Integrat', 'Compil',
+    'Diagnos', 'Troubleshoot', 'Debug', 'Optimiz',
+    'Visualiz', 'Conceptualiz', 'Structur', 'Architect',
+    'Reconcil', 'Harmoniz', 'Align', 'Calibrat',
+    'Propos', 'Recommend', 'Suggest', 'Advise',
+]
+
+# Model turns starting with self-referential introspection are thoughts.
+INTROSPECTION_PREFIXES = [
+    "I've been", "I'm currently", "I'm going", "I'm working", "I'm thinking",
+    "I am currently", "I am going", "I am working", "I am thinking",
+    "I need to", "I'll need to", "I will need to", "I'll start", "I will start",
+    "I'll focus", "I will focus", "I'll begin", "I will begin",
+    "Let me", "Let\u2019s", "Let's", "Let us", "My goal", "My aim", "My task",
+    "First, I", "First I", "Now I", "Next, I", "Next I",
+    "The user is", "The user wants", "The user's", "The query",
 ]
 
 
@@ -101,6 +124,7 @@ def parse_rpc(data) -> dict:
         title = inner[4][0] if len(inner) > 4 and inner[4] and inner[4][0] else ""
         turns = []
         for group in inner[13] if len(inner) > 13 else []:
+            group_turns = []
             for turn in group:
                 if not isinstance(turn, list) or len(turn) < 9:
                     continue
@@ -108,14 +132,23 @@ def parse_rpc(data) -> dict:
                 role = turn[8] if isinstance(turn[8], str) else "unknown"
                 if not text.strip():
                     continue
+                group_turns.append({"role": role, "text": text})
+            
+            # All non-last model turns in a sequence are thoughts.
+            # The LAST model turn before a user turn (or end) is the actual answer.
+            model_indices = [i for i, t in enumerate(group_turns) if t['role'] == 'model']
+            for i, t in enumerate(group_turns):
                 is_thought = False
-                if role == 'model' and text.startswith('**'):
-                    m = re.match(r'\*\*(.+?)\*\*', text)
-                    if m:
-                        first = m.group(1).split()[0] if m.group(1).split() else ""
-                        if any(first.startswith(w) for w in THOUGHT_INDICATORS):
+                if t['role'] == 'model':
+                    # It's a thought if there's another model turn after it before the next user
+                    next_model = next((j for j in model_indices if j > i), None)
+                    if next_model is not None:
+                        # Check that there's no user turn between them
+                        between = group_turns[i+1:next_model]
+                        if not any(b['role'] == 'user' for b in between):
                             is_thought = True
-                turns.append({"role": role, "text": text, "len": len(text), "is_thought": is_thought})
+                turns.append({"role": t['role'], "text": t['text'],
+                              "len": len(t['text']), "is_thought": is_thought})
         return {"title": title, "turns": turns}
     except Exception as e:
         return {"title": "", "turns": [], "error": str(e)}
@@ -141,6 +174,7 @@ def extract_all_from_dom(page, chat_dir: Path) -> tuple[list[dict], list[dict]]:
 
     saved_imgs = 0
     indicators_js = json.dumps(THOUGHT_INDICATORS)
+    introspection_js = json.dumps(INTROSPECTION_PREFIXES)
 
     for i in range(n):
         # Scroll turn into view
@@ -188,6 +222,7 @@ def extract_all_from_dom(page, chat_dir: Path) -> tuple[list[dict], list[dict]]:
         # ---- Extract text ----
         result = page.evaluate(f"""(i) => {{
             const indicators = {indicators_js};
+            const introPrefixes = {introspection_js};
             const turns = document.querySelectorAll('.chat-turn-container');
             const t = turns[i];
             if (!t) return {{text:'',role:'unknown',is_thought:false}};
@@ -201,11 +236,19 @@ def extract_all_from_dom(page, chat_dir: Path) -> tuple[list[dict], list[dict]]:
             }}
             let text = parts.join('\\n\\n');
             let is_thought = false;
-            if (role === 'model' && text.startsWith('**')) {{
-                const m = text.match(/^\\*\\*(.+?)\\*\\*/);
-                if (m) {{
-                    const first = m[1].split(' ')[0] || '';
-                    if (indicators.some(w => first.startsWith(w))) is_thought = true;
+            if (role === 'model') {{
+                // Check for **BoldThought** pattern
+                if (text.startsWith('**')) {{
+                    const m = text.match(/^\\*\\*(.+?)\\*\\*/);
+                    if (m) {{
+                        const first = (m[1].split(' ')[0] || '');
+                        if (indicators.some(w => first.startsWith(w))) is_thought = true;
+                    }}
+                }}
+                // Also check for non-bold introspection (after optional **Bold** header)
+                if (!is_thought) {{
+                    const body = text.replace(/^\\*\\*[\\s\\S]+?\\*\\*/, '').trimLeft();
+                    if (introPrefixes.some(p => body.startsWith(p))) is_thought = true;
                 }}
             }}
             return {{text, role, is_thought}};
@@ -219,6 +262,21 @@ def extract_all_from_dom(page, chat_dir: Path) -> tuple[list[dict], list[dict]]:
                     'role': result['role'], 'text': result['text'],
                     'len': len(result['text']), 'is_thought': result['is_thought'],
                 })
+
+    # Post-process: apply positional thought detection.
+    # All non-last model turns in a sequence between user turns are thoughts.
+    model_indices = [i for i, t in enumerate(turns) if t['role'] == 'model']
+    for i, t in enumerate(turns):
+        if t['role'] == 'model':
+            next_model = next((j for j in model_indices if j > i), None)
+            if next_model is not None:
+                between = turns[i+1:next_model]
+                if not any(b['role'] == 'user' for b in between):
+                    t['is_thought'] = True
+                else:
+                    t['is_thought'] = False
+            else:
+                t['is_thought'] = False
 
     # ---- Document links ----
     docs = page.evaluate("""() => {

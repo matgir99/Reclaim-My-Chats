@@ -186,52 +186,20 @@ def process_chat_record(record: dict) -> dict:
                     turns.append({
                         'role': 'user',
                         'text': frag['content'].strip(),
-                        'thinking': '',
                     })
                     break
         
         elif role == 'ASSISTANT':
-            thinking_parts = []
-            answer_text = ''
-            
+            # Only extract RESPONSE fragments; skip THINK (model reasoning)
             for frag in fragments:
-                ftype = frag.get('type', '')
-                
-                if ftype == 'THINK':
-                    # Build thinking header
-                    elapsed = frag.get('elapsed_secs', 0)
-                    if elapsed:
-                        thinking_parts.append(f'Thought for {round(elapsed)} seconds')
-                    
-                    # Search info
-                    search_frag = next((f for f in fragments if f.get('type') == 'SEARCH'), None)
-                    if search_frag:
-                        n_results = len(search_frag.get('results', []))
-                        n_queries = len(search_frag.get('queries', []))
-                        if n_results:
-                            thinking_parts.append(f'Read {n_results} web pages')
-                    
-                    thinking_parts.append('')
-                    
-                    # Thinking content with citations
-                    content = frag.get('content', '')
-                    if content:
-                        content = replace_citations(content, citemap)
-                    thinking_parts.append(content)
-                
-                elif ftype == 'RESPONSE':
+                if frag.get('type') == 'RESPONSE':
                     answer_text = frag.get('content', '')
                     if answer_text:
                         answer_text = replace_citations(answer_text, citemap)
-            
-            thinking = '\n\n'.join(thinking_parts).strip() if thinking_parts else ''
-            
-            if thinking or answer_text:
-                turns.append({
-                    'role': 'assistant',
-                    'text': answer_text,
-                    'thinking': thinking,
-                })
+                    turns.append({
+                        'role': 'assistant',
+                        'text': answer_text,
+                    })
     
     return {
         'id': chat_id,
@@ -265,8 +233,6 @@ def save_chat(processed: dict, out_dir: Path) -> Path:
             if t['role'] == 'user':
                 f.write(f"## User\n\n{t['text']}\n\n---\n\n")
             else:
-                if t.get('thinking'):
-                    f.write(f"<details>\n<summary>Thinking</summary>\n\n{t['thinking']}\n\n</details>\n\n")
                 if t.get('text'):
                     f.write(f"## Assistant\n\n{t['text']}\n\n---\n\n")
     
