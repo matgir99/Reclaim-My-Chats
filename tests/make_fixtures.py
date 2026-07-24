@@ -126,4 +126,46 @@ prompt_file = {
     },
 }
 (FIX / 'aistudio_prompt_file.json').write_text(json.dumps(prompt_file))
+
+# synthetic Kept vault (import mode)
+kept_md = f'''---
+id: "kimi-synthetic-0001"
+platform: "kimi"
+title: "Synthetic Kimi Chat"
+synced: 2026-01-02T10:00:00+00:00
+created_at: 2026-01-01T09:00:00+00:00
+updated_at: 2026-01-01T09:30:00+00:00
+messages: 2
+model: "kimi-k2"
+tags:
+  - "kept/kimi"
+---
+
+# Synthetic Kimi Chat
+
+### You — 2026-01-01 09:00
+
+What is $e$ and show me a plot?
+
+---
+
+### Assistant — 2026-01-01 09:01
+
+<!-- kept:thinking -->
+The user asks about e and wants a plot.
+<!-- /kept:thinking -->
+
+<!-- kept:tools -->
+- search(q="euler number")
+<!-- /kept:tools -->
+
+$e \\approx 2.71828$ is Euler's number. Here is the plot:
+
+![plot](data:image/png;base64,{PNG_B64})
+
+---
+'''
+kept_dir = FIX / 'kept_vault' / 'kimi'
+kept_dir.mkdir(parents=True, exist_ok=True)
+(kept_dir / '2026-01-01_synthetic-kimi-chat.md').write_text(kept_md)
 print('fixtures written to', FIX)

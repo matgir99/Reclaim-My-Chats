@@ -88,8 +88,10 @@ def write_chat(chat: Chat, out_dir: Path) -> dict:
     ts = time.strftime('%Y-%m-%d %H:%M:%S')
 
     with open(md, 'w', encoding='utf-8') as f:
-        f.write(f'# {chat.title}\n\n**Source:** {chat.source_url}\n\n'
-                f'**Scraped:** {ts}\n\n---\n\n')
+        f.write(f'# {chat.title}\n\n')
+        if chat.source_url:
+            f.write(f'**Source:** {chat.source_url}\n\n')
+        f.write(f'**Scraped:** {ts}\n\n---\n\n')
 
         cur_role = None
         img_count = 0

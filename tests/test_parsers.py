@@ -17,6 +17,7 @@ from reclaim.core.writer import img_ext, slugify, write_chat
 from reclaim.providers.aistudio import entries_to_chat, parse_rpc
 from reclaim.providers.aistudio_files import parse_prompt_file
 from reclaim.providers.deepseek import record_to_chat
+from reclaim.providers.kept_vault import parse_vault_file
 
 FIX = Path(__file__).resolve().parent / 'fixtures'
 
@@ -122,6 +123,42 @@ class TestDeepseekRecord(unittest.TestCase):
         self.assertTrue(atts[0].source_url.startswith(
             'https://chat.deepseek.com/file?file_id='))
         self.assertIsNone(atts[0].data)  # downloaded later by materialize_attachments
+
+
+class TestKeptVault(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.chat = parse_vault_file(FIX / 'kept_vault' / 'kimi' /
+                                    '2026-01-01_synthetic-kimi-chat.md')
+
+    def test_frontmatter(self):
+        self.assertIsNotNone(self.chat)
+        self.assertEqual(self.chat.id, 'kimi-synthetic-0001')
+        self.assertEqual(self.chat.title, 'Synthetic Kimi Chat')
+        self.assertEqual(self.chat.provider, 'kept/kimi')
+
+    def test_roles_and_thinking_stripped(self):
+        self.assertEqual([t.role for t in self.chat.turns], ['user', 'model'])
+        body = self.chat.turns[1].text
+        self.assertNotIn('kept:thinking', body)
+        self.assertNotIn('kept:tools', body)
+        self.assertNotIn('The user asks about', body)
+        self.assertNotIn('search(q=', body)
+
+    def test_latex_and_datauri_image(self):
+        model_turn = self.chat.turns[1]
+        self.assertIn('$e \\approx 2.71828$', model_turn.text)
+        self.assertEqual(len(model_turn.images), 1)
+        self.assertTrue(model_turn.images[0].startswith(b'\x89PNG'))
+        self.assertNotIn('data:image', model_turn.text)  # link stripped; writer re-adds
+
+    def test_garbage_rejected(self):
+        tmp = FIX / '_garbage.md'
+        tmp.write_text('no frontmatter, no messages')
+        try:
+            self.assertIsNone(parse_vault_file(tmp))
+        finally:
+            tmp.unlink()
 
 
 class TestWriter(unittest.TestCase):
