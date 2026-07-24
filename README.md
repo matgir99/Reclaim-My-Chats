@@ -1,18 +1,18 @@
-# Scrape Webpages
+# ReclaimMyChats
 
-Scrapers for AI chat platforms — extract full conversation history (text, images, documents) into local markdown files.
+Reclaim your AI chat history. Bulk-export conversations from AI chat platforms into clean local Markdown folders — full text with LaTeX intact, model thoughts filtered out, original-quality images, and real downloaded attachments.
 
 ## Structure
 
 ```
-Scrape_Webpages/
+ReclaimMyChats/
 ├── Google AI Studio/     # scraper + output for aistudio.google.com
 │   ├── scrape_googleaistudio.py
 │   └── <chat folders>/
 ├── Deepseek Chat/        # scraper + output for chat.deepseek.com
 │   ├── scrape_deepseek.py
 │   └── <chat folders>/
-├── Kimi Chat/            # (placeholder)
+├── Kimi Chat/            # (planned — see ROADMAP.md)
 └── .playwright-profile/  # shared browser profile (cookies, sessions)
 ```
 
