@@ -28,3 +28,7 @@ Thumbs.db
 
 # Test output
 test_*/
+
+# Logs and run state
+*.log
+.scrape.pid

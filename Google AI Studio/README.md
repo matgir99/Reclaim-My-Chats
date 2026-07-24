@@ -1,18 +1,44 @@
 # Google AI Studio Scraper
 
-Extracts all conversations from [aistudio.google.com](https://aistudio.google.com/library) into local markdown files with embedded images.
+Extracts all conversations from [aistudio.google.com](https://aistudio.google.com/library) into local markdown files with original-quality images and downloaded attachments.
 
 ## How it works
 
-**Two-pass architecture:**
+**Replay-first architecture.** AI Studio loads each chat via an internal
+`ResolveDriveResource` RPC — a plain POST whose body is just `["<chat-id>"]`.
+Instead of navigating to each chat and hoping to intercept that response
+(the old approach, which broke whenever Chrome evicted huge bodies from its
+inspector cache — one chat has a **116 MB** response), the scraper **replays
+the RPC itself** from page context, authenticated with a `SAPISIDHASH`
+computed from the session cookie, exactly like the app does.
 
-1. **RPC interception (fast)** — Google AI Studio loads chat data via an internal `ResolveDriveResource` RPC call. The scraper intercepts this response, which contains full untruncated text (user prompts + model responses) with role metadata. Works for 64/67 chats in the current library.
+From the RPC JSON it then extracts, with zero DOM involvement:
 
-2. **DOM scrolling (fallback)** — For a few large/image-heavy chats where the RPC response is already cached by the app or too large for the inspector cache, the scraper scrolls through every turn in the virtual scroller, extracts text from `<ms-text-chunk>` elements, and screenshots `<ms-image-chunk>` elements. Adds ~30s per fallback chat.
+| Data | Location in turn (36-field list) |
+|---|---|
+| Text | `turn[0]` |
+| Role (`user`/`model`) | `turn[8]` |
+| **Thought flag** (reasoning turns, excluded) | `turn[19]` truthy |
+| Inline images (base64, original quality) | `turn[12]` = `[mime, b64]` |
+| User-uploaded Drive attachment IDs | `turn[1]` = `[file_id, ...]` |
+| API-side error marker | `turn[28]` |
 
-**Thought filtering:** Model internal reasoning is excluded using a positional heuristic — in a sequence of consecutive model turns before the next user turn, all but the last turn are thoughts. This is more robust than keyword matching.
+**Attachments** are downloaded from `drive/v3/files/<id>?alt=media` using a
+Bearer token from a replayed `GenerateAccessToken` call (refreshed on 401 /
+every 30 min). Real filenames come from Drive metadata; collisions are
+de-duplicated (`immagine.png`, `immagine_1.png`, ...).
 
-**Authentication:** Uses a persistent Playwright browser profile (`../.playwright-profile/`, shared with the DeepSeek scraper). Login once, stays logged in. The browser window is launched off-screen and only brought to the foreground if login is required.
+**Fallback chain** (practically never needed): RPC replay → response
+interception → DOM scrape (cmark HTML → Markdown, element screenshots,
+positional thought heuristic).
+
+**Thought filtering** is structural (`turn[19]`), not heuristic: validated
+against raw dumps — image-generation chats whose answers legitimately span
+multiple turns are kept whole, while genuine thinking turns are dropped.
+
+**Authentication:** persistent Playwright profile (`../.playwright-profile/`,
+shared with the DeepSeek scraper). Login once, stays logged in. The browser
+window launches off-screen and only appears if login is required.
 
 ## Usage
 
@@ -20,11 +46,15 @@ Extracts all conversations from [aistudio.google.com](https://aistudio.google.co
 # Full library
 python3.14 scrape_googleaistudio.py
 
-# Single chat
+# Single chat / filters / ranges
 python3.14 scrape_googleaistudio.py --url "https://aistudio.google.com/prompts/..."
+python3.14 scrape_googleaistudio.py --only qnap        # title substring
+python3.14 scrape_googleaistudio.py --start 10 --limit 5
+python3.14 scrape_googleaistudio.py --resume           # skip already-saved
+python3.14 scrape_googleaistudio.py --keep-raw         # also save raw RPC JSON
 
-# Custom output directory
-python3.14 scrape_googleaistudio.py -o /path/to/output
+# Detached full run (survives terminal close; PID + log file)
+./run_full.sh start     # ./run_full.sh status | stop
 ```
 
 ## Output format
@@ -33,38 +63,47 @@ Each chat saved in its own folder:
 
 ```
 <chat title>/
-├── <chat title>.md    # Full conversation in markdown
-├── image_1.png        # Embedded images (if any)
-├── image_2.png
+├── <chat title>.md     # Full conversation in markdown
+├── image_1.png         # Inline model-generated images (original quality)
+├── immagine.png        # User-uploaded attachments (real Drive filenames)
 └── ...
 ```
 
-Markdown structure:
+Consecutive same-role turns are merged into one section, so multi-part
+answers (text → image → text) stay together, with images referenced inline
+at the correct position:
+
 ```markdown
 # Chat Title
 
 **Source:** https://aistudio.google.com/prompts/...
-**Scraped:** 2026-07-23 19:33:44
-
-## Images
-- ![image](image_1.png)
+**Scraped:** 2026-07-24 16:05:00
 
 ---
 
 ## User
-User prompt text here...
+
+Prompt text...
+
+**Attachment:** [immagine.png](immagine.png)
 
 ---
 
 ## Model
-Model response text here...
+
+Answer part 1...
+
+![image_1.png](image_1.png)
+
+Answer part 2...
 
 ---
 ```
 
-## Limitations
+LaTeX is preserved verbatim (raw model text, not rendered HTML).
 
-- **Browser window** is kept off-screen during scraping; only shown during login.
-- **Images are screenshots**, not original files. The virtual scroller renders images lazily; screenshots capture what's displayed.
-- **Document attachments** (Google Drive links, PDFs) are detected but not downloaded — URLs are saved as links.
-- **3 DOM-fallback chats** (currently `PQR Brand Design for Finance`, `QNAP TS-233 User Manual Guide`, `MX Keys Business Not Unifying Compatible`) rely on the rendered page, so formatting is slightly less pristine than the RPC path and thought filtering may have minor leakage.
+## Current status
+
+Latest full run: **67/67 chats, 0 failures, 0 fallbacks** — every chat via
+RPC replay. 36 inline images + 90 Drive attachments downloaded, no thought
+leakage, ~10 minutes total (previously ~1 hour with 3 DOM fallbacks).

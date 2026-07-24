@@ -25,14 +25,21 @@ python3.14 -m playwright install chromium
 
 ## Google AI Studio
 
-Scrapes all conversations from your library. Extracts full markdown text (user prompts + model responses), filters model thoughts, and captures embedded images as PNG screenshots.
+Scrapes all conversations from your library by **replaying the app's own
+`ResolveDriveResource` RPC** from page context — no DOM scraping, no cache
+eviction, works for every chat regardless of size. Extracts raw markdown
+(user prompts + model responses, LaTeX preserved), filters model thoughts via
+a structural flag, saves inline images at original quality, and downloads
+user-uploaded Drive attachments with their real filenames.
 
 ```bash
 cd "Google AI Studio"
 python3.14 scrape_googleaistudio.py              # full library
 python3.14 scrape_googleaistudio.py --url <URL>  # single chat
+./run_full.sh start                              # detached run (status|stop)
 ```
 
+Latest full run: 67/67 chats, 0 failures, 0 fallbacks, ~10 minutes.
 See `Google AI Studio/README.md` for details.
 
 ## DeepSeek Chat

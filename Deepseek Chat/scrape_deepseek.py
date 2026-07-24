@@ -19,7 +19,6 @@ Each chat saved in its own folder: <slug>/<slug>.md
 """
 
 import argparse
-import json
 import os
 import re
 import sys
@@ -264,12 +263,13 @@ def main():
             # Extract chat ID from URL
             chat_id = args.url.split('/a/chat/s/')[-1].split('?')[0][:40]
             print(f"Looking up chat {chat_id} in IndexedDB...")
-            records = [read_single_chat_from_indexeddb(page, chat_id)]
-            if records[0] is None:
+            rec = read_single_chat_from_indexeddb(page, chat_id)
+            if rec is None:
                 print(f"ERROR: Chat {chat_id} not found in local IndexedDB.")
                 print("Make sure you've opened this chat in the browser before.")
                 ctx.close()
                 sys.exit(1)
+            records = [rec]
         else:
             print("Reading chat list from IndexedDB...")
             summaries = read_all_from_indexeddb(page)
@@ -319,6 +319,7 @@ def main():
                 
                 print(f"[{i+1}/{len(records)}] {label}")
                 print(f"  -> {len(processed['turns'])}t ({users}u/{assistants}a), {chars:,} chars{cit}")
+                print(f"     saved: {md_path}")
                 done += 1
             except Exception as e:
                 print(f"  -> FAILED: {e}")
