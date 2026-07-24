@@ -68,23 +68,32 @@ def _get(page, token: str, url: str, retries: int = 3) -> dict:
 
 def get_session_token(page) -> str:
     data = page.evaluate("""async () => {
-        const r = await fetch('/api/auth/session', {credentials: 'include'});
-        return {status: r.status, text: await r.text()};
+        try {
+            const r = await fetch('/api/auth/session', {credentials: 'include'});
+            return {status: r.status, text: await r.text()};
+        } catch (e) { return {status: 0, text: String(e)}; }
     }""")
     if data['status'] != 200:
         raise RuntimeError(f'session fetch HTTP {data["status"]}')
-    token = json.loads(data['text']).get('accessToken')
+    try:
+        token = json.loads(data['text']).get('accessToken')
+    except Exception:
+        raise RuntimeError(
+            f'session not JSON (head: {data["text"][:80]!r}) — not logged in?')
     if not token:
         raise RuntimeError('no accessToken in session — not logged in?')
     return token
 
 
 def ensure_logged_in(page):
-    page.goto(BASE_URL, wait_until='domcontentloaded', timeout=60000)
+    try:
+        page.goto(BASE_URL, wait_until='domcontentloaded', timeout=60000)
+    except Exception:
+        pass  # navigation quirks are fine; token probe decides
     time.sleep(4)
     try:
         return get_session_token(page)
-    except RuntimeError:
+    except Exception:
         pass
     # Login may be an SPA flow (no reliable URL marker): show the window
     # and poll until a session token is available.
@@ -103,7 +112,7 @@ def ensure_logged_in(page):
             browser.set_window_bounds(page, state='minimized')
             time.sleep(2)
             return token
-        except RuntimeError:
+        except Exception:
             time.sleep(3)
     raise RuntimeError('Login timeout')
 
@@ -125,7 +134,7 @@ def list_conversations(page, token: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 # Conversation parsing (linearize + asset collection)
 # ---------------------------------------------------------------------------
-_ASSET_RE = re.compile(r'(?:file-service|sediment)://(file[-_][A-Za-z0-9]+)')
+_ASSET_RE = re.compile(r'(?:file-service|sediment)://(file[-_][A-Za-z0-9-]+)')
 
 
 def _node_to_turn(node: dict) -> tuple[Turn | None, list[str]]:
@@ -152,7 +161,7 @@ def _node_to_turn(node: dict) -> tuple[Turn | None, list[str]]:
             pointer = part.get('asset_pointer') or ''
             m = _ASSET_RE.search(pointer)
             if m:
-                asset_ids.append(m.group(1).replace('_', '-', 1))
+                asset_ids.append(m.group(1))
             elif part.get('text'):
                 texts.append(part['text'])
 
@@ -163,18 +172,31 @@ def _node_to_turn(node: dict) -> tuple[Turn | None, list[str]]:
     return turn, asset_ids
 
 
-def _download_asset(page, token: str, file_id: str) -> tuple[bytes | None, str]:
-    """Download a file-service asset. Returns (bytes, content_type)."""
-    for url in (f'{BASE_URL}/backend-api/files/{file_id}/download',
-                f'{BASE_URL}/backend-api/files/{file_id}'):
-        try:
-            resp = page.request.get(
-                url, headers={'Authorization': f'Bearer {token}'}, timeout=120000)
-            if resp.status == 200 and resp.body():
-                return resp.body(), (resp.headers.get('content-type') or '')
-        except Exception:
-            continue
-    return None, ''
+def _download_asset(page, token: str, file_id: str) -> tuple[bytes | None, dict]:
+    """Two-step file download (per pionxzh/chatgpt-exporter, MIT):
+    1. GET /backend-api/files/download/<id> -> JSON {status, download_url,
+       file_name, mime_type, file_size_bytes}
+    2. GET the signed download_url -> bytes
+    Returns (bytes, meta)."""
+    meta_url = f'{BASE_URL}/backend-api/files/download/{file_id}?post_id=&inline=false'
+    try:
+        resp = page.request.get(
+            meta_url, headers={'Authorization': f'Bearer {token}'},
+            timeout=120000)
+        if resp.status != 200:
+            return None, {}
+        meta = resp.json()
+    except Exception:
+        return None, {}
+    if meta.get('status') != 'success' or not meta.get('download_url'):
+        return None, meta
+    try:
+        blob = page.request.get(meta['download_url'], timeout=120000)
+        if blob.status == 200 and blob.body():
+            return blob.body(), meta
+    except Exception:
+        pass
+    return None, meta
 
 
 def fetch_conversation(page, token: str, conv_id: str, title: str = '') -> tuple[Chat, dict]:
@@ -186,19 +208,21 @@ def fetch_conversation(page, token: str, conv_id: str, title: str = '') -> tuple
         if turn is None:
             continue
         for fid in asset_ids:
-            blob, ctype = _download_asset(page, token, fid)
+            blob, meta = _download_asset(page, token, fid)
             if blob is None:
                 turn.text += '\n\n*[attachment could not be downloaded]*'
                 continue
-            if ctype.startswith('image/'):
+            mime = (meta.get('mime_type') or '').split(';')[0]
+            name = meta.get('file_name') or f'file_{fid[:12]}'
+            if mime.startswith('image/'):
                 turn.images.append(blob)
             else:
-                name = f'file_{fid[:12]}'
-                ext = {'application/pdf': '.pdf', 'text/csv': '.csv',
-                       'text/plain': '.txt'}.get(ctype.split(';')[0], '.bin')
+                if '.' not in name:
+                    name += {'.pdf': 'application/pdf'}.get(mime, '') or ''
                 turn.attachments.append(Attachment(
-                    filename=name + ext, kind='document', data=blob,
-                    description=fid))
+                    filename=name,
+                    kind='image' if _IMG_EXT.search(name) else 'document',
+                    data=blob, description=name))
         turns.append(turn)
     return (Chat(id=conv_id, title=title or data.get('title', '') or '(untitled)',
                  source_url=f'{BASE_URL}/c/{conv_id}', turns=turns,

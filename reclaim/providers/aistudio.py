@@ -24,7 +24,7 @@ from pathlib import Path
 from ..core import browser
 from ..core.manifest import SyncState, write_manifest
 from ..core.model import Attachment, Chat, Turn
-from ..core.writer import img_ext, slugify, write_chat, write_raw
+from ..core.writer import write_chat, write_raw
 
 LIBRARY_URL = 'https://aistudio.google.com/library'
 PROVIDER = 'aistudio'
@@ -151,7 +151,7 @@ class DriveClient:
                 self._token = None
                 continue
             return resp
-        return resp
+        raise RuntimeError('unreachable')
 
     def metadata(self, fid: str) -> dict:
         try:
@@ -274,7 +274,7 @@ def get_chat_list(page) -> list[dict]:
         return R;
     }""")
     seen = set()
-    return [l for l in links if not (l['url'] in seen or seen.add(l['url']))]
+    return [link for link in links if not (link['url'] in seen or seen.add(link['url']))]
 
 
 def list_prompts(page) -> list[dict]:
@@ -403,9 +403,11 @@ class _HtmlToMd:
         elif tag == 'img':
             self._o(f"![{attrs.get('alt', '')}]({attrs.get('src', '')})")
         elif tag == 'ul':
-            self._lists.append(('ul', 0)); self._o('\n\n')
+            self._lists.append(('ul', 0))
+            self._o('\n\n')
         elif tag == 'ol':
-            self._lists.append(('ol', int(attrs.get('start', '1')) - 1)); self._o('\n\n')
+            self._lists.append(('ol', int(attrs.get('start', '1')) - 1))
+            self._o('\n\n')
         elif tag == 'li':
             if self._lists:
                 kind, idx = self._lists[-1]

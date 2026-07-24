@@ -109,11 +109,14 @@ def get_token(page) -> str:
 
 
 def ensure_logged_in(page):
-    page.goto(BASE_URL, wait_until='domcontentloaded', timeout=60000)
+    try:
+        page.goto(BASE_URL, wait_until='domcontentloaded', timeout=60000)
+    except Exception:
+        pass  # navigation quirks are fine; token probe decides
     time.sleep(4)
     try:
         return get_token(page)
-    except RuntimeError:
+    except Exception:
         pass
     # Kimi login is an SPA modal (no URL change): show the window and poll
     # until a valid token appears in localStorage.
@@ -132,7 +135,7 @@ def ensure_logged_in(page):
             browser.set_window_bounds(page, state='minimized')
             time.sleep(2)
             return token
-        except RuntimeError:
+        except Exception:
             time.sleep(3)
     raise RuntimeError('Login timeout')
 
@@ -157,11 +160,12 @@ def list_messages(page, token: str, chat_id: str) -> list[dict]:
     return list(reversed(msgs))  # API returns newest-first
 
 
-def _msg_to_turn(msg: dict) -> Turn | None:
+def _msg_to_turn(msg: dict) -> tuple[Turn | None, list[str]]:
+    """Convert one API message. Returns (turn, [image urls])."""
     role_raw = (msg.get('role') or msg.get('sender') or '').lower()
     role = 'user' if role_raw in ('user', 'human') else 'model'
     if role_raw == 'system':
-        return None
+        return None, []
 
     texts, images, thought = [], [], False
     content = msg.get('content')
@@ -183,40 +187,43 @@ def _msg_to_turn(msg: dict) -> Turn | None:
         for key in ('image', 'image_url', 'img', 'url'):
             v = block.get(key)
             if isinstance(v, dict) and isinstance(v.get('url'), str):
-                images.append({'url': v['url']})
+                images.append(v['url'])
             elif isinstance(v, str) and v.startswith('http'):
-                images.append({'url': v})
+                images.append(v)
 
     text = '\n'.join(t for t in texts if t and t.strip()).strip()
     if not text and not images:
-        return None
-    turn = Turn(role=role, text=text, thought=thought)
-    if images:
-        turn.attachments = []  # urls materialized later
-        turn._kimi_image_urls = [i['url'] for i in images]  # noqa: SLF001
-    return turn
+        return None, []
+    return Turn(role=role, text=text, thought=thought), images
 
 
-def parse_chat(meta: dict, messages: list[dict]) -> Chat:
+def parse_chat(meta: dict, messages: list[dict]) -> tuple[Chat, dict]:
+    """Returns (chat, image_map) where image_map maps id(turn) -> [urls]."""
     chat_id = meta.get('id') or meta.get('chat_id') or ''
     title = meta.get('name') or meta.get('title') or ''
-    turns = [t for t in (_msg_to_turn(m) for m in messages) if t]
+    turns: list[Turn] = []
+    image_map: dict[int, list[str]] = {}
+    for m in messages:
+        t, urls = _msg_to_turn(m)
+        if t is None:
+            continue
+        if urls:
+            image_map[id(t)] = urls
+        turns.append(t)
     if not title and turns:
         first_user = next((t for t in turns if t.role == 'user'), None)
         title = ((first_user.text[:80].replace('\n', ' ') if first_user else '')
                  or '(untitled)')
-    return Chat(id=chat_id, title=title,
+    chat = Chat(id=chat_id, title=title,
                 source_url=f'{BASE_URL}/chat/{chat_id}',
                 turns=turns, provider=PROVIDER)
+    return chat, image_map
 
 
-def _materialize_images(page, chat: Chat) -> int:
+def _materialize_images(page, chat: Chat, image_map: dict) -> int:
     ok = 0
     for turn in chat.turns:
-        urls = getattr(turn, '_kimi_image_urls', None)
-        if not urls:
-            continue
-        for u in urls:
+        for u in image_map.get(id(turn), []):
             try:
                 resp = page.request.get(u, timeout=60000)
                 if resp.status == 200 and resp.body():
@@ -224,7 +231,6 @@ def _materialize_images(page, chat: Chat) -> int:
                     ok += 1
             except Exception:
                 pass
-        del turn._kimi_image_urls  # noqa: SLF001
     return ok
 
 
@@ -251,8 +257,8 @@ def run(page, token: str, chats: list[dict], out_dir: Path,
                 except Exception:
                     pass
             messages = list_messages(page, token, chat_id)
-            chat = parse_chat(meta, messages)
-            n_imgs = _materialize_images(page, chat)
+            chat, image_map = parse_chat(meta, messages)
+            n_imgs = _materialize_images(page, chat, image_map)
             stats = write_chat(chat, out_dir)
             try:
                 write_raw(stats['dir'], {'meta': meta, 'messages': messages})

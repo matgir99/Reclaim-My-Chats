@@ -39,7 +39,7 @@ PNG_B64 = make_png_b64()
 
 
 def turn(role, text='', thought=False, image=False, drive_ids=None, error=None):
-    t = [None] * 36
+    t: list = [None] * 36
     t[0] = text
     t[8] = role
     if drive_ids:

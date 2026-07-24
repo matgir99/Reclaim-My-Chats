@@ -39,3 +39,10 @@ test_*/
 
 # scratch (one-off scripts)
 scratch/
+
+# Scraped output (all providers)
+ChatGPT/
+Kimi Chat/
+Claude/
+Gemini/
+Grok/

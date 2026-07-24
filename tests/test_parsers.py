@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import ClassVar
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -65,11 +66,15 @@ class TestAistudioParse(unittest.TestCase):
 
 
 class TestAistudioPromptFile(unittest.TestCase):
+    chat: ClassVar[Chat]
+
     @classmethod
     def setUpClass(cls):
-        cls.chat = parse_prompt_file(
+        chat = parse_prompt_file(
             json.loads((FIX / 'aistudio_prompt_file.json').read_text()),
             chat_id='synthetic-drive-id', title='Prompt File Chat')
+        assert chat is not None
+        cls.chat = chat
 
     def test_parsed(self):
         self.assertIsNotNone(self.chat)
@@ -128,10 +133,14 @@ class TestDeepseekRecord(unittest.TestCase):
 
 
 class TestKeptVault(unittest.TestCase):
+    chat: ClassVar[Chat]
+
     @classmethod
     def setUpClass(cls):
-        cls.chat = parse_vault_file(FIX / 'kept_vault' / 'kimi' /
-                                    '2026-01-01_synthetic-kimi-chat.md')
+        chat = parse_vault_file(FIX / 'kept_vault' / 'kimi' /
+                                '2026-01-01_synthetic-kimi-chat.md')
+        assert chat is not None
+        cls.chat = chat
 
     def test_frontmatter(self):
         self.assertIsNotNone(self.chat)
@@ -164,10 +173,14 @@ class TestKeptVault(unittest.TestCase):
 
 
 class TestChatGPTImport(unittest.TestCase):
+    chat: ClassVar[Chat]
+
     @classmethod
     def setUpClass(cls):
         conv = json.loads((FIX / 'chatgpt_export_sample.json').read_text())[0]
-        cls.chat = parse_conversation(conv)
+        chat = parse_conversation(conv)
+        assert chat is not None
+        cls.chat = chat
 
     def test_parsed(self):
         self.assertIsNotNone(self.chat)
@@ -322,13 +335,14 @@ class TestHaevnExport(unittest.TestCase):
 
 
 class TestKimiProvider(unittest.TestCase):
+    chat: ClassVar[Chat]
+
     @classmethod
     def setUpClass(cls):
-        from reclaim.providers.kimi import list_messages  # noqa: F401  (import check)
         import reclaim.providers.kimi as kimi
         data = json.loads((FIX / 'kimi_messages_sample.json').read_text())
         msgs = list(reversed(data['messages']))  # provider reverses newest-first
-        cls.chat = kimi.parse_chat({'id': 'k1', 'name': 'Kimi Test'}, msgs)
+        cls.chat, _ = kimi.parse_chat({'id': 'k1', 'name': 'Kimi Test'}, msgs)
 
     def test_chronological_order(self):
         self.assertEqual(self.chat.turns[0].role, 'user')
@@ -351,13 +365,16 @@ class TestChatGPTProvider(unittest.TestCase):
         nodes = cg._linearize(data['mapping'], data['current_node'])
         self.assertEqual(len(nodes), 2)
         turn, assets = cg._node_to_turn(nodes[1])
+        assert turn is not None
         self.assertEqual(assets, ['file-XYZ123'])
         self.assertIn('Here it is:', turn.text)
         self.assertIn('As you can see...', turn.text)
 
     def test_asset_regex_variants(self):
         import reclaim.providers.chatgpt as cg
-        self.assertEqual(cg._ASSET_RE.search('file-service://file-ABC123').group(1),
-                         'file-ABC123')
-        self.assertEqual(cg._ASSET_RE.search('sediment://file_ABC123').group(1),
-                         'file_ABC123')
+        m1 = cg._ASSET_RE.search('file-service://file-ABC123')
+        assert m1 is not None
+        self.assertEqual(m1.group(1), 'file-ABC123')
+        m2 = cg._ASSET_RE.search('sediment://file_ABC123')
+        assert m2 is not None
+        self.assertEqual(m2.group(1), 'file_ABC123')

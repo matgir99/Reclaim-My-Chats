@@ -41,7 +41,6 @@ from __future__ import annotations
 
 import argparse
 import base64
-import json
 import re
 import time
 from pathlib import Path
@@ -104,7 +103,7 @@ def _extract_datauri_images(content: str):
     images = []
 
     def repl(m):
-        _alt, mime, b64 = m.group(1), m.group(2), m.group(3)
+        _alt, _mime, b64 = m.group(1), m.group(2), m.group(3)
         try:
             images.append(base64.b64decode(re.sub(r'\s', '', b64)))
         except Exception:

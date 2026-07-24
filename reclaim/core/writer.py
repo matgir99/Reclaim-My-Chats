@@ -31,7 +31,7 @@ import re
 import time
 from pathlib import Path
 
-from .model import Attachment, Chat
+from .model import Chat
 
 _IMG_MAGIC = [(b'\x89PNG', '.png'), (b'\xff\xd8\xff', '.jpg'),
               (b'GIF8', '.gif'), (b'RIFF', '.webp')]
