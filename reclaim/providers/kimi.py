@@ -27,7 +27,7 @@ from pathlib import Path
 from ..core import browser
 from ..core.manifest import SyncState, write_manifest
 from ..core.model import Chat, Turn
-from ..core.writer import write_chat
+from ..core.writer import write_chat, write_raw
 
 BASE_URL = 'https://www.kimi.com'
 API = 'https://www.kimi.com/apiv2'
@@ -254,6 +254,10 @@ def run(page, token: str, chats: list[dict], out_dir: Path,
             chat = parse_chat(meta, messages)
             n_imgs = _materialize_images(page, chat)
             stats = write_chat(chat, out_dir)
+            try:
+                write_raw(stats['dir'], {'meta': meta, 'messages': messages})
+            except Exception:
+                pass
             sync.mark(chat_id, updated, str(stats['md']))
             results.append({'id': chat_id, 'title': chat.title, 'ok': True,
                             'duration_s': round(time.time() - t0, 1),

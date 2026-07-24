@@ -24,7 +24,7 @@ from pathlib import Path
 from ..core import browser
 from ..core.manifest import SyncState, write_manifest
 from ..core.model import Attachment, Chat, Turn
-from ..core.writer import img_ext, slugify, write_chat
+from ..core.writer import img_ext, slugify, write_chat, write_raw
 
 LIBRARY_URL = 'https://aistudio.google.com/library'
 PROVIDER = 'aistudio'
@@ -531,7 +531,8 @@ def extract_dom_fallback(page) -> dict:
 # Main (scrape mode)
 # ---------------------------------------------------------------------------
 def run(page, chats: list[dict], out_dir: Path, keep_raw: bool = False,
-        resume: bool = False, updated_map: dict | None = None) -> list[dict]:
+        resume: bool = False, updated_map: dict | None = None,
+        save_raw: bool = True) -> list[dict]:
     """Scrape the given chats. Returns per-chat result dicts for the manifest."""
     out_dir = Path(out_dir)
     drive = DriveClient(page)
@@ -563,14 +564,14 @@ def run(page, chats: list[dict], out_dir: Path, keep_raw: bool = False,
                 raise RuntimeError('all extraction paths failed')
 
             chat['title'] = parsed.get('title') or chat.get('title', '')
-            if keep_raw and path == 'rpc':
-                raw_dir = out_dir / (slugify(chat['title']) or chat['id'][:20])
-                raw_dir.mkdir(parents=True, exist_ok=True)
-                (raw_dir / 'raw_rpc.json').write_text(text)
-
             canonical = entries_to_chat(parsed, chat['id'], chat['url'],
                                         drive=drive)
             stats = write_chat(canonical, out_dir)
+            if save_raw and path == 'rpc':
+                try:
+                    write_raw(stats['dir'], json.loads(text))
+                except Exception as e:
+                    print(f'      raw save error: {e}')
             sync.mark(chat['id'], updated_map.get(chat['id']), str(stats['md']))
             results.append({'id': chat['id'], 'title': chat['title'], 'ok': True,
                             'path': path, 'duration_s': round(time.time() - t0, 1),
@@ -596,7 +597,9 @@ def main(argv=None):
     ap.add_argument('--start', type=int, default=0)
     ap.add_argument('--limit', type=int, default=0)
     ap.add_argument('--resume', action='store_true')
-    ap.add_argument('--keep-raw', action='store_true')
+    ap.add_argument('--keep-raw', action='store_true', help=argparse.SUPPRESS)
+    ap.add_argument('--no-raw', action='store_true',
+                    help='Do not save media-stripped raw.json per chat')
     ap.add_argument('-o', '--output-dir',
                     default=str(Path(__file__).resolve().parents[2] / 'Google AI Studio'))
     args = ap.parse_args(argv)
@@ -633,7 +636,8 @@ def main(argv=None):
 
             print(f"\n{'=' * 50}\n  {len(chats)} chats\n{'=' * 50}\n")
             results = run(page, chats, out_dir, keep_raw=args.keep_raw,
-                          resume=args.resume, updated_map=updated_map)
+                          resume=args.resume, updated_map=updated_map,
+                          save_raw=not args.no_raw)
             manifest = write_manifest(out_dir, PROVIDER, results, started)
             ok = sum(1 for r in results if r.get('ok'))
             print(f"\n{'=' * 50}")

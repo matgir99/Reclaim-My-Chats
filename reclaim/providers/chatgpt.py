@@ -28,7 +28,7 @@ from pathlib import Path
 from ..core import browser
 from ..core.manifest import SyncState, write_manifest
 from ..core.model import Attachment, Chat, Turn
-from ..core.writer import write_chat
+from ..core.writer import write_chat, write_raw
 from .chatgpt_import import _SKIP_CONTENT_TYPES, _IMG_EXT, _linearize
 
 BASE_URL = 'https://chatgpt.com'
@@ -177,7 +177,7 @@ def _download_asset(page, token: str, file_id: str) -> tuple[bytes | None, str]:
     return None, ''
 
 
-def fetch_conversation(page, token: str, conv_id: str, title: str = '') -> Chat:
+def fetch_conversation(page, token: str, conv_id: str, title: str = '') -> tuple[Chat, dict]:
     data = _get(page, token, f'{BASE_URL}/backend-api/conversation/{conv_id}')
     nodes = _linearize(data.get('mapping') or {}, data.get('current_node'))
     turns = []
@@ -200,9 +200,9 @@ def fetch_conversation(page, token: str, conv_id: str, title: str = '') -> Chat:
                     filename=name + ext, kind='document', data=blob,
                     description=fid))
         turns.append(turn)
-    return Chat(id=conv_id, title=title or data.get('title', '') or '(untitled)',
-                source_url=f'{BASE_URL}/c/{conv_id}', turns=turns,
-                provider=PROVIDER)
+    return (Chat(id=conv_id, title=title or data.get('title', '') or '(untitled)',
+                 source_url=f'{BASE_URL}/c/{conv_id}', turns=turns,
+                 provider=PROVIDER), data)
 
 
 def run(page, token: str, items: list[dict], out_dir: Path,
@@ -219,8 +219,12 @@ def run(page, token: str, items: list[dict], out_dir: Path,
             continue
         t0 = time.time()
         try:
-            chat = fetch_conversation(page, token, cid, item.get('title', ''))
+            chat, raw = fetch_conversation(page, token, cid, item.get('title', ''))
             stats = write_chat(chat, out_dir)
+            try:
+                write_raw(stats['dir'], raw)
+            except Exception:
+                pass
             sync.mark(cid, updated, str(stats['md']))
             results.append({'id': cid, 'title': chat.title, 'ok': True,
                             'duration_s': round(time.time() - t0, 1),

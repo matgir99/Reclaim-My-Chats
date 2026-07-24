@@ -89,6 +89,28 @@ def _dump_chat_json(chat: Chat, chat_dir: Path, saved: list[dict]) -> None:
                                                    ensure_ascii=False))
 
 
+_RAW_PLACEHOLDER = '<omitted: media bytes saved as files in this folder>'
+
+
+def write_raw(chat_dir: Path, obj, max_str: int = 200_000) -> Path:
+    """Write raw.json: the provider's original response, with oversized
+    (media/base64) string payloads replaced by a placeholder — images are
+    already saved as files, so duplicating them here is waste.
+    """
+    def strip(o):
+        if isinstance(o, str):
+            return _RAW_PLACEHOLDER if len(o) > max_str else o
+        if isinstance(o, list):
+            return [strip(v) for v in o]
+        if isinstance(o, dict):
+            return {k: strip(v) for k, v in o.items()}
+        return o
+
+    path = Path(chat_dir) / 'raw.json'
+    path.write_text(json.dumps(strip(obj), ensure_ascii=False))
+    return path
+
+
 def write_chat(chat: Chat, out_dir: Path) -> dict:
     """Write one chat folder. Returns stats dict."""
     slug = slugify(chat.title) or chat.id[:20]

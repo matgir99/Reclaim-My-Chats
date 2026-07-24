@@ -22,7 +22,7 @@ from pathlib import Path
 from ..core import browser
 from ..core.manifest import SyncState, write_manifest
 from ..core.model import Attachment, Chat, Turn
-from ..core.writer import write_chat
+from ..core.writer import write_chat, write_raw
 
 BASE_URL = 'https://chat.deepseek.com/'
 PROVIDER = 'deepseek'
@@ -234,6 +234,10 @@ def run(page, records: list[dict], out_dir: Path, resume: bool = False,
         try:
             materialize_attachments(page, chat)
             stats = write_chat(chat, out_dir)
+            try:
+                write_raw(stats['dir'], rec)
+            except Exception:
+                pass
             sync.mark(chat.id, updated_map.get(chat.id), str(stats['md']))
             users = sum(1 for t in chat.visible_turns() if t.role == 'user')
             results.append({'id': chat.id, 'title': chat.title, 'ok': True,

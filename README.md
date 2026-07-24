@@ -36,32 +36,32 @@ python3.14 -m playwright install chromium   # or use system Chrome (default)
 
 ```bash
 # Google AI Studio (first run opens a window for Google login)
-python -m reclaim scrape aistudio                # full library
-python -m reclaim scrape aistudio --resume       # incremental (skips unchanged)
-python -m reclaim scrape aistudio --only qnap    # title filter
+python3.14 -m reclaim scrape aistudio                # full library
+python3.14 -m reclaim scrape aistudio --resume       # incremental (skips unchanged)
+python3.14 -m reclaim scrape aistudio --only qnap    # title filter
 
 # DeepSeek
-python -m reclaim scrape deepseek --resume
+python3.14 -m reclaim scrape deepseek --resume
 
 # Detached weekly runs (PID + log, survives terminal close)
 ./run.sh aistudio --resume     # ./run.sh status | stop
 
 # AI Studio offline (no browser): download the "Google AI Studio" folder
 # from drive.google.com (or a Takeout zip), then
-python -m reclaim parse aistudio --from-folder ~/Downloads/"Google AI Studio" \
+python3.14 -m reclaim parse aistudio --from-folder ~/Downloads/"Google AI Studio" \
     --titles titles.json        # optional drive_id -> title map
 
 # ChatGPT: export at chatgpt.com (Settings → Data Controls → Export), then
-python -m reclaim import chatgpt ~/Downloads/conversations.json
+python3.14 -m reclaim import chatgpt ~/Downloads/conversations.json
 # or, with media/files (recommended): run scrapemychats first, then
-python -m reclaim import scrapemychats ~/path/to/scrapemychats/export
+python3.14 -m reclaim import scrapemychats ~/path/to/scrapemychats/export
 
 # Kimi / Claude / Grok / Gemini: install Kept (docs/providers/kimi.md),
 # sync in your browser, then
-python -m reclaim import kept ~/.kept/vault --providers kimi
+python3.14 -m reclaim import kept ~/.kept/vault --providers kimi
 
 # Push the whole archive into HAEVN's search UI
-python -m reclaim export haevn-md . archive.zip
+python3.14 -m reclaim export haevn-md . archive.zip
 ```
 
 Backwards-compatible entry points still work:
