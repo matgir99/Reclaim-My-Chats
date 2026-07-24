@@ -277,6 +277,36 @@ def get_chat_list(page) -> list[dict]:
     return [l for l in links if not (l['url'] in seen or seen.add(l['url']))]
 
 
+def list_prompts(page) -> list[dict]:
+    """Fast library listing via ListPrompts replay: id, title, updated_at
+    (epoch seconds). Falls back to DOM scraping if the RPC shape changes."""
+    status, text = rpc_call(page, 'ListPrompts', [])
+    if status != 200:
+        raise RuntimeError(f'ListPrompts HTTP {status}')
+    data = json.loads(text)
+    out = []
+    for entry in data[0] if data and isinstance(data[0], list) else []:
+        try:
+            pid = entry[0]
+            if not isinstance(pid, str) or not pid.startswith('prompts/'):
+                continue
+            meta = entry[4] or []
+            title = meta[0] if meta and isinstance(meta[0], str) else ''
+            updated = None
+            ts = meta[4] if len(meta) > 4 else None
+            if isinstance(ts, list) and ts and isinstance(ts[0], list) and ts[0]:
+                updated = ts[0][0]
+            cid = pid.split('/', 1)[1]
+            out.append({'id': cid,
+                        'url': f'https://aistudio.google.com/prompts/{cid}',
+                        'title': title, 'updated_at': updated})
+        except Exception:
+            continue
+    if not out:
+        raise RuntimeError('ListPrompts returned no prompts (shape changed?)')
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Fallbacks: response interception, then DOM scrape
 # ---------------------------------------------------------------------------
@@ -501,17 +531,18 @@ def extract_dom_fallback(page) -> dict:
 # Main (scrape mode)
 # ---------------------------------------------------------------------------
 def run(page, chats: list[dict], out_dir: Path, keep_raw: bool = False,
-        resume: bool = False) -> list[dict]:
+        resume: bool = False, updated_map: dict | None = None) -> list[dict]:
     """Scrape the given chats. Returns per-chat result dicts for the manifest."""
     out_dir = Path(out_dir)
     drive = DriveClient(page)
     sync = SyncState(out_dir, PROVIDER)
+    updated_map = updated_map or {}
     results = []
 
     for i, chat in enumerate(chats):
         label = (chat.get('title') or chat['id'])[:55]
-        if resume and sync.known(chat['id']):
-            print(f'[{i + 1}/{len(chats)}] {label} -> skip (already saved)')
+        if resume and sync.is_unchanged(chat['id'], updated_map.get(chat['id'])):
+            print(f'[{i + 1}/{len(chats)}] {label} -> skip (unchanged)')
             continue
         t0 = time.time()
         try:
@@ -540,7 +571,7 @@ def run(page, chats: list[dict], out_dir: Path, keep_raw: bool = False,
             canonical = entries_to_chat(parsed, chat['id'], chat['url'],
                                         drive=drive)
             stats = write_chat(canonical, out_dir)
-            sync.mark(chat['id'], None, str(stats['md']))
+            sync.mark(chat['id'], updated_map.get(chat['id']), str(stats['md']))
             results.append({'id': chat['id'], 'title': chat['title'], 'ok': True,
                             'path': path, 'duration_s': round(time.time() - t0, 1),
                             **{k: stats[k] for k in ('turns', 'chars', 'images', 'docs')}})
@@ -582,8 +613,14 @@ def main(argv=None):
             if args.url:
                 cid = args.url.split('/prompts/')[-1].split('?')[0].split('#')[0]
                 chats = [{'id': cid, 'url': args.url.split('?')[0], 'title': ''}]
+                updated_map = {}
             else:
-                chats = get_chat_list(page)
+                try:
+                    chats = list_prompts(page)
+                except Exception as e:
+                    print(f'ListPrompts failed ({e}); falling back to DOM scan')
+                    chats = get_chat_list(page)
+                updated_map = {c['id']: c.get('updated_at') for c in chats}
             if args.only:
                 chats = [c for c in chats if args.only.lower() in (c.get('title') or '').lower()]
             if args.start:
@@ -596,7 +633,7 @@ def main(argv=None):
 
             print(f"\n{'=' * 50}\n  {len(chats)} chats\n{'=' * 50}\n")
             results = run(page, chats, out_dir, keep_raw=args.keep_raw,
-                          resume=args.resume)
+                          resume=args.resume, updated_map=updated_map)
             manifest = write_manifest(out_dir, PROVIDER, results, started)
             ok = sum(1 for r in results if r.get('ok'))
             print(f"\n{'=' * 50}")
