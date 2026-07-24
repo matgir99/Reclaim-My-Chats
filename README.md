@@ -2,7 +2,7 @@
 
 Reclaim your AI chat history. Bulk-export conversations from AI chat platforms into clean local Markdown folders — full text with LaTeX intact, model thoughts filtered out, original-quality images, and real downloaded attachments.
 
-- `ROADMAP.md` — development plan
+- `docs/PLAN.md` — master plan (start to end)
 - `docs/research/ECOSYSTEM.md` — survey of all existing open-source export tools
 - `docs/research/ANALYSIS.md` — critical analysis: best tool per platform, our gaps, recommended portfolio
 - `NOTICE.md` — attribution and licensing notes (MIT)
@@ -17,7 +17,7 @@ ReclaimMyChats/
 ├── Deepseek Chat/        # scraper + output for chat.deepseek.com
 │   ├── scrape_deepseek.py
 │   └── <chat folders>/
-├── Kimi Chat/            # (planned — see ROADMAP.md)
+├── Kimi Chat/            # (planned — see docs/PLAN.md)
 └── .playwright-profile/  # shared browser profile (cookies, sessions)
 ```
 

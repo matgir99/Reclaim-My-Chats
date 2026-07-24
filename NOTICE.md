@@ -11,7 +11,7 @@ copied verbatim unless explicitly stated below.
 
 | Project | What we used | License |
 |---|---|---|
-| [egroup-labs/kept](https://github.com/egroup-labs/kept) | Kimi endpoint/auth research (planned, Phase 1 of ROADMAP) | MIT |
+| [egroup-labs/kept](https://github.com/egroup-labs/kept) | Kimi endpoint/auth research + vault importer (planned, WS3 of `docs/PLAN.md`) | MIT |
 | [aiamblichus/haevn](https://github.com/aiamblichus/haevn) | Provider-architecture and bulk-sync resume design ideas | MIT |
 | [blueberrycongee/DeepSeek-Chat-Exporter](https://github.com/blueberrycongee/DeepSeek-Chat-Exporter) | "Extract original markdown from app state instead of rendered HTML" — the principle behind our IndexedDB approach | MIT |
 | [pionxzh/chatgpt-exporter](https://github.com/pionxzh/chatgpt-exporter) / [organvm/a-i-chat--exporter](https://github.com/organvm/a-i-chat--exporter) | ChatGPT internal `/backend-api/` knowledge (planned, Phase 2) | MIT |
