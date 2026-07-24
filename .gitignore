@@ -32,3 +32,7 @@ test_*/
 # Logs and run state
 *.log
 .scrape.pid
+
+# Scraper state (contain chat titles)
+.reclaim_manifest.json
+.last_sync_*.json
