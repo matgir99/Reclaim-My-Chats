@@ -7,7 +7,7 @@ Scrapers for AI chat platforms — extract full conversation history (text, imag
 ```
 Scrape_Webpages/
 ├── Google AI Studio/     # scraper + output for aistudio.google.com
-│   ├── scrape_aistudio.py
+│   ├── scrape_googleaistudio.py
 │   └── <chat folders>/
 ├── Deepseek Chat/        # scraper + output for chat.deepseek.com
 │   ├── scrape_deepseek.py
@@ -29,15 +29,16 @@ Scrapes all conversations from your library. Extracts full markdown text (user p
 
 ```bash
 cd "Google AI Studio"
-python3.14 scrape_aistudio.py              # full library
-python3.14 scrape_aistudio.py --url <URL>  # single chat
+python3.14 scrape_googleaistudio.py              # full library
+python3.14 scrape_googleaistudio.py --url <URL>  # single chat
 ```
 
 See `Google AI Studio/README.md` for details.
 
 ## DeepSeek Chat
 
-Scrapes all conversations from your sidebar. Extracts markdown text with thinking blocks collapsed in `<details>` tags.
+Scrapes all conversations from your sidebar. Extracts markdown text with thinking
+blocks omitted.
 
 ```bash
 cd "Deepseek Chat"

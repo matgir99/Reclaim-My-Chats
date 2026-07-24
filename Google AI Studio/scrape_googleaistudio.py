@@ -31,51 +31,36 @@ except ImportError:
 # -- Config --
 LIBRARY_URL = "https://aistudio.google.com/library"
 SCRIPT_DIR = Path(__file__).resolve().parent
-USER_DATA_DIR = str(SCRIPT_DIR / ".playwright-profile")
-
-THOUGHT_INDICATORS = [
-    # All model thoughts start with a bold gerund/verb heading.
-    # We match if the bold word starts with any of these stems.
-    'Research', 'Search', 'Analyz', 'Review', 'Investigat',
-    'Scrutiniz', 'Check', 'Examin', 'Refin', 'Evaluat',
-    'Formulat', 'Plan', 'Verif', 'Compil', 'Synthes',
-    'Gather', 'Assess', 'Pinpoint', 'Explor', 'Defin',
-    'Compar', 'Process', 'Generat', 'Creat', 'Sett',
-    'Navigat', 'Open', 'Extract', 'Beginn', 'Begin', 'Start',
-    'Prepar', 'Organiz', 'Summariz', 'Translat', 'Calculat',
-    'Comput', 'Identif', 'Locat', 'Find', 'Retriev',
-    'Comprehend', 'Understand', 'Draft', 'Outlin', 'Div',
-    'Estimat', 'Crunche', 'Tackl', 'Work', 'Break',
-    'Decid', 'Look', 'Figur', 'Sort', 'Filter',
-    'Pull', 'Focus', 'Scop', 'Map', 'Hon', 'Brainstorm',
-    'Deconstruct', 'Construct', 'Polish', 'Detail',
-    'Decipher', 'Interpret', 'Consider', 'Initiat', 'Clarif',
-    'Unpack', 'Establish', 'Address', 'Fram', 'Determin',
-    'Connect', 'Unravel', 'Dissect', 'Decompos', 'Encapsul',
-    'Elucidat', 'Re-evaluat', 'Reexamin', 'Reconsider',
-    'Synthesiz', 'Consolidat', 'Integrat', 'Compil',
-    'Diagnos', 'Troubleshoot', 'Debug', 'Optimiz',
-    'Visualiz', 'Conceptualiz', 'Structur', 'Architect',
-    'Reconcil', 'Harmoniz', 'Align', 'Calibrat',
-    'Propos', 'Recommend', 'Suggest', 'Advise',
-]
-
-# Model turns starting with self-referential introspection are thoughts.
-INTROSPECTION_PREFIXES = [
-    "I've been", "I'm currently", "I'm going", "I'm working", "I'm thinking",
-    "I am currently", "I am going", "I am working", "I am thinking",
-    "I need to", "I'll need to", "I will need to", "I'll start", "I will start",
-    "I'll focus", "I will focus", "I'll begin", "I will begin",
-    "Let me", "Let\u2019s", "Let's", "Let us", "My goal", "My aim", "My task",
-    "First, I", "First I", "Now I", "Next, I", "Next I",
-    "The user is", "The user wants", "The user's", "The query",
-]
-
+USER_DATA_DIR = str(SCRIPT_DIR.parent / ".playwright-profile")
 
 # -- Browser helpers --
+def _cdp_set_window_bounds(page, state='normal', left=None, top=None):
+    """Set browser window state via CDP. Used to hide window during scraping and
+    show it only when login is required."""
+    try:
+        cdp = page.context.new_cdp_session(page)
+        target = cdp.send('Browser.getWindowForTarget')
+        bounds = {'windowState': state}
+        if left is not None:
+            bounds['left'] = left
+        if top is not None:
+            bounds['top'] = top
+        cdp.send('Browser.setWindowBounds', {
+            'windowId': target['windowId'],
+            'bounds': bounds,
+        })
+        cdp.detach()
+    except Exception:
+        pass
+
 def clear_cache(page):
     try:
         s = page.context.new_cdp_session(page)
+        # Increase inspector response cache so large RPC bodies are not evicted
+        s.send('Network.enable', {
+            'maxTotalBufferSize': 100_000_000,
+            'maxResourceBufferSize': 100_000_000,
+        })
         s.send('Network.clearBrowserCache')
         s.detach()
     except Exception:
@@ -85,13 +70,17 @@ def ensure_logged_in(page):
     page.goto(LIBRARY_URL, wait_until="domcontentloaded", timeout=60000)
     time.sleep(3)
     if "accounts.google.com" in page.url:
+        # Show window for login (launch args keep it off-screen otherwise)
+        page.bring_to_front()
+        _cdp_set_window_bounds(page, state='normal', left=100, top=100)
         print("\n" + "=" * 50)
         print("  LOG IN to Google in the browser window.")
         print("  Waiting (up to 5 minutes)...")
         print("=" * 50 + "\n")
         try:
             page.wait_for_url("**/aistudio.google.com/**", timeout=300000)
-            print("Logged in!\n")
+            print("Logged in! Hiding window...\n")
+            _cdp_set_window_bounds(page, state='minimized')
             time.sleep(3)
         except PwTimeout:
             raise RuntimeError("Login timeout")
@@ -99,20 +88,41 @@ def ensure_logged_in(page):
 
 # -- RPC interception (Pass 1) --
 def intercept_rpc(page, chat_url: str) -> tuple[dict | None, int]:
-    """Intercept ResolveDriveResource RPC. Returns (parsed_data, content_length)."""
+    """Intercept ResolveDriveResource RPC. Returns (parsed_data, content_length).
+    
+    Uses an on_response listener and a large inspector cache (set via CDP) to
+    capture large RPC bodies before Chrome evicts them.
+    """
     clear_cache(page)
     rinfo = {}
+    
     def _on_response(response):
         if 'ResolveDriveResource' in response.url:
             try:
                 rinfo['cl'] = int(response.headers.get('content-length', '0'))
+                # Capture body IMMEDIATELY — before inspector cache evicts it
+                body = response.body()
+                if body:
+                    text = body.decode('utf-8')
+                    if text[0] == ')':
+                        text = text[text.index('{'):]
+                    rinfo['data'] = json.loads(text)
             except Exception:
                 pass
+    
     page.on('response', _on_response)
     try:
-        with page.expect_response(lambda r: 'ResolveDriveResource' in r.url, timeout=45000) as resp_info:
+        with page.expect_response(lambda r: 'ResolveDriveResource' in r.url, timeout=90000) as resp_info:
             page.goto(chat_url, wait_until="domcontentloaded", timeout=60000)
-        return parse_rpc(resp_info.value.json()), rinfo.get('cl', 0)
+        
+        # Use the body we captured in the listener (avoids eviction)
+        if 'data' in rinfo:
+            return parse_rpc(rinfo['data']), rinfo.get('cl', 0)
+        # Fallback: try resp_info.value.json() if listener missed it
+        try:
+            return parse_rpc(resp_info.value.json()), rinfo.get('cl', 0)
+        except Exception:
+            return None, rinfo.get('cl', 0)
     except Exception:
         return None, rinfo.get('cl', 0)
     finally:
@@ -173,8 +183,6 @@ def extract_all_from_dom(page, chat_dir: Path) -> tuple[list[dict], list[dict]]:
     time.sleep(0.3)
 
     saved_imgs = 0
-    indicators_js = json.dumps(THOUGHT_INDICATORS)
-    introspection_js = json.dumps(INTROSPECTION_PREFIXES)
 
     for i in range(n):
         # Scroll turn into view
@@ -221,8 +229,6 @@ def extract_all_from_dom(page, chat_dir: Path) -> tuple[list[dict], list[dict]]:
 
         # ---- Extract text ----
         result = page.evaluate(f"""(i) => {{
-            const indicators = {indicators_js};
-            const introPrefixes = {introspection_js};
             const turns = document.querySelectorAll('.chat-turn-container');
             const t = turns[i];
             if (!t) return {{text:'',role:'unknown',is_thought:false}};
@@ -234,24 +240,9 @@ def extract_all_from_dom(page, chat_dir: Path) -> tuple[list[dict], list[dict]]:
                 const txt = (c.textContent || '').trim();
                 if (txt && txt.length > 5) parts.push(txt);
             }}
-            let text = parts.join('\\n\\n');
-            let is_thought = false;
-            if (role === 'model') {{
-                // Check for **BoldThought** pattern
-                if (text.startsWith('**')) {{
-                    const m = text.match(/^\\*\\*(.+?)\\*\\*/);
-                    if (m) {{
-                        const first = (m[1].split(' ')[0] || '');
-                        if (indicators.some(w => first.startsWith(w))) is_thought = true;
-                    }}
-                }}
-                // Also check for non-bold introspection (after optional **Bold** header)
-                if (!is_thought) {{
-                    const body = text.replace(/^\\*\\*[\\s\\S]+?\\*\\*/, '').trimLeft();
-                    if (introPrefixes.some(p => body.startsWith(p))) is_thought = true;
-                }}
-            }}
-            return {{text, role, is_thought}};
+            const text = parts.join('\\n\\n');
+            // Thought detection is done by positional post-processing on the full turn list.
+            return {{text, role, is_thought:false}};
         }}""", i)
 
         if result.get('text') and len(result['text']) > 10:
@@ -384,7 +375,8 @@ def main():
             user_data_dir=USER_DATA_DIR, headless=False,
             executable_path="/usr/bin/google-chrome-stable",
             args=["--disable-blink-features=AutomationControlled",
-                  "--disable-features=AutomationControlled", "--disable-dev-shm-usage"],
+                  "--disable-features=AutomationControlled", "--disable-dev-shm-usage",
+                  "--window-position=-3000,-3000"],  # off-screen until login needed
             viewport={"width": 1400, "height": 900},
         )
         page = ctx.pages[0] if ctx.pages else ctx.new_page()

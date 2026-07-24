@@ -8,6 +8,8 @@ Extracts all conversations from [chat.deepseek.com](https://chat.deepseek.com/) 
 
 This is the clean download path — equivalent to Google AI Studio's RPC interception approach. No DOM scraping needed.
 
+Only **user prompts** (`REQUEST` fragments) and **final assistant answers** (`RESPONSE` fragments) are saved. Internal `THINK` fragments are omitted, so the exported markdown contains no model reasoning.
+
 ### Data structure
 
 Each IndexedDB record:
@@ -47,19 +49,15 @@ User prompt text...
 
 ---
 
-<details>
-<summary>Thinking</summary>
-Thought for 11 seconds
-Read 10 web pages
-Model reasoning with citations...
-</details>
-
 ## Assistant
 Model response with proper $\\LaTeX$ formulas and citations...
+
+---
 ```
 
 ## Limitations
 
+- **Internal reasoning** (`THINK` fragments) is excluded from the exported markdown.
 - **Authentication** uses the shared `.playwright-profile/` (persistent browser cookies). Must be logged in at least once.
 - **IndexedDB** is local — only chats that have been loaded in the browser are available.
 - **Citations** are mapped to URLs from SEARCH fragments; not all chats have search enabled.
