@@ -102,4 +102,28 @@ deepseek = {
 
 (FIX / 'aistudio_sample.json').write_text(json.dumps(aistudio))
 (FIX / 'deepseek_sample.json').write_text(json.dumps(deepseek))
+
+# makersuite.prompt Drive-file format (offline parse mode)
+prompt_file = {
+    'runSettings': {'model': 'models/gemini-test', 'temperature': 1.0},
+    'systemInstruction': {},
+    'chunkedPrompt': {
+        'chunks': [
+            {'text': 'Upload question', 'role': 'user', 'tokenCount': 3,
+             'createTime': '2026-01-01T00:00:00Z',
+             'parts': [{'fileData': {'fileId': '1DriveFileIdSynthetic000000000',
+                                     'displayName': 'notes.pdf'}}]},
+            {'text': '**Thinking aloud**\n\nI consider the question...',
+             'role': 'model', 'isThought': True, 'tokenCount': 9},
+            {'text': 'Here is the answer with an image:',
+             'role': 'model', 'tokenCount': 7,
+             'parts': [{'text': 'Here is the answer with an image:'},
+                       {'inlineData': {'mimeType': 'image/png', 'data': PNG_B64}}]},
+            {'text': 'And the follow-up explanation.',
+             'role': 'model', 'tokenCount': 5, 'finishReason': 'STOP'},
+        ],
+        'pendingInputs': [{'text': '', 'role': 'user'}],
+    },
+}
+(FIX / 'aistudio_prompt_file.json').write_text(json.dumps(prompt_file))
 print('fixtures written to', FIX)

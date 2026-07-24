@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from reclaim.core.model import Attachment, Chat, Turn
 from reclaim.core.writer import img_ext, slugify, write_chat
 from reclaim.providers.aistudio import entries_to_chat, parse_rpc
+from reclaim.providers.aistudio_files import parse_prompt_file
 from reclaim.providers.deepseek import record_to_chat
 
 FIX = Path(__file__).resolve().parent / 'fixtures'
@@ -58,6 +59,37 @@ class TestAistudioParse(unittest.TestCase):
         att = chat.turns[-1].attachments[0]
         self.assertIsNone(att.data)  # no drive client -> link only
         self.assertIn('drive.google.com', att.source_url)
+
+
+class TestAistudioPromptFile(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.chat = parse_prompt_file(
+            json.loads((FIX / 'aistudio_prompt_file.json').read_text()),
+            chat_id='synthetic-drive-id', title='Prompt File Chat')
+
+    def test_parsed(self):
+        self.assertIsNotNone(self.chat)
+        self.assertEqual(self.chat.title, 'Prompt File Chat')
+
+    def test_thoughts_from_is_thought(self):
+        self.assertTrue(self.chat.had_thoughts)
+        vis = self.chat.visible_turns()
+        self.assertEqual(len(vis), 3)  # thought chunk excluded
+
+    def test_image_from_inline_data(self):
+        imgs = [t for t in self.chat.turns if t.images]
+        self.assertEqual(len(imgs), 1)
+        self.assertTrue(imgs[0].images[0].startswith(b'\x89PNG'))
+
+    def test_attachment_from_file_data(self):
+        atts = self.chat.turns[0].attachments
+        self.assertEqual(len(atts), 1)
+        self.assertEqual(atts[0].filename, 'notes.pdf')
+        self.assertIn('drive.google.com', atts[0].source_url)
+
+    def test_non_prompt_json_rejected(self):
+        self.assertIsNone(parse_prompt_file({'hello': 'world'}))
 
 
 class TestDeepseekRecord(unittest.TestCase):
