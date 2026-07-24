@@ -16,6 +16,7 @@ from reclaim.core.model import Attachment, Chat, Turn
 from reclaim.core.writer import img_ext, slugify, write_chat
 from reclaim.providers.aistudio import entries_to_chat, parse_rpc
 from reclaim.providers.aistudio_files import parse_prompt_file
+from reclaim.providers.chatgpt_import import parse_conversation
 from reclaim.providers.deepseek import record_to_chat
 from reclaim.providers.kept_vault import parse_vault_file
 
@@ -159,6 +160,35 @@ class TestKeptVault(unittest.TestCase):
             self.assertIsNone(parse_vault_file(tmp))
         finally:
             tmp.unlink()
+
+
+class TestChatGPTImport(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        conv = json.loads((FIX / 'chatgpt_export_sample.json').read_text())[0]
+        cls.chat = parse_conversation(conv)
+
+    def test_parsed(self):
+        self.assertIsNotNone(self.chat)
+        self.assertEqual(self.chat.title, 'Synthetic ChatGPT Chat')
+        self.assertIn('conv-synthetic-0001', self.chat.source_url)
+
+    def test_current_branch_linearized(self):
+        texts = [t.text for t in self.chat.turns]
+        self.assertIn('current branch reply', texts[-1])
+        self.assertNotIn('old branch reply (not current)', ' '.join(texts))
+
+    def test_hidden_system_and_thoughts_skipped(self):
+        all_text = ' '.join(t.text for t in self.chat.turns)
+        self.assertNotIn('system prompt', all_text)
+        self.assertNotIn('planning how to draw a cat', all_text)
+
+    def test_asset_pointer_becomes_note(self):
+        model_turns = [t for t in self.chat.turns if t.role == 'model']
+        self.assertEqual(len(model_turns), 1)
+        self.assertIn('[image: not included in official export]',
+                      model_turns[0].text)
+        self.assertIn('$e \\approx 2.71828$', model_turns[0].text)
 
 
 class TestWriter(unittest.TestCase):

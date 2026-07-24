@@ -168,4 +168,47 @@ $e \\approx 2.71828$ is Euler's number. Here is the plot:
 kept_dir = FIX / 'kept_vault' / 'kimi'
 kept_dir.mkdir(parents=True, exist_ok=True)
 (kept_dir / '2026-01-01_synthetic-kimi-chat.md').write_text(kept_md)
+
+# synthetic ChatGPT official export (branching + hidden + asset pointer)
+chatgpt_export = [{
+    'id': 'conv-synthetic-0001',
+    'title': 'Synthetic ChatGPT Chat',
+    'create_time': 1700000000.0,
+    'current_node': 'n6',
+    'mapping': {
+        'n1': {'id': 'n1', 'parent': None, 'children': ['n2'],
+               'message': {'id': 'm1', 'author': {'role': 'system'},
+                           'content': {'content_type': 'text', 'parts': ['system prompt']},
+                           'metadata': {'is_visually_hidden_from_conversation': True}}},
+        'n2': {'id': 'n2', 'parent': 'n1', 'children': ['n3'],
+               'message': {'id': 'm2', 'author': {'role': 'user'},
+                           'content': {'content_type': 'text',
+                                       'parts': ['Draw a cat and explain $e$.']},
+                           'metadata': {}}},
+        'n3': {'id': 'n3', 'parent': 'n2', 'children': ['n4'],
+               'message': {'id': 'm3', 'author': {'role': 'assistant'},
+                           'content': {'content_type': 'thoughts',
+                                       'parts': ['planning how to draw a cat']},
+                           'metadata': {}}},
+        'n4': {'id': 'n4', 'parent': 'n3', 'children': ['n5', 'n6'],
+               'message': {'id': 'm4', 'author': {'role': 'assistant'},
+                           'content': {'content_type': 'multimodal_text',
+                                       'parts': ['Here is your cat:',
+                                                  {'content_type': 'image_asset_pointer',
+                                                   'asset_pointer': 'file-service://file-ABC'},
+                                                  'And $e \\approx 2.71828$.']},
+                           'metadata': {}}},
+        'n5': {'id': 'n5', 'parent': 'n4', 'children': [],
+               'message': {'id': 'm5', 'author': {'role': 'user'},
+                           'content': {'content_type': 'text',
+                                       'parts': ['old branch reply (not current)']},
+                           'metadata': {}}},
+        'n6': {'id': 'n6', 'parent': 'n4', 'children': [],
+               'message': {'id': 'm6', 'author': {'role': 'user'},
+                           'content': {'content_type': 'text',
+                                       'parts': ['current branch reply']},
+                           'metadata': {}}},
+    },
+}]
+(FIX / 'chatgpt_export_sample.json').write_text(json.dumps(chatgpt_export))
 print('fixtures written to', FIX)
