@@ -212,3 +212,39 @@ chatgpt_export = [{
 }]
 (FIX / 'chatgpt_export_sample.json').write_text(json.dumps(chatgpt_export))
 print('fixtures written to', FIX)
+
+# synthetic Kimi API shapes (scrape mode)
+kimi_messages = {'messages': [  # newest-first as the API returns
+    {'role': 'assistant', 'blocks': [
+        {'type': 'TEXT', 'text': {'content': 'Euler number is $e \\approx 2.718$.'}}],
+     'create_time': 1700000100},
+    {'role': 'assistant', 'blocks': [
+        {'type': 'THINK', 'text': {'content': 'reasoning about e...'}},
+        {'type': 'TEXT', 'text': {'content': 'Here is the answer:'}}],
+     'create_time': 1700000050},
+    {'role': 'user', 'content': 'What is e?', 'create_time': 1700000000},
+]}
+(FIX / 'kimi_messages_sample.json').write_text(json.dumps(kimi_messages))
+
+# synthetic ChatGPT backend-api conversation (asset pointer variant)
+chatgpt_api_conv = {
+    'title': 'API Chat With Asset',
+    'current_node': 'n2',
+    'mapping': {
+        'n1': {'id': 'n1', 'parent': None, 'children': ['n2'],
+               'message': {'id': 'm1', 'author': {'role': 'user'},
+                           'content': {'content_type': 'text',
+                                       'parts': ['make a chart']},
+                           'metadata': {}}},
+        'n2': {'id': 'n2', 'parent': 'n1', 'children': [],
+               'message': {'id': 'm2', 'author': {'role': 'assistant'},
+                           'content': {'content_type': 'multimodal_text',
+                                       'parts': ['Here it is:',
+                                                  {'content_type': 'image_asset_pointer',
+                                                   'asset_pointer': 'file-service://file-XYZ123'},
+                                                  'As you can see...']},
+                           'metadata': {}}},
+    },
+}
+(FIX / 'chatgpt_api_sample.json').write_text(json.dumps(chatgpt_api_conv))
+print('fixtures written to', FIX)

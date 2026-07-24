@@ -36,3 +36,6 @@ test_*/
 # Scraper state (contain chat titles)
 .reclaim_manifest.json
 .last_sync_*.json
+
+# scratch (one-off scripts)
+scratch/

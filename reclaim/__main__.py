@@ -4,6 +4,8 @@ Usage:
   python -m reclaim scrape aistudio [--url X] [--only X] [--start N] [--limit N]
                                     [--resume] [--keep-raw] [-o DIR]
   python -m reclaim scrape deepseek [--url X] [--only X] [--resume] [-o DIR]
+  python -m reclaim scrape kimi     [--url X] [--only X] [--resume] [-o DIR]
+  python -m reclaim scrape chatgpt  [--url X] [--only X] [--resume] [-o DIR]
   python -m reclaim parse  aistudio --from-folder DIR [--titles MAP.json] [-o DIR]
   python -m reclaim import kept VAULT [--providers kimi,claude] [-o DIR]
   python -m reclaim import chatgpt CONVERSATIONS.json [-o DIR]
@@ -19,6 +21,8 @@ import sys
 SCRAPERS = {
     'aistudio': 'reclaim.providers.aistudio',
     'deepseek': 'reclaim.providers.deepseek',
+    'kimi': 'reclaim.providers.kimi',
+    'chatgpt': 'reclaim.providers.chatgpt',
 }
 PARSERS = {
     'aistudio': 'reclaim.providers.aistudio_files',

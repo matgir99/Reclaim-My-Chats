@@ -319,3 +319,45 @@ class TestHaevnExport(unittest.TestCase):
             self.assertIn('Google AI Studio/Zed/image_1.png', names)
         finally:
             shutil.rmtree(root, ignore_errors=True)
+
+
+class TestKimiProvider(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        from reclaim.providers.kimi import list_messages  # noqa: F401  (import check)
+        import reclaim.providers.kimi as kimi
+        data = json.loads((FIX / 'kimi_messages_sample.json').read_text())
+        msgs = list(reversed(data['messages']))  # provider reverses newest-first
+        cls.chat = kimi.parse_chat({'id': 'k1', 'name': 'Kimi Test'}, msgs)
+
+    def test_chronological_order(self):
+        self.assertEqual(self.chat.turns[0].role, 'user')
+        self.assertIn('What is e?', self.chat.turns[0].text)
+
+    def test_blocks_and_think_flag(self):
+        think_turns = [t for t in self.chat.turns if t.thought]
+        self.assertEqual(len(think_turns), 1)
+        self.assertIn('Here is the answer:', think_turns[0].text)
+
+    def test_text_content(self):
+        vis = self.chat.visible_turns()
+        self.assertIn('$e \\approx 2.718$', vis[-1].text)
+
+
+class TestChatGPTProvider(unittest.TestCase):
+    def test_node_asset_collection(self):
+        import reclaim.providers.chatgpt as cg
+        data = json.loads((FIX / 'chatgpt_api_sample.json').read_text())
+        nodes = cg._linearize(data['mapping'], data['current_node'])
+        self.assertEqual(len(nodes), 2)
+        turn, assets = cg._node_to_turn(nodes[1])
+        self.assertEqual(assets, ['file-XYZ123'])
+        self.assertIn('Here it is:', turn.text)
+        self.assertIn('As you can see...', turn.text)
+
+    def test_asset_regex_variants(self):
+        import reclaim.providers.chatgpt as cg
+        self.assertEqual(cg._ASSET_RE.search('file-service://file-ABC123').group(1),
+                         'file-ABC123')
+        self.assertEqual(cg._ASSET_RE.search('sediment://file_ABC123').group(1),
+                         'file_ABC123')
