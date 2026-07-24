@@ -51,6 +51,9 @@ def main(argv=None):
         if target in ('chatgpt', 'scrapemychats'):
             return mod.main([target] + rest)
         return mod.main(rest)
+    if action == 'export' and target == 'haevn-md':
+        mod = __import__('reclaim.exporters.haevn_md', fromlist=['main'])
+        return mod.main(rest)
 
     print(f'unknown command: {" ".join(argv)}\n')
     print(USAGE)

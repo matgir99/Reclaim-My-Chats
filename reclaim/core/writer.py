@@ -3,8 +3,9 @@
 Output contract (per chat):
 
     <out_dir>/<slug>/
-    └── <slug>.md          # conversation; images/attachments inline at the
-                           # position they appear in the chat
+    ├── <slug>.md          # conversation; images/attachments inline at the
+    │                      # position they appear in the chat
+    └── chat.json          # canonical data dump (for exporters/re-processing)
 
 Markdown format:
 
@@ -25,6 +26,7 @@ Markdown format:
 
 from __future__ import annotations
 
+import json
 import re
 import time
 from pathlib import Path
@@ -72,6 +74,21 @@ class _NameDedup:
             n += 1
 
 
+def _dump_chat_json(chat: Chat, chat_dir: Path, saved: list[dict]) -> None:
+    """Write chat.json: canonical turns with saved-media filenames."""
+    payload = {
+        'id': chat.id,
+        'title': chat.title,
+        'source_url': chat.source_url,
+        'provider': chat.provider,
+        'had_thoughts': chat.had_thoughts,
+        'errors': chat.errors,
+        'turns': saved,
+    }
+    (chat_dir / 'chat.json').write_text(json.dumps(payload, indent=2,
+                                                   ensure_ascii=False))
+
+
 def write_chat(chat: Chat, out_dir: Path) -> dict:
     """Write one chat folder. Returns stats dict."""
     slug = slugify(chat.title) or chat.id[:20]
@@ -85,6 +102,7 @@ def write_chat(chat: Chat, out_dir: Path) -> dict:
 
     dedup = _NameDedup()
     n_imgs = n_docs = n_links = 0
+    saved: list[dict] = []   # per-turn saved media, for chat.json
     ts = time.strftime('%Y-%m-%d %H:%M:%S')
 
     with open(md, 'w', encoding='utf-8') as f:
@@ -102,6 +120,10 @@ def write_chat(chat: Chat, out_dir: Path) -> dict:
                 f.write(f'## {ROLE_LABEL.get(t.role, t.role)}\n\n')
                 cur_role = t.role
 
+            turn_rec: dict = {'role': t.role, 'text': t.text,
+                              'images': [], 'attachments': []}
+            saved.append(turn_rec)
+
             if t.text.strip():
                 f.write(t.text.strip() + '\n\n')
 
@@ -110,6 +132,7 @@ def write_chat(chat: Chat, out_dir: Path) -> dict:
                 n_imgs += 1
                 fname = dedup.unique(f'image_{img_count}{img_ext(raw)}')
                 (chat_dir / fname).write_bytes(raw)
+                turn_rec['images'].append(fname)
                 f.write(f'![{fname}]({fname})\n\n')
 
             for att in t.attachments:
@@ -122,11 +145,17 @@ def write_chat(chat: Chat, out_dir: Path) -> dict:
                     else:
                         n_docs += 1
                         f.write(f'**Attachment:** [{fname}]({fname})\n\n')
+                    turn_rec['attachments'].append({
+                        'filename': fname, 'kind': att.kind, 'saved': True})
                 else:
                     n_links += 1
                     label = att.description or att.filename
                     f.write(f'**Attachment (not downloaded):** '
                             f'[{label}]({att.source_url})\n\n')
+                    turn_rec['attachments'].append({
+                        'filename': att.filename, 'kind': att.kind,
+                        'saved': False, 'source_url': att.source_url,
+                        'description': att.description})
 
         if cur_role is not None:
             f.write('\n---\n')
@@ -138,6 +167,9 @@ def write_chat(chat: Chat, out_dir: Path) -> dict:
                     f"be incomplete.\n")
         if chat.had_thoughts:
             f.write('\n> Model reasoning (thinking) turns were omitted.\n')
+
+    # Canonical data dump for exporters / offline re-processing.
+    _dump_chat_json(chat, chat_dir, saved)
 
     return {'md': md, 'dir': chat_dir, 'images': n_imgs, 'docs': n_docs,
             'links': n_links, 'turns': len(chat.visible_turns()),

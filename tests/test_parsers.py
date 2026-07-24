@@ -19,6 +19,7 @@ from reclaim.providers.aistudio_files import parse_prompt_file
 from reclaim.providers.chatgpt_import import parse_conversation
 from reclaim.providers.deepseek import record_to_chat
 from reclaim.providers.kept_vault import parse_vault_file
+from reclaim.exporters.haevn_md import chat_to_haevn_md, export_zip
 
 FIX = Path(__file__).resolve().parent / 'fixtures'
 
@@ -248,6 +249,73 @@ class TestWriter(unittest.TestCase):
         self.assertIn('API-side error', md)
         self.assertIn('thinking', md)
 
+    def test_chat_json_dump(self):
+        chat = Chat(id='x3', title='Json Dump', source_url='https://x',
+                    turns=[Turn('user', 'hi'),
+                           Turn('model', 'yo', images=[b'\x89PNGfake'],
+                                attachments=[Attachment('a.pdf', data=b'%PDF'),
+                                             Attachment('b.txt', data=None,
+                                                        source_url='https://u')]),
+                           Turn('model', 'think', thought=True)],
+                    provider='test')
+        write_chat(chat, self.tmp)
+        payload = json.loads((self.tmp / 'Json Dump' / 'chat.json').read_text())
+        self.assertEqual(payload['id'], 'x3')
+        self.assertEqual(payload['provider'], 'test')
+        self.assertTrue(payload['had_thoughts'])
+        self.assertEqual(len(payload['turns']), 2)  # thoughts excluded
+        self.assertEqual(payload['turns'][1]['images'], ['image_1.png'])
+        atts = payload['turns'][1]['attachments']
+        self.assertEqual(atts[0], {'filename': 'a.pdf', 'kind': 'document',
+                                   'saved': True})
+        self.assertFalse(atts[1]['saved'])
+        self.assertEqual(atts[1]['source_url'], 'https://u')
+
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TestHaevnExport(unittest.TestCase):
+    def test_haevn_md_shape(self):
+        payload = {
+            'id': 'abc', 'title': 'T "Quoted"', 'provider': 'aistudio',
+            'turns': [
+                {'role': 'user', 'text': 'question', 'images': [], 'attachments': []},
+                {'role': 'model', 'text': 'answer', 'images': ['image_1.png'],
+                 'attachments': [{'filename': 'doc.pdf', 'kind': 'document',
+                                  'saved': True},
+                                 {'filename': 'lost.txt', 'kind': 'document',
+                                  'saved': False, 'source_url': 'https://u',
+                                  'description': 'lost.txt'}]},
+            ],
+        }
+        md = chat_to_haevn_md(payload)
+        self.assertIn('title: "T \\"Quoted\\""', md)
+        self.assertIn('source: "AI Studio"', md)
+        self.assertIn('conversation_id: "abc"', md)
+        self.assertIn('<!-- HAEVN: role="user" -->', md)
+        self.assertIn('<!-- HAEVN: role="assistant" -->', md)
+        self.assertIn('![image_1.png](image_1.png)', md)
+        self.assertIn('**Attachment:** [doc.pdf](doc.pdf)', md)
+        self.assertIn('**Attachment (not downloaded):** [lost.txt](https://u)', md)
+
+    def test_export_zip_from_written_chats(self):
+        import tempfile
+        root = Path(tempfile.mkdtemp())
+        try:
+            chat = Chat(id='z1', title='Zed', source_url='https://x',
+                        turns=[Turn('user', 'q'),
+                               Turn('model', 'a', images=[b'\x89PNGfake'])],
+                        provider='aistudio')
+            write_chat(chat, root / 'Google AI Studio')
+            out = root / 'export.zip'
+            stats = export_zip(root, out)
+            self.assertEqual(stats['chats'], 1)
+            self.assertEqual(stats['media'], 1)
+            import zipfile
+            names = zipfile.ZipFile(out).namelist()
+            self.assertIn('Google AI Studio/Zed.md', names)
+            self.assertIn('Google AI Studio/Zed/image_1.png', names)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
