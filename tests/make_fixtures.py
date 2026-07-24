@@ -81,7 +81,14 @@ deepseek = {
                          'updated_at': 1700000000},
         'chat_messages': [
             {'role': 'USER', 'fragments': [
-                {'type': 'REQUEST', 'content': 'Explain Bayes theorem with a source.'}]},
+                {'type': 'REQUEST', 'content': 'Explain Bayes theorem with a source.'},
+                {'type': 'FILE', 'files': [
+                    {'id': 'file-synthetic-1', 'status': 'SUCCESS',
+                     'file_name': 'bayes_notes.pdf', 'file_size': 12345,
+                     'signed_path': '/file?file_id=file-synthetic-1&state=signedtoken123'},
+                    {'id': 'file-synthetic-2', 'status': 'SUCCESS',
+                     'file_name': 'chart.png', 'file_size': 54321,
+                     'signed_path': '/file?file_id=file-synthetic-2&state=signedtoken456'}]}]},
             {'role': 'ASSISTANT', 'fragments': [
                 {'type': 'SEARCH', 'results': [
                     {'cite_index': 1, 'url': 'https://example.com/bayes',

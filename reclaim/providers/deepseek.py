@@ -21,11 +21,12 @@ from pathlib import Path
 
 from ..core import browser
 from ..core.manifest import SyncState, write_manifest
-from ..core.model import Chat, Turn
+from ..core.model import Attachment, Chat, Turn
 from ..core.writer import write_chat
 
 BASE_URL = 'https://chat.deepseek.com/'
 PROVIDER = 'deepseek'
+_IMG_EXTS = re.compile(r'\.(png|jpe?g|gif|webp)$', re.I)
 
 
 # ---------------------------------------------------------------------------
@@ -129,7 +130,11 @@ def replace_citations(text: str, citemap: dict) -> str:
 
 
 def record_to_chat(record: dict) -> Chat:
-    """Convert one raw IndexedDB record into a canonical Chat."""
+    """Convert one raw IndexedDB record into a canonical Chat.
+
+    FILE fragments (user uploads) become attachments whose ``source_url`` is
+    the signed download path; bytes are fetched later by
+    :func:`materialize_attachments` (needs the live page)."""
     data = record.get('data', record)
     session = data.get('chat_session', {})
     messages = data.get('chat_messages', [])
@@ -144,10 +149,26 @@ def record_to_chat(record: dict) -> Chat:
         role = msg.get('role', '').upper()
         fragments = msg.get('fragments', [])
         if role == 'USER':
+            text, atts = '', []
             for frag in fragments:
                 if frag.get('type') == 'REQUEST' and frag.get('content'):
-                    turns.append(Turn(role='user', text=frag['content'].strip()))
-                    break
+                    text = frag['content'].strip()
+                elif frag.get('type') == 'FILE':
+                    for finfo in frag.get('files', []) or []:
+                        name = finfo.get('file_name') or 'file'
+                        signed = finfo.get('signed_path', '')
+                        size = finfo.get('file_size')
+                        desc = name + (f' ({size:,} bytes)' if size else '')
+                        atts.append(Attachment(
+                            filename=name,
+                            kind='image' if _IMG_EXTS.search(name) else 'document',
+                            data=None,
+                            source_url=(signed if signed.startswith('http')
+                                        else BASE_URL.rstrip('/') + signed),
+                            description=desc,
+                        ))
+            if text or atts:
+                turns.append(Turn(role='user', text=text, attachments=atts))
         elif role == 'ASSISTANT':
             for frag in fragments:
                 if frag.get('type') == 'RESPONSE':
@@ -161,6 +182,32 @@ def record_to_chat(record: dict) -> Chat:
                 title=session.get('title', ''),
                 source_url=f'https://chat.deepseek.com/a/chat/s/{chat_id}',
                 turns=turns, provider=PROVIDER)
+
+
+def materialize_attachments(page, chat: Chat, timeout_ms: int = 60000) -> int:
+    """Download attachment bytes via the browser context (cookies + signed
+    URLs). Validates responses: DeepSeek signed paths expire, and the server
+    then returns the SPA HTML page instead of the file — such responses are
+    rejected (attachment stays link-only). Returns files downloaded."""
+    ok = 0
+    for turn in chat.turns:
+        for att in turn.attachments:
+            if att.data is not None or not att.source_url:
+                continue
+            try:
+                resp = page.request.get(att.source_url, timeout=timeout_ms)
+                if resp.status != 200:
+                    continue
+                body = resp.body()
+                ctype = (resp.headers.get('content-type') or '').lower()
+                if not body or 'text/html' in ctype or \
+                        body.lstrip()[:15].lower().startswith((b'<!doctype', b'<html')):
+                    continue  # expired signed URL -> SPA fallback page
+                att.data = body
+                ok += 1
+            except Exception as e:
+                print(f'      attachment download error ({att.filename}): {e}')
+    return ok
 
 
 # ---------------------------------------------------------------------------
@@ -185,6 +232,7 @@ def run(page, records: list[dict], out_dir: Path, resume: bool = False,
             continue
         t0 = time.time()
         try:
+            materialize_attachments(page, chat)
             stats = write_chat(chat, out_dir)
             sync.mark(chat.id, updated_map.get(chat.id), str(stats['md']))
             users = sum(1 for t in chat.visible_turns() if t.role == 'user')

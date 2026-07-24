@@ -80,6 +80,17 @@ class TestDeepseekRecord(unittest.TestCase):
         self.assertIn('[-1](https://example.com/bayes)', self.chat.turns[1].text)
         self.assertNotIn('[citation:1]', self.chat.turns[1].text)
 
+    def test_file_fragments_become_attachments(self):
+        atts = self.chat.turns[0].attachments
+        self.assertEqual(len(atts), 2)
+        self.assertEqual(atts[0].filename, 'bayes_notes.pdf')
+        self.assertEqual(atts[0].kind, 'document')
+        self.assertEqual(atts[1].filename, 'chart.png')
+        self.assertEqual(atts[1].kind, 'image')
+        self.assertTrue(atts[0].source_url.startswith(
+            'https://chat.deepseek.com/file?file_id='))
+        self.assertIsNone(atts[0].data)  # downloaded later by materialize_attachments
+
 
 class TestWriter(unittest.TestCase):
     def setUp(self):
