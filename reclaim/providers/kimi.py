@@ -80,7 +80,7 @@ def get_token(page) -> str:
                 out.push({key: (store === localStorage ? 'L:' : 'S:') + k,
                           len: v.length,
                           jwt: v.startsWith('eyJ'),
-                          val: v.slice(0, 600)});
+                          val: v});  // full value — truncation breaks validation!
             }
         }
         return out;
