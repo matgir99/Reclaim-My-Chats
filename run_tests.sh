@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Offline test suite — no browser required.
-# Set PYTHON to override the interpreter (e.g. PYTHON=python3.14).
+# Uses the newest installed python3.x; override with PYTHON=<path>.
 set -u
-cd "$(dirname "${BASH_SOURCE[0]}")"
-PYTHON="${PYTHON:-python3}"
-"$PYTHON" -m unittest discover -s tests -v
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/py.sh
+source "$DIR/scripts/py.sh"
+PY="$(pick_python)"
+echo "Using: $PY ($(command -v "$PY" || echo unknown))"
+"$PY" -m unittest discover -s tests -v

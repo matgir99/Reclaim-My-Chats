@@ -9,7 +9,7 @@ description = "Archive AI chat history from Google AI Studio, DeepSeek, Kimi and
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
-dependencies = ["playwright>=1.40"]
+dependencies = ["playwright>=1.61"]
 classifiers = [
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
@@ -29,7 +29,7 @@ include = ["reclaim*"]
 
 [tool.ruff]
 line-length = 99
-target-version = "py312"
+target-version = "py314"
 
 [tool.pyright]
-pythonVersion = "3.12"
+pythonVersion = "3.14"

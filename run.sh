@@ -15,6 +15,10 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PIDFILE="$DIR/.reclaim.pid"
 LOGFILE="$DIR/reclaim_run.log"
 
+# shellcheck source=scripts/py.sh
+source "$DIR/scripts/py.sh"
+PY="$(pick_python)"
+
 cmd_start() {
     local provider="$1"; shift
     if [[ -f "$PIDFILE" ]] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
@@ -23,7 +27,7 @@ cmd_start() {
     pkill chrome 2>/dev/null; sleep 2
     rm -f "$DIR/.playwright-profile/Singleton"* 2>/dev/null
     : > "$LOGFILE"
-    setsid nohup "${PYTHON:-python3}" -u -m reclaim scrape "$provider" "$@" \
+    setsid nohup "$PY" -u -m reclaim scrape "$provider" "$@" \
         >> "$LOGFILE" 2>&1 < /dev/null &
     echo $! > "$PIDFILE"
     echo "started 'scrape $provider' PID $(cat "$PIDFILE") — log: $LOGFILE"
