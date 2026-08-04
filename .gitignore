@@ -1,5 +1,6 @@
 # Playwright browser profile (cookies, cache, sessions)
 .playwright-profile/
+.playwright-mcp/
 
 # Scraped output
 Google\ AI\ Studio/*/
@@ -36,6 +37,7 @@ test_*/
 # Scraper state (contain chat titles)
 .reclaim_manifest.json
 .last_sync_*.json
+.reclaim.pid
 
 # scratch (one-off scripts)
 scratch/

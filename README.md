@@ -2,7 +2,7 @@
 
 Reclaim your AI chat history. Bulk-export conversations from AI chat platforms into clean local Markdown folders — full text with LaTeX intact, model thoughts filtered out, original-quality images, and real downloaded attachments.
 
-- `STATUS.md` — current development status + task tracker
+- `docs/STATUS.md` — current development status + task tracker
 - `docs/PLAN.md` — master plan (start to end)
 - `docs/ARCHITECTURE.md` — hub-and-spoke design rationale
 - `docs/research/ECOSYSTEM.md` — survey of existing open-source export tools
@@ -65,8 +65,7 @@ python3.14 -m reclaim import kept ~/.kept/vault --providers kimi
 python3.14 -m reclaim export haevn-md . archive.zip
 ```
 
-Backwards-compatible entry points still work:
-`Google AI Studio/scrape_googleaistudio.py`, `Deepseek Chat/scrape_deepseek.py`.
+Pre-v1.0.0 standalone scrapers are preserved in `legacy/` (see `legacy/README.md`).
 
 ## Development
 
