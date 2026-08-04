@@ -7,6 +7,8 @@ appears when a human login is needed.
 
 from __future__ import annotations
 
+import os
+import shutil
 import time
 from pathlib import Path
 
@@ -21,15 +23,53 @@ LAUNCH_ARGS = [
 ]
 
 
+def find_chrome() -> str | None:
+    """Locate a system Chrome/Chromium binary, or None to use Playwright's bundled one.
+
+    Order: RECLAIM_CHROME_PATH env var -> known OS paths -> PATH lookup.
+    """
+    env = os.environ.get('RECLAIM_CHROME_PATH')
+    if env:
+        return env
+    candidates = [
+        # Linux
+        '/usr/bin/google-chrome-stable',
+        '/usr/bin/google-chrome',
+        '/usr/bin/chromium',
+        '/usr/bin/chromium-browser',
+        # macOS
+        '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+        '/Applications/Chromium.app/Contents/MacOS/Chromium',
+        # Windows
+        r'C:\Program Files\Google\Chrome\Application\chrome.exe',
+        r'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe',
+        r'C:\Program Files\Chromium\Application\chrome.exe',
+    ]
+    for c in candidates:
+        if Path(c).exists():
+            return c
+    for name in ('google-chrome-stable', 'google-chrome', 'chromium',
+                 'chromium-browser', 'chrome', 'msedge'):
+        p = shutil.which(name)
+        if p:
+            return p
+    return None
+
+
 def launch(p, headless: bool = False):
     """Launch the shared persistent profile. Returns (ctx, page)."""
     Path(USER_DATA_DIR).mkdir(parents=True, exist_ok=True)
-    ctx = p.chromium.launch_persistent_context(
-        user_data_dir=USER_DATA_DIR, headless=headless,
-        executable_path='/usr/bin/google-chrome-stable',
-        args=LAUNCH_ARGS,
-        viewport={'width': 1400, 'height': 900},
-    )
+    exe = find_chrome()
+    if exe:
+        print(f'Using system browser: {exe}')
+    else:
+        print('No system Chrome/Chromium found — using Playwright bundled browser.')
+    kwargs = {'user_data_dir': USER_DATA_DIR, 'headless': headless,
+              'args': LAUNCH_ARGS,
+              'viewport': {'width': 1400, 'height': 900}}
+    if exe:
+        kwargs['executable_path'] = exe
+    ctx = p.chromium.launch_persistent_context(**kwargs)
     page = ctx.pages[0] if ctx.pages else ctx.new_page()
     return ctx, page
 

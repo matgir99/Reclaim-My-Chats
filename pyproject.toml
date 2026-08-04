@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "reclaimmychats"
+version = "1.2.0"
+description = "Archive AI chat history from Google AI Studio, DeepSeek, Kimi and ChatGPT into clean local Markdown"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+dependencies = ["playwright>=1.40"]
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+]
+
+[project.scripts]
+reclaim = "reclaim.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["reclaim*"]
+
+[tool.ruff]
+line-length = 99
+target-version = "py312"
+
+[tool.pyright]
+pythonVersion = "3.12"

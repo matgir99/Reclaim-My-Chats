@@ -23,7 +23,7 @@ cmd_start() {
     pkill chrome 2>/dev/null; sleep 2
     rm -f "$DIR/.playwright-profile/Singleton"* 2>/dev/null
     : > "$LOGFILE"
-    setsid nohup python3.14 -u -m reclaim scrape "$provider" "$@" \
+    setsid nohup "${PYTHON:-python3}" -u -m reclaim scrape "$provider" "$@" \
         >> "$LOGFILE" 2>&1 < /dev/null &
     echo $! > "$PIDFILE"
     echo "started 'scrape $provider' PID $(cat "$PIDFILE") — log: $LOGFILE"
