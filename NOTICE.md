@@ -14,7 +14,7 @@ copied verbatim unless explicitly stated below.
 | [egroup-labs/kept](https://github.com/egroup-labs/kept) | Kimi endpoint/auth research + vault importer (planned, WS3 of `docs/PLAN.md`) | MIT |
 | [aiamblichus/haevn](https://github.com/aiamblichus/haevn) | Provider-architecture and bulk-sync resume design ideas | MIT |
 | [blueberrycongee/DeepSeek-Chat-Exporter](https://github.com/blueberrycongee/DeepSeek-Chat-Exporter) | "Extract original markdown from app state instead of rendered HTML" — the principle behind our IndexedDB approach | MIT |
-| [pionxzh/chatgpt-exporter](https://github.com/pionxzh/chatgpt-exporter) / [organvm/a-i-chat--exporter](https://github.com/organvm/a-i-chat--exporter) | ChatGPT internal `/backend-api/` knowledge (planned, Phase 2) | MIT |
+| [pionxzh/chatgpt-exporter](https://github.com/pionxzh/chatgpt-exporter) | ChatGPT native provider: `/backend-api/` endpoints, session auth, two-step file download (JSON wrapper -> signed URL), Projects via `gizmos/snorlax/sidebar` + `gizmos/<id>/conversations` | MIT |
 | [conradqh/scrapemychats](https://github.com/conradqh/scrapemychats) | Confirmation of the real-Chrome bulk-export pattern for ChatGPT | MIT |
 | [queelius/ctk](https://github.com/queelius/ctk) | Tree/conversation-format design ideas for importers | MIT |
 
