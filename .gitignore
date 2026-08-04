@@ -39,8 +39,8 @@ Thumbs.db
 .reclaim_manifest.json
 .last_sync_*.json
 
-# scratch (one-off scripts)
-scratch/
+# One-off endpoint probes / debug scripts from development (local only)
+dev-probes/
 
 # Environment files (never commit secrets)
 .env

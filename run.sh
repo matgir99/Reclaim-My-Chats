@@ -5,6 +5,11 @@
 #   ./run.sh status                                        # show progress
 #   ./run.sh stop                                          # stop scraper + chrome
 #
+# Examples:
+#   ./run.sh aistudio --resume
+#   ./run.sh deepseek
+#   ./run.sh status
+#
 # Notes:
 # * Never use `pkill -f <pattern>` where the pattern also appears in this
 #   command line — pkill matches the invoking shell and kills it.
@@ -62,5 +67,6 @@ case "${1:-}" in
     aistudio|deepseek) cmd_start "$@" ;;
     status)            cmd_status ;;
     stop)              cmd_stop ;;
-    *) echo "usage: $0 {aistudio|deepseek [args...]|status|stop}"; exit 1 ;;
+    *) echo "usage: $0 {aistudio|deepseek [args...]|status|stop}"
+       echo "  e.g. ./run.sh aistudio --resume | ./run.sh status | ./run.sh stop"; exit 1 ;;
 esac
