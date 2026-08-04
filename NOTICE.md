@@ -31,10 +31,17 @@ as required.
 
 ## Interoperability (linking, not copying)
 
-- Planned exporter to **HAEVN Markdown** import format, so archives produced
-  here can be browsed/searched with HAEVN.
-- Planned importer from a **Kept** vault (`~/.kept/vault/`), so Kept can serve
-  as the capture path for platforms we don't scrape natively.
+- **HAEVN Markdown exporter** (`reclaim export haevn-md`): archives produced
+  here can be browsed/searched with HAEVN. Ships data files only.
+- **Kept vault importer** (`reclaim import kept`, `~/.kept/vault/`): Kept
+  serves as the capture path for platforms we don't scrape natively.
+  Ships data files only.
 
 These integrations exchange *data files*, not code; no license obligations
 beyond those of the data's owner (you).
+
+## Runtime dependencies
+
+- [Playwright](https://github.com/microsoft/playwright) (Apache-2.0) — the
+  only third-party Python package at runtime. We call its public API; no
+  code is vendored or modified.
