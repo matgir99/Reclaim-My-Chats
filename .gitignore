@@ -2,16 +2,22 @@
 .playwright-profile/
 .playwright-mcp/
 
-# Scraped output
-Google\ AI\ Studio/*/
-Deepseek\ Chat/*/
-Kimi\ Chat/*/
-!_old_flat/
+# Scraped output — the archive. Never tracked.
+Google AI Studio/
+Deepseek Chat/
+Kimi Chat/
+ChatGPT/
+Claude/
+Gemini/
+Grok/
+output/
 
 # Python
 __pycache__/
 *.pyc
 *.pyo
+.venv/
+venv/
 
 # Temp files
 /tmp/
@@ -27,24 +33,15 @@ Thumbs.db
 .vscode/
 .idea/
 
-# Test output
-test_*/
-
 # Logs and run state
 *.log
-.scrape.pid
-
-# Scraper state (contain chat titles)
+*.pid
 .reclaim_manifest.json
 .last_sync_*.json
-.reclaim.pid
 
 # scratch (one-off scripts)
 scratch/
 
-# Scraped output (all providers)
-ChatGPT/
-Kimi Chat/
-Claude/
-Gemini/
-Grok/
+# Environment files (never commit secrets)
+.env
+.env.*
