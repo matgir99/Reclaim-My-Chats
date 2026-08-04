@@ -2,6 +2,7 @@
 
 Reclaim your AI chat history. Bulk-export conversations from AI chat platforms into clean local Markdown folders — full text with LaTeX intact, model thoughts filtered out, original-quality images, and real downloaded attachments.
 
+- `STATUS.md` — current development status + task tracker
 - `docs/PLAN.md` — master plan (start to end)
 - `docs/ARCHITECTURE.md` — hub-and-spoke design rationale
 - `docs/research/ECOSYSTEM.md` — survey of existing open-source export tools
