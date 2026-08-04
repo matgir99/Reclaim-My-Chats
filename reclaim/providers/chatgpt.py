@@ -132,6 +132,73 @@ def list_conversations(page, token: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Projects (OpenAI calls them "gizmos" internally; flow per MIT-licensed
+# pionxzh/chatgpt-exporter). Chats inside Projects are INVISIBLE to the main
+# /conversations listing - they must be enumerated per project.
+# ---------------------------------------------------------------------------
+def list_projects(page, token: str) -> list[dict]:
+    """GET /backend-api/gizmos/snorlax/sidebar (cursor-paginated).
+    Returns [{'id': 'g-p-...', 'name': '...'}]."""
+    projects, cursor = [], None
+    while True:
+        url = (f'{BASE_URL}/backend-api/gizmos/snorlax/sidebar'
+               f'?conversations_per_gizmo=0')
+        if cursor is not None:
+            url += f'&cursor={cursor}'
+        data = _get(page, token, url)
+        for it in data.get('items') or []:
+            g = (it.get('gizmo') or {}).get('gizmo') or {}
+            gid = g.get('id')
+            if gid:
+                name = (g.get('display') or {}).get('name') or g.get('name') or ''
+                projects.append({'id': gid, 'name': name})
+        cursor = data.get('cursor')
+        if cursor is None:
+            return projects
+
+
+def list_project_conversations(page, token: str, gizmo_id: str) -> list[dict]:
+    """GET /backend-api/gizmos/<id>/conversations (alphanumeric cursor)."""
+    items, cursor = [], 0
+    while True:
+        data = _get(page, token,
+                    f'{BASE_URL}/backend-api/gizmos/{gizmo_id}/conversations'
+                    f'?cursor={cursor}&limit=50')
+        batch = data.get('items') or []
+        items.extend(batch)
+        cursor = data.get('cursor')
+        if not batch or cursor is None:
+            return items
+
+
+def list_all_conversations(page, token: str) -> list[dict]:
+    """Projects FIRST, then the main list; deduped by chat id.
+    Each item gets a '_project' field (None for unfiled chats).
+
+    Projects must be added first: the main /conversations list can include
+    project chats in its items (its 'total' field is unreliable), so project
+    tagging must happen before the main list dedups them away."""
+    seen: set[str] = set()
+    out: list[dict] = []
+
+    def add(items, project):
+        for it in items:
+            cid = it.get('id')
+            if cid and cid not in seen:
+                seen.add(cid)
+                it['_project'] = project
+                out.append(it)
+
+    for p in list_projects(page, token):
+        try:
+            add(list_project_conversations(page, token, p['id']), p['name'])
+        except Exception as e:
+            print(f"  WARNING: listing project '{p['name']}' failed: {e}")
+    add(list_conversations(page, token), None)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Conversation parsing (linearize + asset collection)
 # ---------------------------------------------------------------------------
 _ASSET_RE = re.compile(r'(?:file-service|sediment)://(file[-_][A-Za-z0-9-]+)')
@@ -244,6 +311,7 @@ def run(page, token: str, items: list[dict], out_dir: Path,
         t0 = time.time()
         try:
             chat, raw = fetch_conversation(page, token, cid, item.get('title', ''))
+            chat.project = item.get('_project')
             stats = write_chat(chat, out_dir)
             try:
                 write_raw(stats['dir'], raw)
@@ -289,9 +357,10 @@ def main(argv=None):
                 cid = args.url.rstrip('/').split('/')[-1].split('?')[0]
                 items = [{'id': cid, 'title': ''}]
             else:
-                print('Listing conversations...')
-                items = list_conversations(page, token)
-                print(f'Found {len(items)} conversations')
+                print('Listing conversations (main list + projects)...')
+                items = list_all_conversations(page, token)
+                n_proj = sum(1 for c in items if c.get('_project'))
+                print(f'Found {len(items)} conversations ({n_proj} in projects)')
             if args.only:
                 items = [c for c in items
                          if args.only.lower() in (c.get('title') or '').lower()]

@@ -81,6 +81,7 @@ def _dump_chat_json(chat: Chat, chat_dir: Path, saved: list[dict]) -> None:
         'title': chat.title,
         'source_url': chat.source_url,
         'provider': chat.provider,
+        'project': chat.project,
         'had_thoughts': chat.had_thoughts,
         'errors': chat.errors,
         'turns': saved,
@@ -114,7 +115,10 @@ def write_raw(chat_dir: Path, obj, max_str: int = 200_000) -> Path:
 def write_chat(chat: Chat, out_dir: Path) -> dict:
     """Write one chat folder. Returns stats dict."""
     slug = slugify(chat.title) or chat.id[:20]
-    chat_dir = Path(out_dir) / slug
+    if chat.project:
+        chat_dir = Path(out_dir) / (slugify(chat.project) or 'Project') / slug
+    else:
+        chat_dir = Path(out_dir) / slug
     chat_dir.mkdir(parents=True, exist_ok=True)
     md = chat_dir / f'{slug}.md'
     c = 1
@@ -129,6 +133,8 @@ def write_chat(chat: Chat, out_dir: Path) -> dict:
 
     with open(md, 'w', encoding='utf-8') as f:
         f.write(f'# {chat.title}\n\n')
+        if chat.project:
+            f.write(f'**Project:** {chat.project}\n\n')
         if chat.source_url:
             f.write(f'**Source:** {chat.source_url}\n\n')
         f.write(f'**Scraped:** {ts}\n\n---\n\n')

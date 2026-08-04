@@ -359,6 +359,48 @@ class TestKimiProvider(unittest.TestCase):
 
 
 class TestChatGPTProvider(unittest.TestCase):
+
+    def test_list_projects_pagination(self):
+        import reclaim.providers.chatgpt as cg
+        pages = [
+            {'items': [{'gizmo': {'gizmo': {'id': 'g-p-aaa',
+                                            'display': {'name': 'Alpha'}}}}],
+             'cursor': 2},
+            {'items': [{'gizmo': {'gizmo': {'id': 'g-p-bbb',
+                                            'display': {'name': 'Beta'}}}}],
+             'cursor': None},
+        ]
+        calls = iter(pages)
+        orig = cg._get
+        cg._get = lambda page, token, url: next(calls)
+        try:
+            projs = cg.list_projects(None, 'tok')
+        finally:
+            cg._get = orig
+        self.assertEqual(projs, [{'id': 'g-p-aaa', 'name': 'Alpha'},
+                                 {'id': 'g-p-bbb', 'name': 'Beta'}])
+
+    def test_list_all_conversations_dedup_and_project_tag(self):
+        import reclaim.providers.chatgpt as cg
+        orig = cg.list_conversations, cg.list_projects,             cg.list_project_conversations
+        cg.list_conversations = lambda page, tok: [
+            {'id': 'c1', 'title': 'Main'},   # dup of project -> skipped
+            {'id': 'c3', 'title': 'Unfiled'}]
+        cg.list_projects = lambda page, tok: [{'id': 'g-p-x', 'name': 'Proj'}]
+        cg.list_project_conversations = lambda page, tok, gid: [
+            {'id': 'c1', 'title': 'Main'},  # also in main -> project tag wins
+            {'id': 'c2', 'title': 'InProject'}]
+        try:
+            items = cg.list_all_conversations(None, 'tok')
+        finally:
+            (cg.list_conversations, cg.list_projects,
+             cg.list_project_conversations) = orig
+        # projects are processed FIRST: c1 (also in main) keeps project tag
+        self.assertEqual([c['id'] for c in items], ['c1', 'c2', 'c3'])
+        self.assertEqual(items[0]['_project'], 'Proj')
+        self.assertEqual(items[1]['_project'], 'Proj')
+        self.assertIsNone(items[2]['_project'])
+
     def test_node_asset_collection(self):
         import reclaim.providers.chatgpt as cg
         data = json.loads((FIX / 'chatgpt_api_sample.json').read_text())

@@ -38,6 +38,7 @@ class Chat:
     source_url: str
     turns: list[Turn] = field(default_factory=list)
     provider: str = ''
+    project: str | None = None  # e.g. ChatGPT Project name (folder grouping)
 
     @property
     def had_thoughts(self) -> bool:
