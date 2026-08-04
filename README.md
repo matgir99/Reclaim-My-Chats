@@ -31,9 +31,11 @@ Supports **Google AI Studio**, **DeepSeek Chat**, **Kimi**, and **ChatGPT**
 - A system **Chrome or Chromium** install (auto-detected) — or Playwright's
   bundled Chromium (`python -m playwright install chromium`)
 
-Platform support: **Linux is first-class**; macOS and Windows should work
-(Playwright is cross-platform) but are best-effort and untested — the
-`run.sh` wrapper requires bash.
+Platform support: **Linux is first-class**. **macOS** works via the bundled
+bash scripts (portable fallbacks for `setsid`/`pkill`/`sort`). **Windows**:
+use WSL2 for full support; the `reclaim` package itself runs under native
+Git Bash (`python -m reclaim`), but `run.sh` (detached runner) is not
+supported there.
 
 ## Install
 

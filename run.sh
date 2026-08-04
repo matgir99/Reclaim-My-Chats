@@ -24,11 +24,18 @@ cmd_start() {
     if [[ -f "$PIDFILE" ]] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
         echo "already running (PID $(cat "$PIDFILE"))"; exit 1
     fi
-    pkill chrome 2>/dev/null; sleep 2
+    kill_scraper_browser; sleep 2
     rm -f "$DIR/.playwright-profile/Singleton"* 2>/dev/null
     : > "$LOGFILE"
-    setsid nohup "$PY" -u -m reclaim scrape "$provider" "$@" \
-        >> "$LOGFILE" 2>&1 < /dev/null &
+    # setsid is Linux-only; macOS falls back to nohup alone (still
+    # survives terminal close via SIGHUP immunity).
+    if command -v setsid >/dev/null 2>&1; then
+        setsid nohup "$PY" -u -m reclaim scrape "$provider" "$@" \
+            >> "$LOGFILE" 2>&1 < /dev/null &
+    else
+        nohup "$PY" -u -m reclaim scrape "$provider" "$@" \
+            >> "$LOGFILE" 2>&1 < /dev/null &
+    fi
     echo $! > "$PIDFILE"
     echo "started 'scrape $provider' PID $(cat "$PIDFILE") — log: $LOGFILE"
 }
@@ -47,7 +54,7 @@ cmd_stop() {
         kill "$(cat "$PIDFILE")" 2>/dev/null
         rm -f "$PIDFILE"
     fi
-    pkill chrome 2>/dev/null
+    kill_scraper_browser
     echo "stopped"
 }
 
