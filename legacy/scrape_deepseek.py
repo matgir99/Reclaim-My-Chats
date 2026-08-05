@@ -4,7 +4,7 @@
 The implementation lives in `reclaim.providers.deepseek` (IndexedDB
 architecture). This shim keeps the old entry point working:
 
-    python3.14 scrape_deepseek.py [--url X] [--only X] [--resume] ...
+    python3.14 scrape_deepseek.py [TITLE] [--rebuild] [--list] ...
 
 See docs/PLAN.md and docs/ARCHITECTURE.md.
 """
