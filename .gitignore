@@ -52,7 +52,7 @@ legacy/
 dev-probes/
 
 # Developer-oriented docs (local only — public repo shows product docs only)
-docs/status and plan/
+docs/status_and_plan/
 
 # Environment files (never commit secrets)
 .env
