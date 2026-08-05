@@ -1,6 +1,9 @@
 # Github folder
 .github/
 
+# Python build metadata
+*.egg-info/
+
 # Playwright browser profile (cookies, cache, sessions)
 .playwright-profile/
 .playwright-mcp/

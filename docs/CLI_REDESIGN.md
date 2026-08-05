@@ -19,7 +19,7 @@ reclaim <provider> --rebuild            # rebuild: everything, freshly, overwrit
 reclaim <provider> "latex"              # chats whose title contains "latex", fetched freshly
 reclaim <provider> --url URL            # one exact chat
 reclaim <provider> --list               # print chat titles, no download
-reclaim <provider> --log                # verbose full logs (compact progress is ALWAYS on)
+reclaim <provider> --log                # full per-chat log (default: header + summary only)
 reclaim <provider> --dry-run            # preview what update/rebuild WOULD fetch, no download
 reclaim status                          # offline archive overview: counts, last sync, failures
 reclaim all                             # update all four providers, sequentially
@@ -70,7 +70,7 @@ the `scrape` subcommand, `--resume`, `--only`, `--start`, `--retrieve`, `--updat
 6. **Overwrite bug fix in `reclaim/core/writer.py` (`write_chat`):** today an existing `<slug>.md` triggers dedup to `<slug>_1.md` — re-retrieval must overwrite instead:
    - if `chat_dir/chat.json` exists and its `id` == the incoming chat's id: write to `<slug>.md` (overwrite); delete any *other* `.md` files in that dir (stale slug from a renamed title); overwrite `chat.json`/`raw.json`; media stays additive
    - if the id differs (genuinely different chat colliding on title) → keep current `_1` dedup
-7. **Progress/logging:** compact per-chat line is **always printed** (normalize the existing prints to `[i/N] Title -> Nt, N,NNN chars[, N img][, N doc]`). Add `--log` verbose layer: `[i/N] NN% · elapsed M:SS · ETA M:SS` plus per-chat detail (path used, timings). Small helper in `reclaim/core/progress.py`, e.g. `progress(i, n, t0) -> str`; wire into all four `run()` loops via a `log: bool = False` param.
+7. **Progress/logging (two-level contract, as shipped):** default output is essential only — the `N chats` header, the `Done: X ok, Y failed` summary, failures always print; `--dry-run` prints the `would fetch: ...` counts plus affected titles. `--log` is the full log: every chat gets a line (`[i/N] Title -> Nt, N,NNN chars` / `-> skip (unchanged)`) plus verbose progress (`[i/N] NN% · elapsed M:SS · ETA M:SS`) and per-chat detail. Helper in `reclaim/core/progress.py`; wired into all four `run()` loops via a `log: bool = False` param.
 8. **`reclaim all`:** in `__main__.py`, ONE shared browser session for all providers: each provider exposes `parse_args()` + `run_session(page, args)`; `_run_all` launches the browser once, validates args up front, isolates per-provider failures (trace + exit 2, continue), prints a one-line-per-provider summary.
 9. **`reclaim status`:** fully offline (no browser/login) archive overview — read each provider dir's latest `.reclaim_manifest.json` + `.last_sync_<provider>.json`: chats archived, last sync time + duration, failures in the last run, totals (images/chars); missing dir → `not archived yet`. Implement in `reclaim/core/status.py` (pure file reading, unit-testable), wire as a `status` subcommand in `__main__.py`; `-o` overrides the scan root.
 10. **Update `run.sh`:** usage becomes `./run.sh <googleaistudio|deepseek|kimi|chatgpt|all> [args...] | progress | stop`, forwarding to `python -m reclaim "$PROVIDER" "$@"`; update the header comment + usage examples. (This also closes the open STATUS.md item "extend run.sh to kimi/chatgpt".)

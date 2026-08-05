@@ -1,2 +1,0 @@
-[console_scripts]
-reclaim = reclaim.__main__:main
