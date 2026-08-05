@@ -22,12 +22,13 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 from ..core import browser
-from ..core.manifest import SyncState, write_manifest
+from ..core.manifest import SyncState, print_dry_run, write_manifest
 from ..core.model import Attachment, Chat, Turn
+from ..core.progress import progress
 from ..core.writer import write_chat, write_raw
 
 LIBRARY_URL = 'https://aistudio.google.com/library'
-PROVIDER = 'aistudio'
+PROVIDER = 'googleaistudio'
 DRIVE_API = 'https://www.googleapis.com/drive/v3/files'
 
 # ---------------------------------------------------------------------------
@@ -532,19 +533,28 @@ def extract_dom_fallback(page) -> dict:
 # ---------------------------------------------------------------------------
 # Main (scrape mode)
 # ---------------------------------------------------------------------------
-def run(page, chats: list[dict], out_dir: Path, keep_raw: bool = False,
-        resume: bool = False, updated_map: dict | None = None,
-        save_raw: bool = True) -> list[dict]:
-    """Scrape the given chats. Returns per-chat result dicts for the manifest."""
+def run(page, chats: list[dict], out_dir: Path, skip_unchanged: bool = False,
+        updated_map: dict | None = None, save_raw: bool = True,
+        log: bool = False) -> list[dict]:
+    """Fetch the given chats. Returns per-chat result dicts for the manifest.
+
+    skip_unchanged: skip chats whose server updated_at matches the local sync
+    record (the default update mode). title/--url/--rebuild selections pass
+    False so matches are always fetched freshly.
+    """
     out_dir = Path(out_dir)
     drive = DriveClient(page)
     sync = SyncState(out_dir, PROVIDER)
     updated_map = updated_map or {}
     results = []
+    t_run = time.time()
 
     for i, chat in enumerate(chats):
         label = (chat.get('title') or chat['id'])[:55]
-        if resume and sync.is_unchanged(chat['id'], updated_map.get(chat['id'])):
+        if log:
+            print(progress(i + 1, len(chats), t_run))
+        if skip_unchanged and sync.is_unchanged(chat['id'],
+                                                updated_map.get(chat['id'])):
             print(f'[{i + 1}/{len(chats)}] {label} -> skip (unchanged)')
             continue
         t0 = time.time()
@@ -578,11 +588,12 @@ def run(page, chats: list[dict], out_dir: Path, keep_raw: bool = False,
             results.append({'id': chat['id'], 'title': chat['title'], 'ok': True,
                             'path': path, 'duration_s': round(time.time() - t0, 1),
                             **{k: stats[k] for k in ('turns', 'chars', 'images', 'docs')}})
-            print(f"[{i + 1}/{len(chats)}] {label}")
             extra = f", {stats['images']} img" if stats['images'] else ''
             extra += f", {stats['docs']} doc" if stats['docs'] else ''
-            print(f"  -> {stats['turns']}t, {stats['chars']:,} chars{extra} "
-                  f"[{path}, {time.time() - t0:.1f}s]")
+            print(f'[{i + 1}/{len(chats)}] {label} -> {stats["turns"]}t, '
+                  f'{stats["chars"]:,} chars{extra}')
+            if log:
+                print(f'    path: {path} · {time.time() - t0:.1f}s')
         except Exception as e:
             print(f'[{i + 1}/{len(chats)}] {label} -> FAILED: {e}')
             traceback.print_exc()
@@ -592,19 +603,39 @@ def run(page, chats: list[dict], out_dir: Path, keep_raw: bool = False,
     return results
 
 
-def main(argv=None):
-    ap = argparse.ArgumentParser(prog='reclaim scrape aistudio')
-    ap.add_argument('--url', help='Scrape single chat URL')
-    ap.add_argument('--only', help='Only chats whose title contains this substring')
-    ap.add_argument('--start', type=int, default=0)
-    ap.add_argument('--limit', type=int, default=0)
-    ap.add_argument('--resume', action='store_true')
-    ap.add_argument('--keep-raw', action='store_true', help=argparse.SUPPRESS)
+def build_parser() -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(
+        prog='reclaim googleaistudio',
+        description='Archive Google AI Studio chats (update by default).')
+    ap.add_argument('title', nargs='?',
+                    help='fetch chats whose title contains this '
+                         '(case-insensitive)')
+    ap.add_argument('--rebuild', action='store_true',
+                    help='fetch everything, overwriting local copies')
+    ap.add_argument('--url', help='fetch one exact chat URL')
+    ap.add_argument('--list', action='store_true',
+                    help='print chat titles, no download')
+    ap.add_argument('--log', action='store_true',
+                    help='verbose per-chat progress and timings')
+    ap.add_argument('--dry-run', action='store_true',
+                    help='preview what would be fetched; nothing downloaded')
+    ap.add_argument('--skip', type=int, default=0,
+                    help='skip the first N chats in the listing')
+    ap.add_argument('--limit', type=int, default=0,
+                    help='fetch at most N chats')
     ap.add_argument('--no-raw', action='store_true',
-                    help='Do not save media-stripped raw.json per chat')
+                    help='do not save media-stripped raw.json per chat')
     ap.add_argument('-o', '--output-dir',
-                    default=str(Path(__file__).resolve().parents[2] / 'Google AI Studio'))
+                    default=str(Path(__file__).resolve().parents[2]
+                                / 'Google AI Studio'))
+    return ap
+
+
+def main(argv=None):
+    ap = build_parser()
     args = ap.parse_args(argv)
+    if args.title and args.url:
+        ap.error('pass a title or --url, not both')
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -626,20 +657,30 @@ def main(argv=None):
                     print(f'ListPrompts failed ({e}); falling back to DOM scan')
                     chats = get_chat_list(page)
                 updated_map = {c['id']: c.get('updated_at') for c in chats}
-            if args.only:
-                chats = [c for c in chats if args.only.lower() in (c.get('title') or '').lower()]
-            if args.start:
-                chats = chats[args.start:]
+            if args.title:
+                chats = [c for c in chats
+                         if args.title.lower() in (c.get('title') or '').lower()]
+            if args.skip:
+                chats = chats[args.skip:]
             if args.limit:
                 chats = chats[:args.limit]
             if not chats:
                 print('No chats matched.')
                 return 1
+            if args.list:
+                for n, c in enumerate(chats, 1):
+                    print(f'{n}. {c.get("title") or c["id"]}')
+                print(f'-- {len(chats)} chat(s)')
+                return 0
+            skip_unchanged = not args.rebuild and not args.title
+            if args.dry_run:
+                sync = SyncState(out_dir, PROVIDER, migrate=False)
+                return print_dry_run(chats, updated_map, sync, skip_unchanged)
 
             print(f"\n{'=' * 50}\n  {len(chats)} chats\n{'=' * 50}\n")
-            results = run(page, chats, out_dir, keep_raw=args.keep_raw,
-                          resume=args.resume, updated_map=updated_map,
-                          save_raw=not args.no_raw)
+            results = run(page, chats, out_dir, skip_unchanged=skip_unchanged,
+                          updated_map=updated_map, save_raw=not args.no_raw,
+                          log=args.log)
             manifest = write_manifest(out_dir, PROVIDER, results, started)
             ok = sum(1 for r in results if r.get('ok'))
             print(f"\n{'=' * 50}")

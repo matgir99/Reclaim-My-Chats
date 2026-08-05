@@ -20,8 +20,9 @@ import traceback
 from pathlib import Path
 
 from ..core import browser
-from ..core.manifest import SyncState, write_manifest
+from ..core.manifest import SyncState, print_dry_run, write_manifest
 from ..core.model import Attachment, Chat, Turn
+from ..core.progress import progress
 from ..core.writer import write_chat, write_raw
 
 BASE_URL = 'https://chat.deepseek.com/'
@@ -213,12 +214,15 @@ def materialize_attachments(page, chat: Chat, timeout_ms: int = 60000) -> int:
 # ---------------------------------------------------------------------------
 # Main (scrape mode)
 # ---------------------------------------------------------------------------
-def run(page, records: list[dict], out_dir: Path, resume: bool = False,
-        updated_map: dict | None = None) -> list[dict]:
+def run(page, records: list[dict], out_dir: Path,
+        skip_unchanged: bool = False, updated_map: dict | None = None,
+        save_raw: bool = True, log: bool = False) -> list[dict]:
+    """Archive the given records. Returns per-chat results for the manifest."""
     out_dir = Path(out_dir)
     sync = SyncState(out_dir, PROVIDER)
     results = []
     updated_map = updated_map or {}
+    t_run = time.time()
 
     for i, rec in enumerate(records):
         try:
@@ -227,24 +231,31 @@ def run(page, records: list[dict], out_dir: Path, resume: bool = False,
             results.append({'id': '?', 'title': '?', 'ok': False, 'error': str(e)})
             continue
         label = (chat.title or chat.id)[:55]
-        if resume and sync.is_unchanged(chat.id, updated_map.get(chat.id)):
+        if log:
+            print(progress(i + 1, len(records), t_run))
+        if skip_unchanged and sync.is_unchanged(chat.id,
+                                                updated_map.get(chat.id)):
             print(f'[{i + 1}/{len(records)}] {label} -> skip (unchanged)')
             continue
         t0 = time.time()
         try:
-            materialize_attachments(page, chat)
+            n_files = materialize_attachments(page, chat)
             stats = write_chat(chat, out_dir)
-            try:
-                write_raw(stats['dir'], rec)
-            except Exception:
-                pass
+            if save_raw:
+                try:
+                    write_raw(stats['dir'], rec)
+                except Exception:
+                    pass
             sync.mark(chat.id, updated_map.get(chat.id), str(stats['md']))
-            users = sum(1 for t in chat.visible_turns() if t.role == 'user')
             results.append({'id': chat.id, 'title': chat.title, 'ok': True,
                             'duration_s': round(time.time() - t0, 1),
                             **{k: stats[k] for k in ('turns', 'chars', 'images', 'docs')}})
-            print(f'[{i + 1}/{len(records)}] {label}')
-            print(f"  -> {stats['turns']}t ({users}u), {stats['chars']:,} chars")
+            extra = f", {stats['images']} img" if stats['images'] else ''
+            extra += f", {stats['docs']} doc" if stats['docs'] else ''
+            print(f'[{i + 1}/{len(records)}] {label} -> {stats["turns"]}t, '
+                  f'{stats["chars"]:,} chars{extra}')
+            if log:
+                print(f'    files: {n_files} · {time.time() - t0:.1f}s')
         except Exception as e:
             print(f'[{i + 1}/{len(records)}] {label} -> FAILED: {e}')
             traceback.print_exc()
@@ -254,16 +265,53 @@ def run(page, records: list[dict], out_dir: Path, resume: bool = False,
     return results
 
 
-def main(argv=None):
-    ap = argparse.ArgumentParser(prog='reclaim scrape deepseek')
-    ap.add_argument('--url', help='Scrape single chat URL')
-    ap.add_argument('--only', help='Only chats whose title contains this substring')
-    ap.add_argument('--start', type=int, default=0)
-    ap.add_argument('--limit', type=int, default=0)
-    ap.add_argument('--resume', action='store_true')
+def build_parser() -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(
+        prog='reclaim deepseek',
+        description='Archive DeepSeek Chat history (update by default).')
+    ap.add_argument('title', nargs='?',
+                    help='fetch chats whose title contains this '
+                         '(case-insensitive)')
+    ap.add_argument('--rebuild', action='store_true',
+                    help='fetch everything, overwriting local copies')
+    ap.add_argument('--url', help='fetch one exact chat URL')
+    ap.add_argument('--list', action='store_true',
+                    help='print chat titles, no download')
+    ap.add_argument('--log', action='store_true',
+                    help='verbose per-chat progress and timings')
+    ap.add_argument('--dry-run', action='store_true',
+                    help='preview what would be fetched; nothing downloaded')
+    ap.add_argument('--skip', type=int, default=0,
+                    help='skip the first N chats in the listing')
+    ap.add_argument('--limit', type=int, default=0,
+                    help='fetch at most N chats')
+    ap.add_argument('--no-raw', action='store_true',
+                    help='do not save media-stripped raw.json per chat')
     ap.add_argument('-o', '--output-dir',
-                    default=str(Path(__file__).resolve().parents[2] / 'Deepseek Chat'))
+                    default=str(Path(__file__).resolve().parents[2]
+                                / 'Deepseek Chat'))
+    return ap
+
+
+def _rec_id(rec: dict) -> str:
+    try:
+        return rec.get('data', rec).get('chat_session', {}).get('id') or '?'
+    except Exception:
+        return '?'
+
+
+def _rec_title(rec: dict) -> str:
+    try:
+        return record_to_chat(rec).title
+    except Exception:
+        return '?'
+
+
+def main(argv=None):
+    ap = build_parser()
     args = ap.parse_args(argv)
+    if args.title and args.url:
+        ap.error('pass a title or --url, not both')
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -286,23 +334,32 @@ def main(argv=None):
                 print(f'Found {len(summaries)} chats. Loading full records...')
                 updated_map = {s['id']: s.get('updated_at') for s in summaries}
                 records = read_all_records(page)
-                if args.only:
-                    keep = {s['id'] for s in summaries
-                            if args.only.lower() in (s.get('title') or '').lower()}
-                    records = [r for r in records
-                               if (r.get('data', r).get('chat_session', {})
-                                   .get('id')) in keep]
-            if args.start:
-                records = records[args.start:]
+            if args.title:
+                records = [r for r in records
+                           if args.title.lower() in _rec_title(r).lower()]
+            if args.skip:
+                records = records[args.skip:]
             if args.limit:
                 records = records[:args.limit]
             if not records:
                 print('No chats matched.')
                 return 1
+            if args.list:
+                for n, r in enumerate(records, 1):
+                    print(f'{n}. {_rec_title(r)}')
+                print(f'-- {len(records)} chat(s)')
+                return 0
+            skip_unchanged = not args.rebuild and not args.title
+            if args.dry_run:
+                sync = SyncState(out_dir, PROVIDER, migrate=False)
+                view = [{'id': _rec_id(r), 'title': _rec_title(r)}
+                        for r in records]
+                return print_dry_run(view, updated_map, sync, skip_unchanged)
 
             print(f"\n{'=' * 50}\n  {len(records)} chats\n{'=' * 50}\n")
-            results = run(page, records, out_dir, resume=args.resume,
-                          updated_map=updated_map)
+            results = run(page, records, out_dir, skip_unchanged=skip_unchanged,
+                          updated_map=updated_map, save_raw=not args.no_raw,
+                          log=args.log)
             manifest = write_manifest(out_dir, PROVIDER, results, started)
             ok = sum(1 for r in results if r.get('ok'))
             print(f"\n{'=' * 50}")

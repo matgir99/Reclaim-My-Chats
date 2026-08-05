@@ -1,16 +1,21 @@
 #!/usr/bin/env bash
-# Generic safe runner for ReclaimMyChats scrape modes.
+# Generic safe runner for ReclaimMyChats providers.
 # Usage:
-#   ./run.sh <aistudio|deepseek> [extra scraper args...]   # launch detached
-#   ./run.sh status                                        # show progress
-#   ./run.sh stop                                          # stop scraper + chrome
+#   ./run.sh <googleaistudio|deepseek|kimi|chatgpt|all> [args...]  # detached
+#   ./run.sh status                                               # runner status
+#   ./run.sh stop                                                 # stop + chrome
 #
 # Examples:
-#   ./run.sh aistudio --resume
-#   ./run.sh deepseek
+#   ./run.sh googleaistudio
+#   ./run.sh all --rebuild
+#   ./run.sh deepseek "latex"
 #   ./run.sh status
 #
 # Notes:
+# * Args are forwarded to `python -m reclaim <provider> [args...]`; the full
+#   CLI surface applies (--rebuild, --list, --log, --dry-run, --skip, ...).
+# * Runner status above is the detached-runner status (PID + log tail). For
+#   the archive overview run `python -m reclaim status`.
 # * Never use `pkill -f <pattern>` where the pattern also appears in this
 #   command line — pkill matches the invoking shell and kills it.
 # * setsid detaches into a new session so the job survives the terminal.
@@ -35,14 +40,14 @@ cmd_start() {
     # setsid is Linux-only; macOS falls back to nohup alone (still
     # survives terminal close via SIGHUP immunity).
     if command -v setsid >/dev/null 2>&1; then
-        setsid nohup "$PY" -u -m reclaim scrape "$provider" "$@" \
+        setsid nohup "$PY" -u -m reclaim "$provider" "$@" \
             >> "$LOGFILE" 2>&1 < /dev/null &
     else
-        nohup "$PY" -u -m reclaim scrape "$provider" "$@" \
+        nohup "$PY" -u -m reclaim "$provider" "$@" \
             >> "$LOGFILE" 2>&1 < /dev/null &
     fi
     echo $! > "$PIDFILE"
-    echo "started 'scrape $provider' PID $(cat "$PIDFILE") — log: $LOGFILE"
+    echo "started '$provider' PID $(cat "$PIDFILE") — log: $LOGFILE"
 }
 
 cmd_status() {
@@ -64,9 +69,9 @@ cmd_stop() {
 }
 
 case "${1:-}" in
-    aistudio|deepseek) cmd_start "$@" ;;
+    googleaistudio|deepseek|kimi|chatgpt|all) cmd_start "$@" ;;
     status)            cmd_status ;;
     stop)              cmd_stop ;;
-    *) echo "usage: $0 {aistudio|deepseek [args...]|status|stop}"
-       echo "  e.g. ./run.sh aistudio --resume | ./run.sh status | ./run.sh stop"; exit 1 ;;
+    *) echo "usage: $0 {googleaistudio|deepseek|kimi|chatgpt|all [args...]|status|stop}"
+       echo "  e.g. ./run.sh googleaistudio --rebuild | ./run.sh all | ./run.sh status | ./run.sh stop"; exit 1 ;;
 esac

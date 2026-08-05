@@ -39,8 +39,18 @@ def write_manifest(out_dir: Path, provider: str, results: list[dict],
 
 
 class SyncState:
-    def __init__(self, out_dir: Path, provider: str):
+    # One-time renames for providers that changed names (prevents re-downloading
+    # the whole archive on the first update run after the rename).
+    LEGACY = {'googleaistudio': 'aistudio'}
+
+    def __init__(self, out_dir: Path, provider: str, migrate: bool = True):
         self.path = Path(out_dir) / f'.last_sync_{provider}.json'
+        if migrate and not self.path.exists():
+            legacy = self.LEGACY.get(provider)
+            if legacy:
+                old = Path(out_dir) / f'.last_sync_{legacy}.json'
+                if old.exists():
+                    old.rename(self.path)
         try:
             self._state = json.loads(self.path.read_text())
         except Exception:
@@ -49,13 +59,19 @@ class SyncState:
     def known(self, chat_id: str) -> dict | None:
         return self._state.get(chat_id)
 
-    def is_unchanged(self, chat_id: str, updated_at) -> bool:
+    def classify(self, chat_id: str, updated_at) -> str:
+        """'new' (no local record), 'changed' (record, timestamp differs),
+        or 'unchanged' (record matches). Missing timestamps fall back to
+        presence: an existing record means 'unchanged'."""
         prev = self._state.get(chat_id)
         if prev is None:
-            return False
+            return 'new'
         if updated_at is None:
-            return True  # no timestamp info -> treat "already saved" as unchanged
-        return prev.get('updated_at') == updated_at
+            return 'unchanged'
+        return 'changed' if prev.get('updated_at') != updated_at else 'unchanged'
+
+    def is_unchanged(self, chat_id: str, updated_at) -> bool:
+        return self.classify(chat_id, updated_at) == 'unchanged'
 
     def mark(self, chat_id: str, updated_at, md_path: str):
         self._state[chat_id] = {'updated_at': updated_at, 'md': md_path}
@@ -63,3 +79,55 @@ class SyncState:
     def save(self):
         self.path.write_text(json.dumps(self._state, indent=2,
                                         ensure_ascii=False))
+
+
+def plan_fetch(chats: list[dict], updated_map: dict | None, sync: SyncState,
+               skip_unchanged: bool) -> dict:
+    """Classify each chat against the sync state and count what a run would do.
+
+    Used by --dry-run. Returns:
+      fetch / skip              counts of chats that would be fetched / skipped
+      new / changed / unchanged classification counts (against sync state)
+      titles                    titles of the chats that would be fetched
+    """
+    updated_map = updated_map or {}
+    n_new = n_changed = n_unchanged = 0
+    titles: list[str] = []
+    for c in chats:
+        st = sync.classify(c['id'], updated_map.get(c['id']))
+        if st == 'new':
+            n_new += 1
+        elif st == 'changed':
+            n_changed += 1
+        else:
+            n_unchanged += 1
+        if not skip_unchanged or st != 'unchanged':
+            titles.append(str(c.get('title') or c.get('name') or c.get('id')
+                              or '?'))
+    if skip_unchanged:
+        return {'fetch': n_new + n_changed, 'skip': n_unchanged,
+                'new': n_new, 'changed': n_changed,
+                'unchanged': n_unchanged, 'titles': titles}
+    return {'fetch': len(chats), 'skip': 0, 'new': n_new,
+            'changed': n_changed, 'unchanged': n_unchanged, 'titles': titles}
+
+
+def print_dry_run(chats: list[dict], updated_map: dict | None, sync: SyncState,
+                  skip_unchanged: bool) -> int:
+    """Print what a run WOULD do (--dry-run). Returns the exit code (0).
+
+    Prints ``would fetch: N (M new, K changed) · would skip: J unchanged``
+    plus the affected titles — nothing is downloaded or written."""
+    plan = plan_fetch(chats, updated_map, sync, skip_unchanged)
+    if skip_unchanged:
+        print(f'would fetch: {plan["fetch"]} ({plan["new"]} new, '
+              f'{plan["changed"]} changed) · would skip: '
+              f'{plan["skip"]} unchanged')
+    else:
+        print(f'would fetch: {plan["fetch"]} (fresh) · would skip: 0')
+    if plan['titles']:
+        for t in plan['titles']:
+            print(f'  - {t}')
+    else:
+        print('  (nothing to fetch)')
+    return 0

@@ -15,7 +15,9 @@ Supports **Google AI Studio**, **DeepSeek Chat**, **Kimi**, and **ChatGPT**
 - **ChatGPT Projects** mirrored as subfolders (`ChatGPT/<Project>/<title>/`)
 - **Clean output**: structural thought flags (no model reasoning text),
   LaTeX `$...$`/`$$...$$` intact, original images, downloaded attachments
-- **Incremental sync**: `--resume` skips chats that haven't changed
+- **Incremental sync**: update by default — chats whose server timestamp
+  matches the local sync record are skipped automatically; `--rebuild`
+  re-fetches everything
 - **Per-chat canonical dump**: `<title>.md` + `chat.json` (machine-readable)
   + `raw.json` (media-stripped provider response) + media files
 - **Interop**: importers for third-party captures, exporter to HAEVN
@@ -52,17 +54,17 @@ This gives you the `reclaim` command (or run `python -m reclaim ...`).
 
 ## How it works
 
-One program, per-provider modes:
+One program, per-provider modes (`reclaim <provider>` updates by default):
 
-| Provider | Mode | How |
+| Provider | Command | How |
 |---|---|---|
-| Google AI Studio | `scrape` | Replays the app's own `ResolveDriveResource` RPC (SAPISIDHASH auth) — text, structural thought flags, inline original images, Drive attachment downloads |
-| Google AI Studio (offline) | `parse` | Drive folder download / Takeout zip — no browser needed |
-| DeepSeek | `scrape` | Reads the `deepseek-chat` IndexedDB directly — raw markdown, citations mapped, thinking skipped |
-| ChatGPT | `scrape` | Native REST (`/backend-api/`): conversations, Projects, two-step signed-URL file downloads |
-| ChatGPT | `import` | Official `conversations.json` export, or scrapemychats export dirs (incl. media) |
-| Kimi | `scrape` | Native REST (`/apiv2/`, bearer from localStorage) |
-| Kimi, Claude, Grok, Gemini | `import` | Kept vault (`~/.kept/vault`) — install Kept, sync, import |
+| Google AI Studio | `reclaim googleaistudio` | Replays the app's own `ResolveDriveResource` RPC (SAPISIDHASH auth) — text, structural thought flags, inline original images, Drive attachment downloads |
+| Google AI Studio (offline) | `reclaim parse aistudio` | Drive folder download / Takeout zip — no browser needed |
+| DeepSeek | `reclaim deepseek` | Reads the `deepseek-chat` IndexedDB directly — raw markdown, citations mapped, thinking skipped |
+| ChatGPT | `reclaim chatgpt` | Native REST (`/backend-api/`): conversations, Projects, two-step signed-URL file downloads |
+| ChatGPT | `reclaim import chatgpt` | Official `conversations.json` export, or scrapemychats export dirs (incl. media) |
+| Kimi | `reclaim kimi` | Native REST (`/apiv2/`, bearer from localStorage) |
+| Kimi, Claude, Grok, Gemini | `reclaim import kept` | Kept vault (`~/.kept/vault`) — install Kept, sync, import |
 
 Output contract per chat: `<Provider>/<Project>/<title>/<title>.md` +
 `chat.json` + `raw.json` + media. Thoughts omitted, filenames de-duplicated,
@@ -72,17 +74,24 @@ manifests track every run (see `docs/ARCHITECTURE.md`).
 
 ```bash
 # Google AI Studio (first run opens a window for Google login)
-reclaim scrape aistudio                 # full library
-reclaim scrape aistudio --resume        # incremental (skips unchanged)
-reclaim scrape aistudio --only qnap     # title filter
+reclaim googleaistudio                 # update: new + changed chats only
+reclaim googleaistudio --rebuild       # everything, freshly (overwrite)
+reclaim googleaistudio "latex"         # chats whose title contains "latex"
+reclaim googleaistudio --list          # print chat titles, no download
 
 # DeepSeek / Kimi / ChatGPT (first run logs in via browser window)
-reclaim scrape deepseek --resume
-reclaim scrape kimi --resume
-reclaim scrape chatgpt --resume         # includes ChatGPT Projects
+reclaim deepseek --dry-run             # preview what WOULD be fetched
+reclaim kimi --log                     # update with verbose progress + ETA
+reclaim chatgpt                        # update (includes ChatGPT Projects)
+reclaim all                            # update all four providers, in order
+reclaim all --rebuild                  # rebuild everything
+
+# Archive overview (fully offline, no browser)
+reclaim status
 
 # Detached runs with PID + log (Linux/macOS bash)
-./run.sh aistudio --resume              # ./run.sh status | stop
+./run.sh googleaistudio --rebuild      # ./run.sh status | stop
+./run.sh all                           # all providers, sequentially
 
 # AI Studio offline (no browser): download the "Google AI Studio" folder
 # from drive.google.com (or a Takeout zip), then
@@ -100,10 +109,31 @@ reclaim import kept ~/.kept/vault --providers kimi
 reclaim export haevn-md . archive.zip
 ```
 
+### CLI surface
+
+```
+reclaim <provider> [TITLE] [options]     update: new + changed chats only
+reclaim <provider> --rebuild [options]   everything, freshly (overwrite)
+reclaim <provider> "latex"               chats whose title contains "latex"
+reclaim <provider> --url URL             one exact chat
+reclaim <provider> --list [TITLE]        print chat titles, no download
+reclaim <provider> --log [options]       verbose progress + timings
+reclaim <provider> --dry-run [options]   preview what would be fetched
+reclaim status [-o DIR]                  offline archive overview
+reclaim all [options]                    update all four providers, in order
+```
+
+Providers: `googleaistudio`, `deepseek`, `kimi`, `chatgpt` (`all` = every
+provider). Common options: `--skip N`, `--limit N`, `--dry-run`, `--no-raw`,
+`-o/--output-dir`. Naming a `TITLE` (or `--url`) always fetches those chats
+freshly; nothing else is touched. `--dry-run` logs in and lists, prints what
+a run would fetch (`would fetch: N (M new, K changed) · would skip: J
+unchanged`), and downloads nothing.
+
 Authentication: you log in **once per provider** in a real browser window
 that appears during the first run; sessions are stored in
 `.playwright-profile/` (a normal Chromium profile, git-ignored, owner-only
-permissions). `--resume` needs no re-login unless sessions expire. To
+permissions). Update runs need no re-login unless sessions expire. To
 remove stored credentials at any time: log out of the sites in the profile
 browser and delete `.playwright-profile/`.
 

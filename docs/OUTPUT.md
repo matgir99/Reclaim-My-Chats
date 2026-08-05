@@ -82,4 +82,6 @@ stripped. Purely an insurance artifact for recovering from parser bugs.
 }
 ```
 
-`--resume` reads it to skip chats that haven't changed.
+The per-provider sync state (`.last_sync_<provider>.json`) is what the default
+update mode reads to skip chats that haven't changed; `reclaim status` reads
+this manifest for the archive overview.

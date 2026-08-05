@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from reclaim.core.model import Attachment, Chat, Turn
 from reclaim.core.writer import img_ext, slugify, write_chat
-from reclaim.providers.aistudio import entries_to_chat, parse_rpc
+from reclaim.providers.googleaistudio import entries_to_chat, parse_rpc
 from reclaim.providers.aistudio_files import parse_prompt_file
 from reclaim.providers.chatgpt_import import parse_conversation
 from reclaim.providers.deepseek import record_to_chat

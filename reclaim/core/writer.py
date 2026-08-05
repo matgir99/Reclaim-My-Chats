@@ -93,6 +93,16 @@ def _dump_chat_json(chat: Chat, chat_dir: Path, saved: list[dict]) -> None:
 _RAW_PLACEHOLDER = '<omitted: media bytes saved as files in this folder>'
 
 
+def _same_chat(chat_dir: Path, chat_id: str) -> bool:
+    """True when this dir's chat.json belongs to the same chat id — i.e. the
+    folder is being re-written by a re-fetch, not shared by a title collision."""
+    try:
+        payload = json.loads((chat_dir / 'chat.json').read_text())
+        return payload.get('id') == chat_id
+    except Exception:
+        return False
+
+
 def write_raw(chat_dir: Path, obj, max_str: int = 200_000) -> Path:
     """Write raw.json: the provider's original response, with oversized
     (media/base64) string payloads replaced by a placeholder — images are
@@ -121,10 +131,18 @@ def write_chat(chat: Chat, out_dir: Path) -> dict:
         chat_dir = Path(out_dir) / slug
     chat_dir.mkdir(parents=True, exist_ok=True)
     md = chat_dir / f'{slug}.md'
-    c = 1
-    while md.exists():
-        md = chat_dir / f'{slug}_{c}.md'
-        c += 1
+    if _same_chat(chat_dir, chat.id):
+        # Re-fetch of the same chat: overwrite the canonical md and drop
+        # stale md files left by an older title slug (slugify collisions).
+        # Media files stay additive; chat.json/raw.json are overwritten below.
+        for stale in chat_dir.glob('*.md'):
+            if stale != md:
+                stale.unlink()
+    else:
+        c = 1
+        while md.exists():
+            md = chat_dir / f'{slug}_{c}.md'
+            c += 1
 
     dedup = _NameDedup()
     n_imgs = n_docs = n_links = 0

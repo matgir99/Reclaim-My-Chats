@@ -74,13 +74,21 @@ reclaim/
 ## CLI contract
 
 ```bash
-python -m reclaim scrape aistudio [--resume] [--only X] [--keep-raw]
-python -m reclaim scrape deepseek  [--resume]
+python -m reclaim googleaistudio [TITLE] [--rebuild] [--list] [--dry-run]
+python -m reclaim deepseek   [TITLE] [--rebuild] [--list] [--dry-run]
+python -m reclaim kimi      [TITLE] [--rebuild] [--list] [--dry-run]
+python -m reclaim chatgpt   [TITLE] [--rebuild] [--list] [--dry-run]
+python -m reclaim all       [--rebuild]              # all four, in order
+python -m reclaim status    [-o DIR]                 # offline overview
 python -m reclaim parse  aistudio --from-folder <dir-of-Drive/Takeout-json>
 python -m reclaim import chatgpt <conversations.json>
 python -m reclaim import kept <vault-dir> [--providers kimi,claude]
 python -m reclaim export haevn-md <out.zip>
 ```
+
+`reclaim <provider>` updates by default (skips chats whose server timestamp
+matches the local sync record); a `TITLE` positional or `--url` fetches
+those chats freshly. See `CLI_REDESIGN.md` for the full surface.
 
 ## Design rules
 
@@ -88,8 +96,8 @@ python -m reclaim export haevn-md <out.zip>
    attachments, thoughts filtered, names de-duplicated. Every mode produces
    exactly this.
 2. **Raw-first**: every mode can persist the provider's raw data
-   (`--keep-raw`, or the input file itself for imports) so parsers re-run
-   offline and regressions are fixture-testable.
+   (`raw.json` per chat, or the input file itself for imports) so parsers
+   re-run offline and regressions are fixture-testable.
 3. **Modes are isolated and dumb**: each provider module is acquire→model;
    `core/writer.py` is the only place that writes files.
 4. **Replaceable edges**: any acquisition path can be swapped (RPC replay →

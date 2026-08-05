@@ -37,6 +37,7 @@ from pathlib import Path
 
 SOURCE_NAMES = {
     'aistudio': 'AI Studio',
+    'googleaistudio': 'AI Studio',
     'deepseek': 'DeepSeek',
     'chatgpt': 'ChatGPT',
 }
@@ -85,7 +86,7 @@ def chat_to_haevn_md(payload: dict) -> str:
 _MD_SECTION_RE = re.compile(r'^## (User|Assistant)\s*$', re.MULTILINE)
 
 
-_DIR_PROVIDER = {'Google AI Studio': 'aistudio', 'Deepseek Chat': 'deepseek',
+_DIR_PROVIDER = {'Google AI Studio': 'googleaistudio', 'Deepseek Chat': 'deepseek',
                  'ChatGPT': 'chatgpt', 'Kimi Chat': 'kept/kimi',
                  'Claude': 'kept/claude', 'Gemini': 'kept/gemini',
                  'Grok': 'kept/grok'}

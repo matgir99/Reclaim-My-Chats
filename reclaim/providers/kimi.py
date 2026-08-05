@@ -25,8 +25,9 @@ import traceback
 from pathlib import Path
 
 from ..core import browser
-from ..core.manifest import SyncState, write_manifest
+from ..core.manifest import SyncState, print_dry_run, write_manifest
 from ..core.model import Chat, Turn
+from ..core.progress import progress
 from ..core.writer import write_chat, write_raw
 
 BASE_URL = 'https://www.kimi.com'
@@ -235,15 +236,20 @@ def _materialize_images(page, chat: Chat, image_map: dict) -> int:
 
 
 def run(page, token: str, chats: list[dict], out_dir: Path,
-        resume: bool = False) -> list[dict]:
+        skip_unchanged: bool = False, save_raw: bool = True,
+        log: bool = False) -> list[dict]:
+    """Fetch the given chats. Returns per-chat results for the manifest."""
     out_dir = Path(out_dir)
     sync = SyncState(out_dir, PROVIDER)
     results = []
+    t_run = time.time()
     for i, item in enumerate(chats):
         chat_id = item.get('id') or item.get('chat_id') or ''
         label = (item.get('name') or item.get('title') or chat_id)[:55]
         updated = item.get('updateTime') or item.get('updated_at')
-        if resume and sync.is_unchanged(chat_id, updated):
+        if log:
+            print(progress(i + 1, len(chats), t_run))
+        if skip_unchanged and sync.is_unchanged(chat_id, updated):
             print(f'[{i + 1}/{len(chats)}] {label} -> skip (unchanged)')
             continue
         t0 = time.time()
@@ -260,17 +266,21 @@ def run(page, token: str, chats: list[dict], out_dir: Path,
             chat, image_map = parse_chat(meta, messages)
             n_imgs = _materialize_images(page, chat, image_map)
             stats = write_chat(chat, out_dir)
-            try:
-                write_raw(stats['dir'], {'meta': meta, 'messages': messages})
-            except Exception:
-                pass
+            if save_raw:
+                try:
+                    write_raw(stats['dir'], {'meta': meta, 'messages': messages})
+                except Exception:
+                    pass
             sync.mark(chat_id, updated, str(stats['md']))
             results.append({'id': chat_id, 'title': chat.title, 'ok': True,
                             'duration_s': round(time.time() - t0, 1),
                             **{k: stats[k] for k in ('turns', 'chars', 'images', 'docs')}})
-            print(f'[{i + 1}/{len(chats)}] {label}')
-            print(f"  -> {stats['turns']}t, {stats['chars']:,} chars"
-                  + (f', {n_imgs} img' if n_imgs else ''))
+            extra = f", {stats['images']} img" if stats['images'] else ''
+            extra += f", {stats['docs']} doc" if stats['docs'] else ''
+            print(f'[{i + 1}/{len(chats)}] {label} -> {stats["turns"]}t, '
+                  f'{stats["chars"]:,} chars{extra}')
+            if log:
+                print(f'    images: {n_imgs} · {time.time() - t0:.1f}s')
         except Exception as e:
             print(f'[{i + 1}/{len(chats)}] {label} -> FAILED: {e}')
             traceback.print_exc()
@@ -281,16 +291,39 @@ def run(page, token: str, chats: list[dict], out_dir: Path,
     return results
 
 
-def main(argv=None):
-    ap = argparse.ArgumentParser(prog='reclaim scrape kimi')
-    ap.add_argument('--url', help='Scrape single chat URL')
-    ap.add_argument('--only', help='Only chats whose title contains this substring')
-    ap.add_argument('--start', type=int, default=0)
-    ap.add_argument('--limit', type=int, default=0)
-    ap.add_argument('--resume', action='store_true')
+def build_parser() -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(
+        prog='reclaim kimi',
+        description='Archive Kimi chats (update by default).')
+    ap.add_argument('title', nargs='?',
+                    help='fetch chats whose title contains this '
+                         '(case-insensitive)')
+    ap.add_argument('--rebuild', action='store_true',
+                    help='fetch everything, overwriting local copies')
+    ap.add_argument('--url', help='fetch one exact chat URL')
+    ap.add_argument('--list', action='store_true',
+                    help='print chat titles, no download')
+    ap.add_argument('--log', action='store_true',
+                    help='verbose per-chat progress and timings')
+    ap.add_argument('--dry-run', action='store_true',
+                    help='preview what would be fetched; nothing downloaded')
+    ap.add_argument('--skip', type=int, default=0,
+                    help='skip the first N chats in the listing')
+    ap.add_argument('--limit', type=int, default=0,
+                    help='fetch at most N chats')
+    ap.add_argument('--no-raw', action='store_true',
+                    help='do not save media-stripped raw.json per chat')
     ap.add_argument('-o', '--output-dir',
-                    default=str(Path(__file__).resolve().parents[2] / 'Kimi Chat'))
+                    default=str(Path(__file__).resolve().parents[2]
+                                / 'Kimi Chat'))
+    return ap
+
+
+def main(argv=None):
+    ap = build_parser()
     args = ap.parse_args(argv)
+    if args.title and args.url:
+        ap.error('pass a title or --url, not both')
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -307,19 +340,34 @@ def main(argv=None):
                 print('Listing chats...')
                 chats = list_chats(page, token)
                 print(f'Found {len(chats)} chats')
-            if args.only:
+            if args.title:
                 chats = [c for c in chats
-                         if args.only.lower() in ((c.get('name') or c.get('title') or '').lower())]
-            if args.start:
-                chats = chats[args.start:]
+                         if args.title.lower() in
+                         ((c.get('name') or c.get('title') or '').lower())]
+            if args.skip:
+                chats = chats[args.skip:]
             if args.limit:
                 chats = chats[:args.limit]
             if not chats:
                 print('No chats matched.')
                 return 1
+            if args.list:
+                for n, c in enumerate(chats, 1):
+                    print(f'{n}. {c.get("name") or c.get("title") or c["id"]}')
+                print(f'-- {len(chats)} chat(s)')
+                return 0
+            skip_unchanged = not args.rebuild and not args.title
+            if args.dry_run:
+                sync = SyncState(out_dir, PROVIDER, migrate=False)
+                updated_map = {c.get('id') or c.get('chat_id') or '':
+                               c.get('updateTime') or c.get('updated_at')
+                               for c in chats}
+                return print_dry_run(chats, updated_map, sync, skip_unchanged)
 
             print(f"\n{'=' * 50}\n  {len(chats)} chats\n{'=' * 50}\n")
-            results = run(page, token, chats, out_dir, resume=args.resume)
+            results = run(page, token, chats, out_dir,
+                          skip_unchanged=skip_unchanged,
+                          save_raw=not args.no_raw, log=args.log)
             manifest = write_manifest(out_dir, PROVIDER, results, started)
             ok = sum(1 for r in results if r.get('ok'))
             print(f"\n{'=' * 50}")
