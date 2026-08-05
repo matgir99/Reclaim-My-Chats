@@ -1,3 +1,6 @@
+# Github folder
+.github/
+
 # Playwright browser profile (cookies, cache, sessions)
 .playwright-profile/
 .playwright-mcp/
