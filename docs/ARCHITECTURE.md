@@ -20,9 +20,8 @@ fidelity, simple files) stays ours.
 ## Why not a monolith of per-provider scrapers
 
 That is rebuilding HAEVN/Kept in Python and inheriting every provider's
-maintenance burden (ChatGPT throttling, Kimi auth, …). The analysis
-(`docs/research/ANALYSIS.md`) concluded: compete on nothing, interoperate on
-files.
+maintenance burden (ChatGPT throttling, Kimi auth, …). The internal analysis
+concluded: compete on nothing, interoperate on files.
 
 ## The pipeline
 

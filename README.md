@@ -112,7 +112,7 @@ reclaim parse googleaistudio --from-folder ~/Downloads/"Google AI Studio" \
 # chatgpt.com → Settings → Data Controls → Export, then
 reclaim import chatgpt ~/Downloads/conversations.json
 
-# Kimi / Claude / Grok / Gemini via Kept (see docs/providers/kimi.md)
+# Kimi / Claude / Grok / Gemini via Kept
 reclaim import kept ~/.kept/vault --providers kimi
 
 # Push the whole archive into HAEVN's search UI
@@ -207,10 +207,8 @@ scripts/                   # shared shell helpers (newest-python picker)
 
 ## Docs
 
-- `docs/STATUS.md` — current status + task tracker
-- `docs/PLAN.md` — original build plan (complete)
 - `docs/ARCHITECTURE.md` — hub-and-spoke design rationale
-- `docs/research/` — survey + analysis of existing OSS export tools
-- `docs/providers/kimi.md` — Kimi/Kept details
+- `docs/OUTPUT.md` — the archive output contract
+- `docs/CLI_REDESIGN.md` — v3 CLI design spec
 - `NOTICE.md` — attribution and licensing notes
 - `LICENSE` — MIT
