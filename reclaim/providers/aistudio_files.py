@@ -129,7 +129,7 @@ def run(folder: Path, out_dir: Path, titles: dict | None = None,
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(prog='reclaim parse aistudio')
+    ap = argparse.ArgumentParser(prog='reclaim parse googleaistudio')
     ap.add_argument('--from-folder', required=True,
                     help='Folder of Drive-exported prompt JSONs (or a Takeout .zip)')
     ap.add_argument('--titles', help='Optional JSON map: drive_id -> title')

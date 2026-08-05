@@ -300,6 +300,33 @@ class TestStatus(unittest.TestCase):
         # the fallback read must NOT rename (status is read-only)
         self.assertTrue((ga / '.last_sync_aistudio.json').exists())
 
+    def test_archive_totals_from_chat_json(self):
+        """Archive totals come from chat.json files, not the last-run manifest
+        (an idle update run zeroes the manifest totals; the archive itself
+        is the source of truth)."""
+        ga = self._ga_dir()
+        (ga / 'Chat One' / 'chat.json').write_text(json.dumps({
+            'id': 'a', 'turns': [
+                {'role': 'user', 'text': 'hello', 'images': [],
+                 'attachments': []},
+                {'role': 'assistant', 'text': 'world!',
+                 'images': ['1.png', '2.png'], 'attachments': ['f.pdf']},
+            ]}))
+        (ga / 'Chat Two' / 'chat.json').write_text(json.dumps({
+            'id': 'b', 'turns': [
+                {'role': 'user', 'text': 'abc', 'images': ['x.png'],
+                 'attachments': []},
+            ]}))
+        infos = status.scan(self.root)
+        ga_info = next(i for i in infos if i.provider == 'googleaistudio')
+        self.assertEqual(ga_info.archive_chars, len('hello') + len('world!') + 3)
+        self.assertEqual(ga_info.archive_images, 3)
+        self.assertEqual(ga_info.archive_docs, 1)
+        out = status.format_status(ga_info)
+        self.assertIn('archive totals: 3 images · 1 doc · 14 chars', out)
+        # last-run manifest line still present alongside archive totals
+        self.assertIn('last run: 3 ok, 0 failed', out)
+
 
 class TestDispatch(unittest.TestCase):
     """reclaim/__main__.py arg routing — offline, no browser."""

@@ -15,7 +15,7 @@ Thanks for considering a contribution to ReclaimMyChats!
 ## Before opening a PR
 
 ```bash
-./run_tests.sh          # offline tests must pass
+./scripts/run_tests.sh  # offline tests must pass
 ruff check reclaim/ tests/
 pyright reclaim/ tests/
 ```

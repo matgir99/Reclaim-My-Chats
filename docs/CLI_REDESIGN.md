@@ -73,7 +73,7 @@ the `scrape` subcommand, `--resume`, `--only`, `--start`, `--retrieve`, `--updat
 7. **Progress/logging:** compact per-chat line is **always printed** (normalize the existing prints to `[i/N] Title -> Nt, N,NNN chars[, N img][, N doc]`). Add `--log` verbose layer: `[i/N] NN% · elapsed M:SS · ETA M:SS` plus per-chat detail (path used, timings). Small helper in `reclaim/core/progress.py`, e.g. `progress(i, n, t0) -> str`; wire into all four `run()` loops via a `log: bool = False` param.
 8. **`reclaim all`:** in `__main__.py`, loop the four provider mains with the same argv; collect return codes; print a one-line-per-provider summary at the end.
 9. **`reclaim status`:** fully offline (no browser/login) archive overview — read each provider dir's latest `.reclaim_manifest.json` + `.last_sync_<provider>.json`: chats archived, last sync time + duration, failures in the last run, totals (images/chars); missing dir → `not archived yet`. Implement in `reclaim/core/status.py` (pure file reading, unit-testable), wire as a `status` subcommand in `__main__.py`; `-o` overrides the scan root.
-10. **Update `run.sh`:** usage becomes `./run.sh <googleaistudio|deepseek|kimi|chatgpt|all> [args...] | status | stop`, forwarding to `python -m reclaim "$PROVIDER" "$@"`; update the header comment + usage examples. (This also closes the open STATUS.md item "extend run.sh to kimi/chatgpt".)
+10. **Update `run.sh`:** usage becomes `./run.sh <googleaistudio|deepseek|kimi|chatgpt|all> [args...] | progress | stop`, forwarding to `python -m reclaim "$PROVIDER" "$@"`; update the header comment + usage examples. (This also closes the open STATUS.md item "extend run.sh to kimi/chatgpt".)
 11. **Docs:** rewrite README usage/Quickstart sections to the new surface, including `status` and `--dry-run` (keep install/platform sections). Update `docs/STATUS.md` CLI references + tick the run.sh item. **Do NOT edit `docs/PLAN.md`** (historical master plan; checkbox-only rule).
 12. **Tests** (`tests/`, all offline):
     - fix imports after the module rename
@@ -82,7 +82,7 @@ the `scrape` subcommand, `--resume`, `--only`, `--start`, `--retrieve`, `--updat
     - SyncState: legacy `.last_sync_aistudio.json` migration; `is_unchanged` timestamp semantics
     - dry-run: correct new/changed/unchanged counts against a fake sync state; performs no writes
     - status: aggregation from fixture manifests/sync-state files (counts, last-sync, failures)
-    - run `./run_tests.sh` (auto-picks python3.14)
+    - run `./scripts/run_tests.sh` (auto-picks python3.14)
 13. **Gates:** `python -m pyright` 0 errors · `ruff check` clean · all tests green. Then one commit + push. Suggest tagging **v3.0.0** (breaking CLI change) but leave tagging to the owner.
 
 ## 5. Decisions / exclusions

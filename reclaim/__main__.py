@@ -14,7 +14,7 @@ Usage:
   reclaim import kept VAULT [--providers kimi,claude] [-o DIR]
   reclaim import chatgpt CONVERSATIONS.json [-o DIR]
   reclaim import scrapemychats EXPORT_DIR [-o DIR]
-  reclaim parse  aistudio --from-folder DIR [--titles MAP.json] [-o DIR]
+  reclaim parse  googleaistudio --from-folder DIR [--titles MAP.json] [-o DIR]
   reclaim export haevn-md . archive.zip
 
 Providers: googleaistudio, deepseek, kimi, chatgpt (all = every provider).
@@ -41,7 +41,7 @@ PROVIDERS = {
 }
 ALL_PROVIDERS = list(PROVIDERS)
 PARSERS = {
-    'aistudio': 'reclaim.providers.aistudio_files',
+    'googleaistudio': 'reclaim.providers.aistudio_files',
 }
 IMPORTERS = {
     'kept': 'reclaim.providers.kept_vault',

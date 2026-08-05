@@ -2,20 +2,20 @@
 # Generic safe runner for ReclaimMyChats providers.
 # Usage:
 #   ./run.sh <googleaistudio|deepseek|kimi|chatgpt|all> [args...]  # detached
-#   ./run.sh status                                               # runner status
+#   ./run.sh progress                                             # live run progress
 #   ./run.sh stop                                                 # stop + chrome
 #
 # Examples:
 #   ./run.sh googleaistudio
 #   ./run.sh all --rebuild
 #   ./run.sh deepseek "latex"
-#   ./run.sh status
+#   ./run.sh progress
 #
 # Notes:
 # * Args are forwarded to `python -m reclaim <provider> [args...]`; the full
 #   CLI surface applies (--rebuild, --list, --log, --dry-run, --skip, ...).
-# * Runner status above is the detached-runner status (PID + log tail). For
-#   the archive overview run `python -m reclaim status`.
+# * `progress` = the detached run's progress (PID + log tail). For the
+#   offline archive overview run `python -m reclaim status`.
 # * Never use `pkill -f <pattern>` where the pattern also appears in this
 #   command line — pkill matches the invoking shell and kills it.
 # * setsid detaches into a new session so the job survives the terminal.
@@ -50,7 +50,7 @@ cmd_start() {
     echo "started '$provider' PID $(cat "$PIDFILE") — log: $LOGFILE"
 }
 
-cmd_status() {
+cmd_progress() {
     if [[ -f "$PIDFILE" ]] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
         echo "RUNNING (PID $(cat "$PIDFILE"))"
     else
@@ -70,8 +70,8 @@ cmd_stop() {
 
 case "${1:-}" in
     googleaistudio|deepseek|kimi|chatgpt|all) cmd_start "$@" ;;
-    status)            cmd_status ;;
+    progress)          cmd_progress ;;
     stop)              cmd_stop ;;
-    *) echo "usage: $0 {googleaistudio|deepseek|kimi|chatgpt|all [args...]|status|stop}"
-       echo "  e.g. ./run.sh googleaistudio --rebuild | ./run.sh all | ./run.sh status | ./run.sh stop"; exit 1 ;;
+    *) echo "usage: $0 {googleaistudio|deepseek|kimi|chatgpt|all [args...]|progress|stop}"
+       echo "  e.g. ./run.sh googleaistudio --rebuild | ./run.sh all | ./run.sh progress | ./run.sh stop"; exit 1 ;;
 esac

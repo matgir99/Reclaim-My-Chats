@@ -59,7 +59,7 @@ One program, per-provider modes (`reclaim <provider>` updates by default):
 | Provider | Command | How |
 |---|---|---|
 | Google AI Studio | `reclaim googleaistudio` | Replays the app's own `ResolveDriveResource` RPC (SAPISIDHASH auth) — text, structural thought flags, inline original images, Drive attachment downloads |
-| Google AI Studio (offline) | `reclaim parse aistudio` | Drive folder download / Takeout zip — no browser needed |
+| Google AI Studio (offline) | `reclaim parse googleaistudio` | Drive folder download / Takeout zip — no browser needed |
 | DeepSeek | `reclaim deepseek` | Reads the `deepseek-chat` IndexedDB directly — raw markdown, citations mapped, thinking skipped |
 | ChatGPT | `reclaim chatgpt` | Native REST (`/backend-api/`): conversations, Projects, two-step signed-URL file downloads |
 | ChatGPT | `reclaim import chatgpt` | Official `conversations.json` export, or scrapemychats export dirs (incl. media) |
@@ -90,12 +90,12 @@ reclaim all --rebuild                  # rebuild everything
 reclaim status
 
 # Detached runs with PID + log (Linux/macOS bash)
-./run.sh googleaistudio --rebuild      # ./run.sh status | stop
+./run.sh googleaistudio --rebuild      # ./run.sh progress | stop
 ./run.sh all                           # all providers, sequentially
 
 # AI Studio offline (no browser): download the "Google AI Studio" folder
 # from drive.google.com (or a Takeout zip), then
-reclaim parse aistudio --from-folder ~/Downloads/"Google AI Studio" \
+reclaim parse googleaistudio --from-folder ~/Downloads/"Google AI Studio" \
     --titles titles.json                # optional drive_id -> title map
 
 # ChatGPT via official export (no browser):
@@ -152,7 +152,7 @@ browser and delete `.playwright-profile/`.
 ## Development
 
 ```bash
-./run_tests.sh          # offline unit tests (fixtures, no browser)
+./scripts/run_tests.sh  # offline unit tests (fixtures, no browser)
 ruff check reclaim/ tests/
 pyright reclaim/ tests/
 ```

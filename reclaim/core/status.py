@@ -35,6 +35,9 @@ class ProviderStatus:
     last_sync: str | None = None   # manifest 'started' timestamp
     duration_s: float | None = None
     last_run: dict[str, int] = field(default_factory=dict)
+    archive_images: int = 0        # totals from the chat.json files on disk
+    archive_docs: int = 0
+    archive_chars: int = 0
 
 
 def _read_json(path: Path) -> dict:
@@ -47,6 +50,26 @@ def _read_json(path: Path) -> dict:
 
 def _count_chat_folders(pdir: Path) -> int:
     return sum(1 for p in pdir.rglob('chat.json') if p.is_file())
+
+
+def _archive_totals(pdir: Path) -> dict[str, int]:
+    """Archive-level totals from the chat.json files themselves.
+
+    The run manifest only describes the LAST run, so after an idle update
+    (0 chats processed) its totals read zero — useless. The chat.json files
+    are the source of truth for what's actually archived.
+    """
+    images = docs = chars = 0
+    for cj in pdir.rglob('chat.json'):
+        if not cj.is_file():
+            continue
+        for turn in _read_json(cj).get('turns') or []:
+            if not isinstance(turn, dict):
+                continue
+            chars += len(turn.get('text') or '')
+            images += len(turn.get('images') or [])
+            docs += len(turn.get('attachments') or [])
+    return {'images': images, 'docs': docs, 'chars': chars}
 
 
 def describe(provider: str, dirname: str, root: Path) -> ProviderStatus:
@@ -79,6 +102,10 @@ def describe(provider: str, dirname: str, root: Path) -> ProviderStatus:
     sync = _read_json(sync_path)
     info.synced_chats = len(sync)
     info.chat_folders = _count_chat_folders(pdir)
+    totals = _archive_totals(pdir)
+    info.archive_images = totals['images']
+    info.archive_docs = totals['docs']
+    info.archive_chars = totals['chars']
     return info
 
 
@@ -94,14 +121,16 @@ def format_status(info: ProviderStatus) -> str:
     lines = [info.dir]
     lines.append(f'  chats archived: {info.chat_folders} '
                  f'(sync records: {info.synced_chats})')
+    img = (f'{info.archive_images} image' if info.archive_images == 1
+           else f'{info.archive_images} images')
+    doc = (f'{info.archive_docs} doc' if info.archive_docs == 1
+           else f'{info.archive_docs} docs')
+    lines.append(f'  archive totals: {img} · {doc} · {info.archive_chars:,} chars')
     if info.last_run:
         r = info.last_run
         lines.append(f'  last run: {r["ok"]} ok, {r["failed"]} failed '
                      f'({r["chats"]} processed)')
         lines.append(f'  last sync: {info.last_sync} · {info.duration_s}s')
-        img = f'{r["images"]} image' if r['images'] == 1 else f'{r["images"]} images'
-        doc = f'{r["docs"]} doc' if r['docs'] == 1 else f'{r["docs"]} docs'
-        lines.append(f'  totals: {img} · {doc} · {r["chars"]:,} chars')
     else:
         lines.append('  last run: (no manifest yet)')
     return '\n'.join(lines)
