@@ -1,4 +1,4 @@
-# ReclaimMyChats
+# Reclaim My Chats
 
 Reclaim your AI chat history. Bulk-export conversations from AI chat
 platforms into clean local Markdown folders — full text with LaTeX intact,
