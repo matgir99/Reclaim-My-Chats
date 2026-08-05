@@ -8,7 +8,6 @@ Usage:
   reclaim <provider> --list [TITLE]        print chat titles, no download
   reclaim <provider> --log [options]       verbose progress + timings
   reclaim <provider> --dry-run [options]   preview what would be fetched
-  reclaim <provider> -q [options]          summary only; no per-chat lines
   reclaim status [-o DIR]                  offline archive overview
   reclaim all [options]                    update all four providers, in order
   reclaim all --rebuild                    rebuild all providers
@@ -20,10 +19,9 @@ Usage:
   reclaim export haevn-md . archive.zip
 
 Providers: googleaistudio, deepseek, kimi, chatgpt (all = every provider).
-Common options: --skip N, --limit N, --dry-run, --no-raw, -q/--quiet,
--o/--output-dir. Output: per-chat lines by default; -q suppresses them
-(summary + failures only); --log adds verbose progress (%, elapsed, ETA)
-and per-chat detail.
+Common options: --skip N, --limit N, --dry-run, --no-raw, -o/--output-dir.
+Output has exactly two levels: default = essential info + summary only;
+--log = full per-chat log + progress/ETA (failures always print).
 
 Examples:
   reclaim googleaistudio                  # update AI Studio (new + changed)

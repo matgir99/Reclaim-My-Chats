@@ -135,17 +135,22 @@ reclaim all [options]                    update all four providers, in order
 
 Providers: `googleaistudio`, `deepseek`, `kimi`, `chatgpt` (`all` = every
 provider). Common options: `--skip N`, `--limit N`, `--dry-run`, `--no-raw`,
-`-q/--quiet`, `-o/--output-dir`. Naming a `TITLE` (or `--url`) always fetches
-those chats freshly; nothing else is touched. `--dry-run` logs in and lists,
-prints what a run would fetch (`would fetch: N (M new, K changed) · would
-skip: J unchanged`), and downloads nothing.
+`-o/--output-dir`. Naming a `TITLE` (or `--url`) always fetches those chats
+freshly; nothing else is touched. `--dry-run` logs in and lists, prints what
+a run would fetch (`would fetch: N (M new, K changed) · would skip: J
+unchanged`), and downloads nothing.
 
-Output verbosity (same defaults everywhere): per-chat lines by default
-(`[i/N] Title -> Nt, N,NNN chars`); `-q/--quiet` suppresses them (summary +
-failures only); `--log` adds verbose progress (`[i/N] NN% · elapsed M:SS ·
-ETA M:SS`) and per-chat detail. `--dry-run` prints the same per-chat format
-(`fetch (new|changed|fresh)` / `skip (unchanged)`) followed by the counts
-line.
+Output has exactly two levels — no in between:
+
+- **Default: essential info + summary.** Real runs print the `N chats`
+  header and the `Done: X ok, Y failed` summary (failures always print);
+  `--dry-run` prints the `would fetch: ...` counts line plus the affected
+  titles.
+- **`--log`: full log.** Every chat gets a line
+  (`[i/N] Title -> Nt, N,NNN chars` / `-> skip (unchanged)`), plus verbose
+  progress (`[i/N] NN% · elapsed M:SS · ETA M:SS`) and per-chat detail
+  (path/files/timings). `--dry-run --log` prints the same per-chat lines
+  with `fetch (new|changed|fresh)` / `skip (unchanged)` before the counts.
 
 Authentication: you log in **once per provider** in a real browser window
 that appears during the first run; sessions are stored in

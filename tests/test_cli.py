@@ -29,14 +29,13 @@ class TestProviderArgparse(unittest.TestCase):
         for mod in ALL_PROVIDERS:
             ap = mod.build_parser()
             args = ap.parse_args([
-                'Some Title', '--rebuild', '--list', '--log', '-q',
+                'Some Title', '--rebuild', '--list', '--log',
                 '--dry-run', '--skip', '3', '--limit', '5', '--no-raw',
                 '-o', '/tmp/out'])
             self.assertEqual(args.title, 'Some Title', mod.__name__)
             self.assertTrue(args.rebuild, mod.__name__)
             self.assertTrue(args.list, mod.__name__)
             self.assertTrue(args.log, mod.__name__)
-            self.assertTrue(args.quiet, mod.__name__)
             self.assertTrue(args.dry_run, mod.__name__)
             self.assertTrue(args.no_raw, mod.__name__)
             self.assertEqual(args.skip, 3, mod.__name__)
@@ -52,7 +51,6 @@ class TestProviderArgparse(unittest.TestCase):
             self.assertFalse(args.rebuild, mod.__name__)
             self.assertFalse(args.list, mod.__name__)
             self.assertFalse(args.log, mod.__name__)
-            self.assertFalse(args.quiet, mod.__name__)
             self.assertFalse(args.dry_run, mod.__name__)
 
     def test_removed_flags_rejected(self):
@@ -215,7 +213,7 @@ class TestDryRun(unittest.TestCase):
         self.assertEqual(plan['titles'],
                          ['Alpha', 'Beta', 'Gamma', 'Delta'])
 
-    def test_print_dry_run_output_and_no_writes(self):
+    def test_print_dry_run_default_counts_and_titles(self):
         s = SyncState(self.tmp, 'kimi')
         s.mark('a', 1, 'md')   # unchanged
         s.mark('b', 1, 'md')   # changed
@@ -225,15 +223,28 @@ class TestDryRun(unittest.TestCase):
                                  skip_unchanged=True)
         self.assertEqual(code, 0)
         out = buf.getvalue()
-        # per-chat lines mirror the real run's format
-        self.assertIn('[1/4] Alpha -> skip (unchanged)', out)
-        self.assertIn('[2/4] Beta -> fetch (changed)', out)
-        self.assertIn('[3/4] Gamma -> fetch (new)', out)
-        self.assertIn('[4/4] Delta -> fetch (new)', out)
+        # default = essential info: counts line + affected titles only
+        self.assertNotIn('-> fetch', out)
+        self.assertNotIn('-> skip', out)
         self.assertIn('would fetch: 3 (2 new, 1 changed) · '
                       'would skip: 1 unchanged', out)
+        self.assertIn('  - Beta', out)
+        self.assertIn('  - Gamma', out)
+        self.assertIn('  - Delta', out)
         # nothing written to disk
         self.assertEqual(list(self.tmp.iterdir()), [])
+
+    def test_print_dry_run_default_nothing_to_fetch(self):
+        s = SyncState(self.tmp, 'kimi')
+        for c in self.chats:
+            s.mark(c['id'], c['updated_at'], 'md')
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            print_dry_run(self.chats, self.updated_map, s,
+                          skip_unchanged=True)
+        self.assertIn('would fetch: 0 (0 new, 0 changed) · '
+                      'would skip: 4 unchanged', buf.getvalue())
+        self.assertIn('(nothing to fetch)', buf.getvalue())
 
     def test_print_dry_run_fresh(self):
         s = SyncState(self.tmp, 'kimi')
@@ -242,23 +253,27 @@ class TestDryRun(unittest.TestCase):
             print_dry_run(self.chats, self.updated_map, s,
                           skip_unchanged=False)
         out = buf.getvalue()
-        self.assertIn('[1/4] Alpha -> fetch (fresh)', out)
         self.assertIn('would fetch: 4 (fresh) · would skip: 0', out)
+        self.assertIn('  - Alpha', out)
 
-    def test_print_dry_run_quiet(self):
+    def test_print_dry_run_log_full_lines(self):
         s = SyncState(self.tmp, 'kimi')
-        s.mark('a', 1, 'md')
-        s.mark('b', 1, 'md')
+        s.mark('a', 1, 'md')   # unchanged
+        s.mark('b', 1, 'md')   # changed
         buf = io.StringIO()
         with redirect_stdout(buf):
             code = print_dry_run(self.chats, self.updated_map, s,
-                                 skip_unchanged=True, quiet=True)
+                                 skip_unchanged=True, log=True)
         self.assertEqual(code, 0)
         out = buf.getvalue()
-        self.assertNotIn('-> fetch', out)
-        self.assertNotIn('-> skip', out)
+        # --log = full per-chat lines, then the counts line
+        self.assertIn('[1/4] Alpha -> skip (unchanged)', out)
+        self.assertIn('[2/4] Beta -> fetch (changed)', out)
+        self.assertIn('[3/4] Gamma -> fetch (new)', out)
+        self.assertIn('[4/4] Delta -> fetch (new)', out)
         self.assertIn('would fetch: 3 (2 new, 1 changed) · '
                       'would skip: 1 unchanged', out)
+        self.assertNotIn('  - Beta', out)   # titles list replaced by lines
         self.assertEqual(list(self.tmp.iterdir()), [])
 
 

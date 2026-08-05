@@ -113,15 +113,15 @@ def plan_fetch(chats: list[dict], updated_map: dict | None, sync: SyncState,
 
 
 def print_dry_run(chats: list[dict], updated_map: dict | None, sync: SyncState,
-                  skip_unchanged: bool, quiet: bool = False) -> int:
+                  skip_unchanged: bool, log: bool = False) -> int:
     """Print what a run WOULD do (--dry-run). Returns the exit code (0).
 
-    Per-chat lines mirror the real run's format ([i/N] Title -> action),
-    then the counts line. quiet=True prints the counts line only.
-    Nothing is downloaded or written."""
+    Default (quiet): the counts line plus the titles that would be fetched.
+    log=True: per-chat lines in the real run's [i/N] format, then the
+    counts line. Nothing is downloaded or written."""
     updated_map = updated_map or {}
     plan = plan_fetch(chats, updated_map, sync, skip_unchanged)
-    if not quiet:
+    if log:
         for i, c in enumerate(chats, 1):
             st = sync.classify(c['id'], updated_map.get(c['id']))
             label = (c.get('title') or c.get('name') or c.get('id') or '?')[:55]
@@ -140,4 +140,10 @@ def print_dry_run(chats: list[dict], updated_map: dict | None, sync: SyncState,
               f'{plan["skip"]} unchanged')
     else:
         print(f'would fetch: {plan["fetch"]} (fresh) · would skip: 0')
+    if not log:
+        if plan['titles']:
+            for t in plan['titles']:
+                print(f'  - {t}')
+        else:
+            print('  (nothing to fetch)')
     return 0

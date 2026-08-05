@@ -119,10 +119,15 @@ the `scrape` subcommand, `--resume`, `--only`, `--start`, `--retrieve`, `--updat
 
 ## 8. Amendments (owner-approved, post-implementation)
 
-- **`-q/--quiet` added** (all providers + `reclaim all`): suppresses per-chat
-  lines; summary + failures only. Default stays per-chat lines always.
-- **`--dry-run` output unified with real runs**: per-chat lines in the same
-  `[i/N] Title -> fetch (new|changed|fresh) / skip (unchanged)` format,
-  then the `would fetch: N ...` counts line (counts line only under `-q`).
-- **Verbosity defaults documented** in `--help` epilog + README: per-chat
-  lines by default, `-q` silences, `--log` adds verbose progress/ETA.
+- **Output has exactly two levels, no in between:**
+  - *Default* — essential info + summary only: real runs print the `N chats`
+    header and the `Done: X ok, Y failed` summary (failures always print);
+    `--dry-run` prints the `would fetch: N (M new, K changed) · would skip:
+    J unchanged` counts line plus the affected titles.
+  - *`--log`* — the full log: per-chat lines (`[i/N] Title -> Nt, N,NNN
+    chars` / `-> skip (unchanged)`), verbose progress (`[i/N] NN% · elapsed
+    M:SS · ETA M:SS`) and per-chat detail (path/files/timings).
+    `--dry-run --log` prints per-chat `fetch (new|changed|fresh)` /
+    `skip (unchanged)` lines before the counts line.
+- `-q/--quiet` was added in an earlier revision and **removed again** as
+  redundant — quiet is the default, so there is nothing to opt into.
