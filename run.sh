@@ -1,24 +1,35 @@
 #!/usr/bin/env bash
-# Generic safe runner for ReclaimMyChats providers.
+# Convenience wrapper: runs `python -m reclaim <provider> [args...]` DETACHED
+# in the background with a PID file and log, so long archive runs survive
+# closing the terminal.
+#
+# The standard way to use ReclaimMyChats is the CLI directly, in the
+# foreground — this script is only for runs you want in the background:
+#   reclaim <provider> [TITLE] [options]      # standard CLI (see README)
+#   ./run.sh <provider> [same options]        # same command, but detached
+#
 # Usage:
-#   ./run.sh <googleaistudio|deepseek|kimi|chatgpt|all> [args...]  # detached
-#   ./run.sh progress                                             # live run progress
-#   ./run.sh stop                                                 # stop + chrome
+#   ./run.sh <googleaistudio|deepseek|kimi|chatgpt|all> [args...]  # start
+#   ./run.sh progress                                             # PID + log tail
+#   ./run.sh stop                                                 # stop + its Chrome
 #
 # Examples:
-#   ./run.sh googleaistudio
-#   ./run.sh all --rebuild
-#   ./run.sh deepseek "latex"
-#   ./run.sh progress
+#   ./run.sh googleaistudio              # background update of AI Studio
+#   ./run.sh all --rebuild               # rebuild all four providers
+#   ./run.sh deepseek "latex" --log      # title-filtered, full log
+#   ./run.sh progress                    # how is it going?
 #
 # Notes:
-# * Args are forwarded to `python -m reclaim <provider> [args...]`; the full
-#   CLI surface applies (--rebuild, --list, --log, --dry-run, --skip, ...).
-# * `progress` = the detached run's progress (PID + log tail). For the
-#   offline archive overview run `python -m reclaim status`.
+# * Every CLI option works here (--rebuild, --list, --log, --dry-run,
+#   --skip, --limit, --no-raw, -o). Output goes to $LOGFILE; default
+#   verbosity is summary-only, --log gives the full per-chat log.
+# * `progress` is this script's own status (PID + last log lines). For the
+#   offline archive overview use `reclaim status` instead.
+# * First run of a provider opens a browser window for login (see README).
 # * Never use `pkill -f <pattern>` where the pattern also appears in this
 #   command line — pkill matches the invoking shell and kills it.
-# * setsid detaches into a new session so the job survives the terminal.
+# * setsid detaches into a new session so the job survives the terminal;
+#   macOS falls back to nohup alone (SIGHUP immunity).
 
 set -u
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -37,8 +48,7 @@ cmd_start() {
     kill_scraper_browser; sleep 2
     rm -f "$DIR/.playwright-profile/Singleton"* 2>/dev/null
     : > "$LOGFILE"
-    # setsid is Linux-only; macOS falls back to nohup alone (still
-    # survives terminal close via SIGHUP immunity).
+    # setsid is Linux-only; macOS falls back to nohup alone.
     if command -v setsid >/dev/null 2>&1; then
         setsid nohup "$PY" -u -m reclaim "$provider" "$@" \
             >> "$LOGFILE" 2>&1 < /dev/null &
@@ -47,7 +57,8 @@ cmd_start() {
             >> "$LOGFILE" 2>&1 < /dev/null &
     fi
     echo $! > "$PIDFILE"
-    echo "started '$provider' PID $(cat "$PIDFILE") — log: $LOGFILE"
+    echo "started '$provider' (PID $(cat "$PIDFILE")) — log: $LOGFILE"
+    echo "watch: ./run.sh progress · stop: ./run.sh stop"
 }
 
 cmd_progress() {
