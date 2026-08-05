@@ -6,7 +6,7 @@
 
 ReclaimMyChats archives a user's AI chat history (Google AI Studio, DeepSeek, Kimi, ChatGPT) to local folders. The current CLI is `reclaim scrape <provider> [--resume|--only|...]`. The owner finds these names meaningless (`--resume` sounds like "continue an interrupted run"; `--only` doesn't say *only what*). The redesign makes every word convey meaning. The tool name `reclaim` is itself the verb, so `scrape`/`retrieve` disappear entirely.
 
-- Repo: `/home/matgir99/Desktop/PROGETTI/ReclaimMyChats` (public, github.com/matgir99/ReclaimMyChats, v2.0.0)
+- Repo: `/home/matgir99/Desktop/PROGETTI/ReclaimMyChats` (public, github.com/matgir99/Reclaim-My-Chats, v2.0.0)
 - Python: **always the newest installed** — `scripts/py.sh` (`pick_python`) picks it; currently python3.14. Never hardcode `python3.12`.
 - Console entry point: `reclaim` (pyproject.toml) → `reclaim/__main__.py`
 - Tests are **offline only** (parser/model/writer level). Do not run live scrapes; they need the browser profile + logins and take 20+ min.

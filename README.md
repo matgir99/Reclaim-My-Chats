@@ -42,8 +42,8 @@ supported there.
 ## Install
 
 ```bash
-git clone https://github.com/matgir99/ReclaimMyChats.git
-cd ReclaimMyChats
+git clone https://github.com/matgir99/Reclaim-My-Chats.git
+cd Reclaim-My-Chats
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e .
 # optional: if you don't have system Chrome/Chromium
@@ -195,13 +195,12 @@ pyright reclaim/ tests/
 
 ```
 reclaim/
-├── __main__.py            # unified CLI: scrape | parse | import | export
-├── core/                  # model, writer, browser (Chrome discovery), manifest
-├── providers/             # aistudio, aistudio_files, deepseek, chatgpt,
-│                          # chatgpt_import, kept_vault, kimi
+├── __main__.py            # unified CLI: <provider> | all | status | import | export | parse
+├── core/                  # browser, manifest, model, progress, status, writer
+├── providers/             # googleaistudio, aistudio_files (parse mode), deepseek,
+│                          # chatgpt, chatgpt_import, kept_vault, kimi
 └── exporters/             # haevn_md
 docs/                      # plan, architecture, research, provider notes
-legacy/                    # pre-v1.0.0 standalone scrapers (reference only)
 tests/                     # fixtures + offline unit tests
 scripts/                   # shared shell helpers (newest-python picker)
 ```
