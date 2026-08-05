@@ -11,6 +11,7 @@ Usage:
   reclaim status [-o DIR]                  offline archive overview
   reclaim all [options]                    update all four providers, in order
   reclaim all --rebuild                    rebuild all providers
+  reclaim --version                        print version
   reclaim import kept VAULT [--providers kimi,claude] [-o DIR]
   reclaim import chatgpt CONVERSATIONS.json [-o DIR]
   reclaim import scrapemychats EXPORT_DIR [-o DIR]
@@ -32,6 +33,7 @@ Examples:
 from __future__ import annotations
 
 import sys
+import traceback
 
 PROVIDERS = {
     'googleaistudio': 'reclaim.providers.googleaistudio',
@@ -53,15 +55,35 @@ USAGE = __doc__
 
 
 def _run_all(rest: list[str]) -> int:
-    """Run every provider with the same args, sequentially."""
+    """Run every provider with the same args in ONE browser session.
+
+    A provider's failure is reported and the run continues with the next.
+    """
     if rest and rest[0] in ('-h', '--help'):
         print(USAGE)
         return 0
+    # Validate args once up front — argparse exits before any browser launch.
+    first = __import__(PROVIDERS[ALL_PROVIDERS[0]], fromlist=['parse_args'])
+    first.parse_args(list(rest))
+
+    from playwright.sync_api import sync_playwright
+    from .core import browser
     codes: list[tuple[str, int]] = []
-    for prov in ALL_PROVIDERS:
-        print(f'\n========== {prov} ==========')
-        mod = __import__(PROVIDERS[prov], fromlist=['main'])
-        codes.append((prov, mod.main(list(rest))))
+    with sync_playwright() as p:
+        ctx, page = browser.launch(p)
+        try:
+            for prov in ALL_PROVIDERS:
+                print(f'\n========== {prov} ==========')
+                mod = __import__(PROVIDERS[prov],
+                                 fromlist=['parse_args', 'run_session'])
+                try:
+                    args = mod.parse_args(list(rest))
+                    codes.append((prov, mod.run_session(page, args)))
+                except Exception:
+                    traceback.print_exc()
+                    codes.append((prov, 2))
+        finally:
+            ctx.close()
     print('\n===== summary =====')
     for prov, code in codes:
         status = 'ok' if code == 0 else f'exit {code}'
@@ -73,6 +95,13 @@ def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or argv[0] in ('-h', '--help'):
         print(USAGE)
+        return 0
+    if argv[0] == '--version':
+        from importlib.metadata import PackageNotFoundError, version
+        try:
+            print(f'reclaim {version("reclaimmychats")}')
+        except PackageNotFoundError:
+            print('reclaim (dev, not installed)')
         return 0
     cmd, rest = argv[0], argv[1:]
 

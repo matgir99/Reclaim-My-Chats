@@ -24,7 +24,9 @@ pick_python() {
 # path on the command line) — never the user's normal browser.
 # No-op when pkill is unavailable (e.g. Git Bash).
 kill_scraper_browser() {
+    # Bracket trick: the pattern must not literally appear in any shell
+    # command line that invokes this, or pkill would match that shell too.
     if command -v pkill >/dev/null 2>&1; then
-        pkill -f playwright-profile 2>/dev/null
+        pkill -f 'playwright-profil[e]' 2>/dev/null
     fi
 }

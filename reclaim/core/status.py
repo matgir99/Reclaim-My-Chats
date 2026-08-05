@@ -68,7 +68,15 @@ def _archive_totals(pdir: Path) -> dict[str, int]:
                 continue
             chars += len(turn.get('text') or '')
             images += len(turn.get('images') or [])
-            docs += len(turn.get('attachments') or [])
+            for att in turn.get('attachments') or []:
+                # mirrors write_chat stats: saved image-kind attachments
+                # count as images, other saved attachments as docs
+                if not isinstance(att, dict) or not att.get('saved'):
+                    continue
+                if att.get('kind') == 'image':
+                    images += 1
+                else:
+                    docs += 1
     return {'images': images, 'docs': docs, 'chars': chars}
 
 

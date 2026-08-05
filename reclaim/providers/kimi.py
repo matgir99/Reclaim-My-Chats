@@ -319,64 +319,75 @@ def build_parser() -> argparse.ArgumentParser:
     return ap
 
 
-def main(argv=None):
+def parse_args(argv=None):
+    """Parse + validate CLI args (shared by main() and `reclaim all`)."""
     ap = build_parser()
     args = ap.parse_args(argv)
     if args.title and args.url:
         ap.error('pass a title or --url, not both')
-    out_dir = Path(args.output_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    return args
 
+
+def main(argv=None):
+    args = parse_args(argv)
     from playwright.sync_api import sync_playwright
-    started = time.time()
     with sync_playwright() as p:
         ctx, page = browser.launch(p)
         try:
-            token = ensure_logged_in(page)
-            if args.url:
-                cid = args.url.rstrip('/').split('/')[-1].split('?')[0]
-                chats = [{'id': cid}]
-            else:
-                print('Listing chats...')
-                chats = list_chats(page, token)
-                print(f'Found {len(chats)} chats')
-            if args.title:
-                chats = [c for c in chats
-                         if args.title.lower() in
-                         ((c.get('name') or c.get('title') or '').lower())]
-            if args.skip:
-                chats = chats[args.skip:]
-            if args.limit:
-                chats = chats[:args.limit]
-            if not chats:
-                print('No chats matched.')
-                return 1
-            if args.list:
-                for n, c in enumerate(chats, 1):
-                    print(f'{n}. {c.get("name") or c.get("title") or c["id"]}')
-                print(f'-- {len(chats)} chat(s)')
-                return 0
-            skip_unchanged = not args.rebuild and not args.title
-            if args.dry_run:
-                sync = SyncState(out_dir, PROVIDER, migrate=False)
-                updated_map = {c.get('id') or c.get('chat_id') or '':
-                               c.get('updateTime') or c.get('updated_at')
-                               for c in chats}
-                return print_dry_run(chats, updated_map, sync, skip_unchanged)
-
-            print(f"\n{'=' * 50}\n  {len(chats)} chats\n{'=' * 50}\n")
-            results = run(page, token, chats, out_dir,
-                          skip_unchanged=skip_unchanged,
-                          save_raw=not args.no_raw, log=args.log)
-            manifest = write_manifest(out_dir, PROVIDER, results, started)
-            ok = sum(1 for r in results if r.get('ok'))
-            print(f"\n{'=' * 50}")
-            print(f'  Done: {ok} ok, {len(results) - ok} failed')
-            print(f'  Manifest: {manifest}')
-            print(f"{'=' * 50}")
-            return 0 if ok == len(results) else 2
+            return run_session(page, args)
         finally:
             ctx.close()
+
+
+def run_session(page, args) -> int:
+    """Provider session on an already-launched page; shared by main()
+    (own browser) and `reclaim all` (one browser for all providers)."""
+    out_dir = Path(args.output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    started = time.time()
+    token = ensure_logged_in(page)
+    if args.url:
+        cid = args.url.rstrip('/').split('/')[-1].split('?')[0]
+        chats = [{'id': cid}]
+    else:
+        print('Listing chats...')
+        chats = list_chats(page, token)
+        print(f'Found {len(chats)} chats')
+    if args.title:
+        chats = [c for c in chats
+                 if args.title.lower() in
+                 ((c.get('name') or c.get('title') or '').lower())]
+    if args.skip:
+        chats = chats[args.skip:]
+    if args.limit:
+        chats = chats[:args.limit]
+    if not chats:
+        print('No chats matched.')
+        return 1
+    if args.list:
+        for n, c in enumerate(chats, 1):
+            print(f'{n}. {c.get("name") or c.get("title") or c["id"]}')
+        print(f'-- {len(chats)} chat(s)')
+        return 0
+    skip_unchanged = not args.rebuild and not args.title
+    if args.dry_run:
+        sync = SyncState(out_dir, PROVIDER, migrate=False)
+        updated_map = {c.get('id') or c.get('chat_id') or '':
+                       c.get('updateTime') or c.get('updated_at')
+                       for c in chats}
+        return print_dry_run(chats, updated_map, sync, skip_unchanged)
+
+    print(f"\n{'=' * 50}\n  {len(chats)} chats\n{'=' * 50}\n")
+    results = run(page, token, chats, out_dir,
+                  skip_unchanged=skip_unchanged,
+                  save_raw=not args.no_raw, log=args.log)
+    manifest = write_manifest(out_dir, PROVIDER, results, started)
+    ok = sum(1 for r in results if r.get('ok'))
+    print(f"\n{'=' * 50}")
+    print(f'  Done: {ok} ok, {len(results) - ok} failed')
+    print(f'  Manifest: {manifest}')
+    print(f"{'=' * 50}")
+    return 0 if ok == len(results) else 2
 
 
 if __name__ == '__main__':

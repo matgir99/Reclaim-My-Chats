@@ -310,7 +310,12 @@ class TestStatus(unittest.TestCase):
                 {'role': 'user', 'text': 'hello', 'images': [],
                  'attachments': []},
                 {'role': 'assistant', 'text': 'world!',
-                 'images': ['1.png', '2.png'], 'attachments': ['f.pdf']},
+                 'images': ['1.png', '2.png'],
+                 'attachments': [
+                     {'filename': 'f.pdf', 'kind': 'file', 'saved': True},
+                     {'filename': 'p.png', 'kind': 'image', 'saved': True},
+                     {'filename': 'q.png', 'kind': 'image', 'saved': False},
+                 ]},
             ]}))
         (ga / 'Chat Two' / 'chat.json').write_text(json.dumps({
             'id': 'b', 'turns': [
@@ -320,10 +325,11 @@ class TestStatus(unittest.TestCase):
         infos = status.scan(self.root)
         ga_info = next(i for i in infos if i.provider == 'googleaistudio')
         self.assertEqual(ga_info.archive_chars, len('hello') + len('world!') + 3)
-        self.assertEqual(ga_info.archive_images, 3)
+        # 2+1 turn images + 1 saved image-kind attachment (unsaved ignored)
+        self.assertEqual(ga_info.archive_images, 4)
         self.assertEqual(ga_info.archive_docs, 1)
         out = status.format_status(ga_info)
-        self.assertIn('archive totals: 3 images · 1 doc · 14 chars', out)
+        self.assertIn('archive totals: 4 images · 1 doc · 14 chars', out)
         # last-run manifest line still present alongside archive totals
         self.assertIn('last run: 3 ok, 0 failed', out)
 

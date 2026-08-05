@@ -307,68 +307,79 @@ def _rec_title(rec: dict) -> str:
         return '?'
 
 
-def main(argv=None):
+def parse_args(argv=None):
+    """Parse + validate CLI args (shared by main() and `reclaim all`)."""
     ap = build_parser()
     args = ap.parse_args(argv)
     if args.title and args.url:
         ap.error('pass a title or --url, not both')
-    out_dir = Path(args.output_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    return args
 
+
+def main(argv=None):
+    args = parse_args(argv)
     from playwright.sync_api import sync_playwright
-    started = time.time()
     with sync_playwright() as p:
         ctx, page = browser.launch(p, headless=True)
         try:
-            ensure_logged_in(page)
-            if args.url:
-                chat_id = args.url.split('/a/chat/s/')[-1].split('?')[0][:40]
-                rec = read_single_record(page, chat_id)
-                if rec is None:
-                    print(f'ERROR: chat {chat_id} not found in IndexedDB.')
-                    return 1
-                records, updated_map = [rec], {}
-            else:
-                print('Reading chat list from IndexedDB...')
-                summaries = read_summaries(page)
-                print(f'Found {len(summaries)} chats. Loading full records...')
-                updated_map = {s['id']: s.get('updated_at') for s in summaries}
-                records = read_all_records(page)
-            if args.title:
-                records = [r for r in records
-                           if args.title.lower() in _rec_title(r).lower()]
-            if args.skip:
-                records = records[args.skip:]
-            if args.limit:
-                records = records[:args.limit]
-            if not records:
-                print('No chats matched.')
-                return 1
-            if args.list:
-                for n, r in enumerate(records, 1):
-                    print(f'{n}. {_rec_title(r)}')
-                print(f'-- {len(records)} chat(s)')
-                return 0
-            skip_unchanged = not args.rebuild and not args.title
-            if args.dry_run:
-                sync = SyncState(out_dir, PROVIDER, migrate=False)
-                view = [{'id': _rec_id(r), 'title': _rec_title(r)}
-                        for r in records]
-                return print_dry_run(view, updated_map, sync, skip_unchanged)
-
-            print(f"\n{'=' * 50}\n  {len(records)} chats\n{'=' * 50}\n")
-            results = run(page, records, out_dir, skip_unchanged=skip_unchanged,
-                          updated_map=updated_map, save_raw=not args.no_raw,
-                          log=args.log)
-            manifest = write_manifest(out_dir, PROVIDER, results, started)
-            ok = sum(1 for r in results if r.get('ok'))
-            print(f"\n{'=' * 50}")
-            print(f'  Done: {ok} ok, {len(results) - ok} failed')
-            print(f'  Manifest: {manifest}')
-            print(f"{'=' * 50}")
-            return 0 if ok == len(results) else 2
+            return run_session(page, args)
         finally:
             ctx.close()
+
+
+def run_session(page, args) -> int:
+    """Provider session on an already-launched page; shared by main()
+    (own headless browser) and `reclaim all` (one shared browser)."""
+    out_dir = Path(args.output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    started = time.time()
+    ensure_logged_in(page)
+    if args.url:
+        chat_id = args.url.split('/a/chat/s/')[-1].split('?')[0][:40]
+        rec = read_single_record(page, chat_id)
+        if rec is None:
+            print(f'ERROR: chat {chat_id} not found in IndexedDB.')
+            return 1
+        records, updated_map = [rec], {}
+    else:
+        print('Reading chat list from IndexedDB...')
+        summaries = read_summaries(page)
+        print(f'Found {len(summaries)} chats. Loading full records...')
+        updated_map = {s['id']: s.get('updated_at') for s in summaries}
+        records = read_all_records(page)
+    if args.title:
+        records = [r for r in records
+                   if args.title.lower() in _rec_title(r).lower()]
+    if args.skip:
+        records = records[args.skip:]
+    if args.limit:
+        records = records[:args.limit]
+    if not records:
+        print('No chats matched.')
+        return 1
+    if args.list:
+        for n, r in enumerate(records, 1):
+            print(f'{n}. {_rec_title(r)}')
+        print(f'-- {len(records)} chat(s)')
+        return 0
+    skip_unchanged = not args.rebuild and not args.title
+    if args.dry_run:
+        sync = SyncState(out_dir, PROVIDER, migrate=False)
+        view = [{'id': _rec_id(r), 'title': _rec_title(r)}
+                for r in records]
+        return print_dry_run(view, updated_map, sync, skip_unchanged)
+
+    print(f"\n{'=' * 50}\n  {len(records)} chats\n{'=' * 50}\n")
+    results = run(page, records, out_dir, skip_unchanged=skip_unchanged,
+                  updated_map=updated_map, save_raw=not args.no_raw,
+                  log=args.log)
+    manifest = write_manifest(out_dir, PROVIDER, results, started)
+    ok = sum(1 for r in results if r.get('ok'))
+    print(f"\n{'=' * 50}")
+    print(f'  Done: {ok} ok, {len(results) - ok} failed')
+    print(f'  Manifest: {manifest}')
+    print(f"{'=' * 50}")
+    return 0 if ok == len(results) else 2
 
 
 if __name__ == '__main__':
