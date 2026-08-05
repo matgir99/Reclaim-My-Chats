@@ -52,6 +52,16 @@ python -m playwright install chromium
 
 This gives you the `reclaim` command (or run `python -m reclaim ...`).
 
+### Verify your install
+
+```bash
+reclaim --version     # e.g. reclaim 3.0.0
+reclaim status        # offline overview; shows "not archived yet" on a fresh setup
+```
+
+If `reclaim` is not found: the venv isn't active — run `source .venv/bin/activate`
+first, or just use `python3.14 -m reclaim ...` from the repo (no install needed).
+
 ## How it works
 
 One program, per-provider modes (`reclaim <provider>` updates by default):
@@ -136,6 +146,20 @@ that appears during the first run; sessions are stored in
 permissions). Update runs need no re-login unless sessions expire. To
 remove stored credentials at any time: log out of the sites in the profile
 browser and delete `.playwright-profile/`.
+
+## Troubleshooting
+
+- **`reclaim: command not found`** — venv not active (`source .venv/bin/activate`),
+  or use `python3.14 -m reclaim ...` from the repo without installing.
+- **Login window doesn't appear / session expired** — log in to the site in the
+  profile browser and retry; the wait is 15 min by default, override with
+  `RECLAIM_LOGIN_TIMEOUT=1800` (seconds).
+- **Browser profile locked (`SingletonLock`)** — a previous run left Chrome
+  running: `./run.sh stop`, or delete `.playwright-profile/Singleton*`.
+- **No system Chrome found** — install Chromium for Playwright and its Linux
+  deps: `python -m playwright install chromium && playwright install-deps`.
+- **Why does `--dry-run` still open a browser?** — by design: it logs in and
+  lists chats to compute the preview, but downloads and writes nothing.
 
 ## Security notes
 
