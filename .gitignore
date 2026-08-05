@@ -4,6 +4,9 @@
 # Python build metadata
 *.egg-info/
 
+# User config (which providers `reclaim all` runs)
+.reclaim.json
+
 # Playwright browser profile (cookies, cache, sessions)
 .playwright-profile/
 .playwright-mcp/

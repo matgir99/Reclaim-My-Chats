@@ -373,6 +373,57 @@ class TestStatus(unittest.TestCase):
         self.assertIn('last run: 3 ok, 0 failed', out)
 
 
+class TestConfig(unittest.TestCase):
+    """core/config.py — .reclaim.json provider selection (offline)."""
+
+    ALL = ['googleaistudio', 'deepseek', 'kimi', 'chatgpt']
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def _write(self, text):
+        (self.root / '.reclaim.json').write_text(text)
+
+    def test_no_config_runs_everything(self):
+        from reclaim.core import config
+        chosen, skipped, unknown = config.selected_providers(self.root, self.ALL)
+        self.assertEqual(chosen, self.ALL)
+        self.assertEqual(skipped, [])
+        self.assertEqual(unknown, [])
+
+    def test_subset(self):
+        from reclaim.core import config
+        self._write('{"providers": ["chatgpt", "kimi"]}')
+        chosen, skipped, unknown = config.selected_providers(self.root, self.ALL)
+        self.assertEqual(chosen, ['kimi', 'chatgpt'])   # config order irrelevant;
+        # `available` order wins
+        self.assertEqual(skipped, ['googleaistudio', 'deepseek'])
+        self.assertEqual(unknown, [])
+
+    def test_unknown_name_reported(self):
+        from reclaim.core import config
+        self._write('{"providers": ["chatgpt", "gemini"]}')
+        chosen, skipped, unknown = config.selected_providers(self.root, self.ALL)
+        self.assertEqual(chosen, ['chatgpt'])
+        self.assertEqual(unknown, ['gemini'])
+
+    def test_invalid_json_runs_everything(self):
+        from reclaim.core import config
+        self._write('{not json')
+        chosen, skipped, _ = config.selected_providers(self.root, self.ALL)
+        self.assertEqual(chosen, self.ALL)
+        self.assertEqual(skipped, [])
+
+    def test_empty_list_runs_everything(self):
+        from reclaim.core import config
+        self._write('{"providers": []}')
+        chosen, _, _ = config.selected_providers(self.root, self.ALL)
+        self.assertEqual(chosen, self.ALL)
+
+
 class TestDispatch(unittest.TestCase):
     """reclaim/__main__.py arg routing — offline, no browser."""
 

@@ -57,9 +57,11 @@ USAGE = __doc__
 
 
 def _run_all(rest: list[str]) -> int:
-    """Run every provider with the same args in ONE browser session.
+    """Run every configured provider with the same args in ONE browser session.
 
-    A provider's failure is reported and the run continues with the next.
+    Providers are filtered by `.reclaim.json` (see core/config.py); skipped
+    providers never open a browser window or wait for a login. A provider's
+    failure is reported and the run continues with the next.
     """
     if rest and rest[0] in ('-h', '--help'):
         print(USAGE)
@@ -68,13 +70,25 @@ def _run_all(rest: list[str]) -> int:
     first = __import__(PROVIDERS[ALL_PROVIDERS[0]], fromlist=['parse_args'])
     first.parse_args(list(rest))
 
+    from pathlib import Path
+    from .core import browser, config
+    root = Path(__file__).resolve().parents[1]
+    chosen, skipped, unknown = config.selected_providers(root, ALL_PROVIDERS)
+    for prov in skipped:
+        print(f'  {prov}: skipped (not in {config.CONFIG_NAME} providers)')
+    for prov in unknown:
+        print(f'  warning: {config.CONFIG_NAME} lists unknown provider '
+              f'"{prov}" (known: {", ".join(ALL_PROVIDERS)})')
+    if not chosen:
+        print('nothing to do — no providers selected')
+        return 1
+
     from playwright.sync_api import sync_playwright
-    from .core import browser
     codes: list[tuple[str, int]] = []
     with sync_playwright() as p:
         ctx, page = browser.launch(p)
         try:
-            for prov in ALL_PROVIDERS:
+            for prov in chosen:
                 print(f'\n========== {prov} ==========')
                 mod = __import__(PROVIDERS[prov],
                                  fromlist=['parse_args', 'run_session'])

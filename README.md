@@ -27,40 +27,77 @@ Supports **Google AI Studio**, **DeepSeek Chat**, **Kimi**, and **ChatGPT**
 
 ## Requirements
 
-- **Python 3.12+** (any newer installed version is used automatically;
-  the project is developed on 3.14)
-- **Playwright** (`playwright>=1.61`)
-- A system **Chrome or Chromium** install (auto-detected) — or Playwright's
-  bundled Chromium (`python -m playwright install chromium`)
-
-Platform support: **Linux is first-class**. **macOS** works via the bundled
-bash scripts (portable fallbacks for `setsid`/`pkill`/`sort`). **Windows**:
-use WSL2 for full support; the `reclaim` package itself runs under native
-Git Bash (`python -m reclaim`), but `run.sh` (detached runner) is not
-supported there.
+- **Git** and **Python 3.12+** (any newer installed version is used
+  automatically; the project is developed on 3.14)
+- **Playwright** — installed automatically by `pip install -e .`
+- A **Chrome or Chromium** browser — a system install is auto-detected
+  (Linux/macOS/Windows paths + `PATH`); if you have none, Playwright's
+  bundled Chromium works: `python -m playwright install chromium`
 
 ## Install
 
+### Linux
+
 ```bash
+# 1. Git + Python, if missing:
+#    Debian/Ubuntu:  sudo apt install git python3 python3-venv
+#    Fedora:         sudo dnf install git python3
 git clone https://github.com/matgir99/Reclaim-My-Chats.git
 cd Reclaim-My-Chats
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e .
-# optional: if you don't have system Chrome/Chromium
+# 2. Browser: system Chrome/Chromium is auto-detected. If you have neither:
+python -m playwright install chromium
+sudo python -m playwright install-deps chromium   # system libs it needs
+```
+
+### macOS
+
+```bash
+# 1. Git + Python, if missing (Homebrew):  brew install git python
+git clone https://github.com/matgir99/Reclaim-My-Chats.git
+cd Reclaim-My-Chats
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e .
+# 2. Browser: /Applications/Google Chrome.app is auto-detected. Otherwise:
 python -m playwright install chromium
 ```
 
-This gives you the `reclaim` command (or run `python -m reclaim ...`).
+### Windows
+
+**Native (CLI fully supported; only the `run.sh` bash wrapper is not):**
+
+1. Install Python 3.12+ from https://www.python.org/downloads/ — tick
+   **"Add python.exe to PATH"** in the installer. Git from
+   https://git-scm.com/download/win.
+2. In PowerShell:
+
+```powershell
+git clone https://github.com/matgir99/Reclaim-My-Chats.git
+cd Reclaim-My-Chats
+py -m venv .venv
+.venv\Scripts\Activate.ps1
+# if activation is blocked: Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+pip install -e .
+python -m playwright install chromium   # only if Chrome is not installed
+```
+
+Use `reclaim ...` (or `python -m reclaim ...`) — all providers, `status`,
+`all` work natively.
+
+**WSL2 (full support, including `run.sh`):** `wsl --install`, then follow
+the Linux steps inside the Ubuntu terminal.
 
 ### Verify your install
 
 ```bash
-reclaim --version     # e.g. reclaim 3.0.0
+reclaim --version     # e.g. reclaim 3.1.0
 reclaim status        # offline overview; shows "not archived yet" on a fresh setup
 ```
 
 If `reclaim` is not found: the venv isn't active — run `source .venv/bin/activate`
-first, or just use `python3.14 -m reclaim ...` from the repo (no install needed).
+first (`.venv\Scripts\Activate.ps1` on Windows), or just use
+`python3 -m reclaim ...` from the repo (no install needed).
 
 ## How it works
 
@@ -151,6 +188,20 @@ Output has exactly two levels — no in between:
   progress (`[i/N] NN% · elapsed M:SS · ETA M:SS`) and per-chat detail
   (path/files/timings). `--dry-run --log` prints the same per-chat lines
   with `fetch (new|changed|fresh)` / `skip (unchanged)` before the counts.
+
+### Choose your providers
+
+`reclaim all` runs every provider by default. If you don't use some of
+them, create `.reclaim.json` in the repo root listing only yours:
+
+```json
+{"providers": ["googleaistudio", "chatgpt"]}
+```
+
+Providers not listed are skipped entirely — no browser window, no login
+wait. Single-provider commands (`reclaim chatgpt`) are unaffected. Without
+the file, everything runs. (The file is git-ignored: it's your personal
+setup, not project config.)
 
 Authentication: you log in **once per provider** in a real browser window
 that appears during the first run; sessions are stored in
