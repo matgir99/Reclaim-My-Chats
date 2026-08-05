@@ -116,3 +116,13 @@ the `scrape` subcommand, `--resume`, `--only`, `--start`, `--retrieve`, `--updat
 | `run.sh` | new syntax, all providers |
 | `tests/test_parsers.py` + new test file(s) | offline tests |
 | `README.md`, `docs/STATUS.md` | docs update |
+
+## 8. Amendments (owner-approved, post-implementation)
+
+- **`-q/--quiet` added** (all providers + `reclaim all`): suppresses per-chat
+  lines; summary + failures only. Default stays per-chat lines always.
+- **`--dry-run` output unified with real runs**: per-chat lines in the same
+  `[i/N] Title -> fetch (new|changed|fresh) / skip (unchanged)` format,
+  then the `would fetch: N ...` counts line (counts line only under `-q`).
+- **Verbosity defaults documented** in `--help` epilog + README: per-chat
+  lines by default, `-q` silences, `--log` adds verbose progress/ETA.

@@ -1,3 +1,23 @@
+Metadata-Version: 2.4
+Name: reclaimmychats
+Version: 3.0.0
+Summary: Archive AI chat history from Google AI Studio, DeepSeek, Kimi and ChatGPT into clean local Markdown
+License: MIT
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Programming Language :: Python :: 3.13
+Classifier: Programming Language :: Python :: 3.14
+Classifier: Operating System :: POSIX :: Linux
+Classifier: Operating System :: MacOS
+Classifier: Operating System :: Microsoft :: Windows
+Requires-Python: >=3.12
+Description-Content-Type: text/markdown
+License-File: LICENSE
+License-File: NOTICE.md
+Requires-Dist: playwright>=1.61
+Dynamic: license-file
+
 # ReclaimMyChats
 
 Reclaim your AI chat history. Bulk-export conversations from AI chat
@@ -135,17 +155,10 @@ reclaim all [options]                    update all four providers, in order
 
 Providers: `googleaistudio`, `deepseek`, `kimi`, `chatgpt` (`all` = every
 provider). Common options: `--skip N`, `--limit N`, `--dry-run`, `--no-raw`,
-`-q/--quiet`, `-o/--output-dir`. Naming a `TITLE` (or `--url`) always fetches
-those chats freshly; nothing else is touched. `--dry-run` logs in and lists,
-prints what a run would fetch (`would fetch: N (M new, K changed) · would
-skip: J unchanged`), and downloads nothing.
-
-Output verbosity (same defaults everywhere): per-chat lines by default
-(`[i/N] Title -> Nt, N,NNN chars`); `-q/--quiet` suppresses them (summary +
-failures only); `--log` adds verbose progress (`[i/N] NN% · elapsed M:SS ·
-ETA M:SS`) and per-chat detail. `--dry-run` prints the same per-chat format
-(`fetch (new|changed|fresh)` / `skip (unchanged)`) followed by the counts
-line.
+`-o/--output-dir`. Naming a `TITLE` (or `--url`) always fetches those chats
+freshly; nothing else is touched. `--dry-run` logs in and lists, prints what
+a run would fetch (`would fetch: N (M new, K changed) · would skip: J
+unchanged`), and downloads nothing.
 
 Authentication: you log in **once per provider** in a real browser window
 that appears during the first run; sessions are stored in

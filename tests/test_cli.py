@@ -29,12 +29,14 @@ class TestProviderArgparse(unittest.TestCase):
         for mod in ALL_PROVIDERS:
             ap = mod.build_parser()
             args = ap.parse_args([
-                'Some Title', '--rebuild', '--list', '--log', '--dry-run',
-                '--skip', '3', '--limit', '5', '--no-raw', '-o', '/tmp/out'])
+                'Some Title', '--rebuild', '--list', '--log', '-q',
+                '--dry-run', '--skip', '3', '--limit', '5', '--no-raw',
+                '-o', '/tmp/out'])
             self.assertEqual(args.title, 'Some Title', mod.__name__)
             self.assertTrue(args.rebuild, mod.__name__)
             self.assertTrue(args.list, mod.__name__)
             self.assertTrue(args.log, mod.__name__)
+            self.assertTrue(args.quiet, mod.__name__)
             self.assertTrue(args.dry_run, mod.__name__)
             self.assertTrue(args.no_raw, mod.__name__)
             self.assertEqual(args.skip, 3, mod.__name__)
@@ -50,6 +52,7 @@ class TestProviderArgparse(unittest.TestCase):
             self.assertFalse(args.rebuild, mod.__name__)
             self.assertFalse(args.list, mod.__name__)
             self.assertFalse(args.log, mod.__name__)
+            self.assertFalse(args.quiet, mod.__name__)
             self.assertFalse(args.dry_run, mod.__name__)
 
     def test_removed_flags_rejected(self):
@@ -214,17 +217,21 @@ class TestDryRun(unittest.TestCase):
 
     def test_print_dry_run_output_and_no_writes(self):
         s = SyncState(self.tmp, 'kimi')
-        s.mark('a', 1, 'md')
-        s.mark('b', 1, 'md')
+        s.mark('a', 1, 'md')   # unchanged
+        s.mark('b', 1, 'md')   # changed
         buf = io.StringIO()
         with redirect_stdout(buf):
             code = print_dry_run(self.chats, self.updated_map, s,
                                  skip_unchanged=True)
         self.assertEqual(code, 0)
         out = buf.getvalue()
+        # per-chat lines mirror the real run's format
+        self.assertIn('[1/4] Alpha -> skip (unchanged)', out)
+        self.assertIn('[2/4] Beta -> fetch (changed)', out)
+        self.assertIn('[3/4] Gamma -> fetch (new)', out)
+        self.assertIn('[4/4] Delta -> fetch (new)', out)
         self.assertIn('would fetch: 3 (2 new, 1 changed) · '
                       'would skip: 1 unchanged', out)
-        self.assertIn('  - Beta', out)
         # nothing written to disk
         self.assertEqual(list(self.tmp.iterdir()), [])
 
@@ -234,8 +241,25 @@ class TestDryRun(unittest.TestCase):
         with redirect_stdout(buf):
             print_dry_run(self.chats, self.updated_map, s,
                           skip_unchanged=False)
-        self.assertIn('would fetch: 4 (fresh) · would skip: 0',
-                      buf.getvalue())
+        out = buf.getvalue()
+        self.assertIn('[1/4] Alpha -> fetch (fresh)', out)
+        self.assertIn('would fetch: 4 (fresh) · would skip: 0', out)
+
+    def test_print_dry_run_quiet(self):
+        s = SyncState(self.tmp, 'kimi')
+        s.mark('a', 1, 'md')
+        s.mark('b', 1, 'md')
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = print_dry_run(self.chats, self.updated_map, s,
+                                 skip_unchanged=True, quiet=True)
+        self.assertEqual(code, 0)
+        out = buf.getvalue()
+        self.assertNotIn('-> fetch', out)
+        self.assertNotIn('-> skip', out)
+        self.assertIn('would fetch: 3 (2 new, 1 changed) · '
+                      'would skip: 1 unchanged', out)
+        self.assertEqual(list(self.tmp.iterdir()), [])
 
 
 class TestStatus(unittest.TestCase):

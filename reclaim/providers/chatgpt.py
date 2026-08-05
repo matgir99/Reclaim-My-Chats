@@ -299,8 +299,10 @@ def fetch_conversation(page, token: str, conv_id: str, title: str = '') -> tuple
 
 def run(page, token: str, items: list[dict], out_dir: Path,
         skip_unchanged: bool = False, save_raw: bool = True,
-        log: bool = False) -> list[dict]:
-    """Fetch the given conversations. Returns per-chat results for the manifest."""
+        log: bool = False, quiet: bool = False) -> list[dict]:
+    """Fetch the given conversations. Returns per-chat results for the manifest.
+
+    quiet suppresses per-chat lines (summary + failures only)."""
     out_dir = Path(out_dir)
     sync = SyncState(out_dir, PROVIDER)
     results = []
@@ -309,10 +311,11 @@ def run(page, token: str, items: list[dict], out_dir: Path,
         cid = item.get('id', '')
         label = (item.get('title') or cid)[:55]
         updated = item.get('update_time')
-        if log:
+        if log and not quiet:
             print(progress(i + 1, len(items), t_run))
         if skip_unchanged and sync.is_unchanged(cid, updated):
-            print(f'[{i + 1}/{len(items)}] {label} -> skip (unchanged)')
+            if not quiet:
+                print(f'[{i + 1}/{len(items)}] {label} -> skip (unchanged)')
             continue
         t0 = time.time()
         try:
@@ -328,13 +331,14 @@ def run(page, token: str, items: list[dict], out_dir: Path,
             results.append({'id': cid, 'title': chat.title, 'ok': True,
                             'duration_s': round(time.time() - t0, 1),
                             **{k: stats[k] for k in ('turns', 'chars', 'images', 'docs')}})
-            extra = f", {stats['images']} img" if stats['images'] else ''
-            extra += f", {stats['docs']} doc" if stats['docs'] else ''
-            print(f'[{i + 1}/{len(items)}] {label} -> {stats["turns"]}t, '
-                  f'{stats["chars"]:,} chars{extra}')
-            if log:
-                print(f'    assets: {stats["images"] + stats["docs"]} · '
-                      f'{time.time() - t0:.1f}s')
+            if not quiet:
+                extra = f", {stats['images']} img" if stats['images'] else ''
+                extra += f", {stats['docs']} doc" if stats['docs'] else ''
+                print(f'[{i + 1}/{len(items)}] {label} -> {stats["turns"]}t, '
+                      f'{stats["chars"]:,} chars{extra}')
+                if log:
+                    print(f'    assets: {stats["images"] + stats["docs"]} · '
+                          f'{time.time() - t0:.1f}s')
         except Exception as e:
             print(f'[{i + 1}/{len(items)}] {label} -> FAILED: {e}')
             traceback.print_exc()
@@ -359,6 +363,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help='print chat titles, no download')
     ap.add_argument('--log', action='store_true',
                     help='verbose per-chat progress and timings')
+    ap.add_argument('-q', '--quiet', action='store_true',
+                    help='summary only; suppress per-chat lines '
+                         '(failures still print)')
     ap.add_argument('--dry-run', action='store_true',
                     help='preview what would be fetched; nothing downloaded')
     ap.add_argument('--skip', type=int, default=0,
@@ -428,12 +435,13 @@ def run_session(page, args) -> int:
         sync = SyncState(out_dir, PROVIDER, migrate=False)
         updated_map = {c.get('id', ''): c.get('update_time')
                        for c in items}
-        return print_dry_run(items, updated_map, sync, skip_unchanged)
+        return print_dry_run(items, updated_map, sync, skip_unchanged,
+                             quiet=args.quiet)
 
     print(f"\n{'=' * 50}\n  {len(items)} conversations\n{'=' * 50}\n")
     results = run(page, token, items, out_dir,
                   skip_unchanged=skip_unchanged,
-                  save_raw=not args.no_raw, log=args.log)
+                  save_raw=not args.no_raw, log=args.log, quiet=args.quiet)
     manifest = write_manifest(out_dir, PROVIDER, results, started)
     ok = sum(1 for r in results if r.get('ok'))
     print(f"\n{'=' * 50}")

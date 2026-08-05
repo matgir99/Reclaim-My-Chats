@@ -237,8 +237,10 @@ def _materialize_images(page, chat: Chat, image_map: dict) -> int:
 
 def run(page, token: str, chats: list[dict], out_dir: Path,
         skip_unchanged: bool = False, save_raw: bool = True,
-        log: bool = False) -> list[dict]:
-    """Fetch the given chats. Returns per-chat results for the manifest."""
+        log: bool = False, quiet: bool = False) -> list[dict]:
+    """Fetch the given chats. Returns per-chat results for the manifest.
+
+    quiet suppresses per-chat lines (summary + failures only)."""
     out_dir = Path(out_dir)
     sync = SyncState(out_dir, PROVIDER)
     results = []
@@ -247,10 +249,11 @@ def run(page, token: str, chats: list[dict], out_dir: Path,
         chat_id = item.get('id') or item.get('chat_id') or ''
         label = (item.get('name') or item.get('title') or chat_id)[:55]
         updated = item.get('updateTime') or item.get('updated_at')
-        if log:
+        if log and not quiet:
             print(progress(i + 1, len(chats), t_run))
         if skip_unchanged and sync.is_unchanged(chat_id, updated):
-            print(f'[{i + 1}/{len(chats)}] {label} -> skip (unchanged)')
+            if not quiet:
+                print(f'[{i + 1}/{len(chats)}] {label} -> skip (unchanged)')
             continue
         t0 = time.time()
         try:
@@ -275,12 +278,13 @@ def run(page, token: str, chats: list[dict], out_dir: Path,
             results.append({'id': chat_id, 'title': chat.title, 'ok': True,
                             'duration_s': round(time.time() - t0, 1),
                             **{k: stats[k] for k in ('turns', 'chars', 'images', 'docs')}})
-            extra = f", {stats['images']} img" if stats['images'] else ''
-            extra += f", {stats['docs']} doc" if stats['docs'] else ''
-            print(f'[{i + 1}/{len(chats)}] {label} -> {stats["turns"]}t, '
-                  f'{stats["chars"]:,} chars{extra}')
-            if log:
-                print(f'    images: {n_imgs} · {time.time() - t0:.1f}s')
+            if not quiet:
+                extra = f", {stats['images']} img" if stats['images'] else ''
+                extra += f", {stats['docs']} doc" if stats['docs'] else ''
+                print(f'[{i + 1}/{len(chats)}] {label} -> {stats["turns"]}t, '
+                      f'{stats["chars"]:,} chars{extra}')
+                if log:
+                    print(f'    images: {n_imgs} · {time.time() - t0:.1f}s')
         except Exception as e:
             print(f'[{i + 1}/{len(chats)}] {label} -> FAILED: {e}')
             traceback.print_exc()
@@ -305,6 +309,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help='print chat titles, no download')
     ap.add_argument('--log', action='store_true',
                     help='verbose per-chat progress and timings')
+    ap.add_argument('-q', '--quiet', action='store_true',
+                    help='summary only; suppress per-chat lines '
+                         '(failures still print)')
     ap.add_argument('--dry-run', action='store_true',
                     help='preview what would be fetched; nothing downloaded')
     ap.add_argument('--skip', type=int, default=0,
@@ -375,12 +382,13 @@ def run_session(page, args) -> int:
         updated_map = {c.get('id') or c.get('chat_id') or '':
                        c.get('updateTime') or c.get('updated_at')
                        for c in chats}
-        return print_dry_run(chats, updated_map, sync, skip_unchanged)
+        return print_dry_run(chats, updated_map, sync, skip_unchanged,
+                             quiet=args.quiet)
 
     print(f"\n{'=' * 50}\n  {len(chats)} chats\n{'=' * 50}\n")
     results = run(page, token, chats, out_dir,
                   skip_unchanged=skip_unchanged,
-                  save_raw=not args.no_raw, log=args.log)
+                  save_raw=not args.no_raw, log=args.log, quiet=args.quiet)
     manifest = write_manifest(out_dir, PROVIDER, results, started)
     ok = sum(1 for r in results if r.get('ok'))
     print(f"\n{'=' * 50}")

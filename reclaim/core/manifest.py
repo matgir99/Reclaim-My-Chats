@@ -113,21 +113,31 @@ def plan_fetch(chats: list[dict], updated_map: dict | None, sync: SyncState,
 
 
 def print_dry_run(chats: list[dict], updated_map: dict | None, sync: SyncState,
-                  skip_unchanged: bool) -> int:
+                  skip_unchanged: bool, quiet: bool = False) -> int:
     """Print what a run WOULD do (--dry-run). Returns the exit code (0).
 
-    Prints ``would fetch: N (M new, K changed) · would skip: J unchanged``
-    plus the affected titles — nothing is downloaded or written."""
+    Per-chat lines mirror the real run's format ([i/N] Title -> action),
+    then the counts line. quiet=True prints the counts line only.
+    Nothing is downloaded or written."""
+    updated_map = updated_map or {}
     plan = plan_fetch(chats, updated_map, sync, skip_unchanged)
+    if not quiet:
+        for i, c in enumerate(chats, 1):
+            st = sync.classify(c['id'], updated_map.get(c['id']))
+            label = (c.get('title') or c.get('name') or c.get('id') or '?')[:55]
+            if not skip_unchanged:
+                action = 'fetch (fresh)'
+            elif st == 'unchanged':
+                action = 'skip (unchanged)'
+            elif st == 'new':
+                action = 'fetch (new)'
+            else:
+                action = 'fetch (changed)'
+            print(f'[{i}/{len(chats)}] {label} -> {action}')
     if skip_unchanged:
         print(f'would fetch: {plan["fetch"]} ({plan["new"]} new, '
               f'{plan["changed"]} changed) · would skip: '
               f'{plan["skip"]} unchanged')
     else:
         print(f'would fetch: {plan["fetch"]} (fresh) · would skip: 0')
-    if plan['titles']:
-        for t in plan['titles']:
-            print(f'  - {t}')
-    else:
-        print('  (nothing to fetch)')
     return 0
