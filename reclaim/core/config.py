@@ -17,6 +17,17 @@ from pathlib import Path
 
 CONFIG_NAME = '.reclaim.json'
 
+# The single archive root under the repo. All provider output dirs live
+# here. In the owner's setup this folder is a symlink to a cloud-synced
+# directory (Syncthing), so the chats are available on every device while
+# the repo itself stays clean (the folder is gitignored).
+ARCHIVE_DIR = 'chats'
+
+
+def archive_root() -> Path:
+    """Repo/<ARCHIVE_DIR> — provider output dirs are subdirectories of it."""
+    return Path(__file__).resolve().parents[2] / ARCHIVE_DIR
+
 
 def load(root: Path) -> dict:
     """The parsed config, or {} if absent/invalid."""

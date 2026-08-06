@@ -15,7 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from reclaim.core import status
+from reclaim.core import config, status
 from reclaim.core.manifest import (SyncState, plan_fetch, print_dry_run)
 from reclaim.core.model import Chat, Turn
 from reclaim.core.writer import write_chat
@@ -75,6 +75,11 @@ class TestProviderArgparse(unittest.TestCase):
                               (chatgpt, 'ChatGPT')):
             args = mod.build_parser().parse_args([])
             self.assertTrue(args.output_dir.endswith(expected), mod.__name__)
+            # every provider writes under the single archive root (chats/),
+            # which is a symlink to the cloud folder in the owner's setup
+            root = config.archive_root()
+            self.assertTrue(
+                Path(args.output_dir).is_relative_to(root), mod.__name__)
 
 
 class TestWriterOverwrite(unittest.TestCase):

@@ -11,7 +11,10 @@
 .playwright-profile/
 .playwright-mcp/
 
-# Scraped output — the archive. Never tracked.
+# Scraped output — the archive. Never tracked. All provider output
+# dirs live under `chats/` (the archive root). In the owner's setup
+# `chats/` is a symlink to a cloud-synced folder; never push chats.
+chats
 Google AI Studio/
 Deepseek Chat/
 Kimi Chat/

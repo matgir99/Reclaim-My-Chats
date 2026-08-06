@@ -174,6 +174,12 @@ Providers: `googleaistudio`, `deepseek`, `kimi`, `chatgpt` (`all` = every
 provider). Common options: `--skip N`, `--limit N`, `--dry-run`, `--no-raw`,
 `-o/--output-dir`. Naming a `TITLE` (or `--url`) always fetches those chats
 freshly; nothing else is touched. `--dry-run` logs in and lists, prints what
+Archive location: every provider writes under `<repo>/chats/<Provider>`
+(`chats/` is the single archive root — gitignored, never pushed). In the
+owner's setup `chats/` is a symlink to a cloud-synced folder, so the
+archive lives on every device while the public repo stays clean.
+`reclaim status` scans the same root by default.
+
 a run would fetch (`would fetch: N (M new, K changed) · would skip: J
 unchanged`), and downloads nothing.
 

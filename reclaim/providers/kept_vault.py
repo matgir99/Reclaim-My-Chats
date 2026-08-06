@@ -45,6 +45,7 @@ import re
 import time
 from pathlib import Path
 
+from ..core import config
 from ..core.manifest import SyncState, write_manifest
 from ..core.model import Chat, Turn
 from ..core.writer import write_chat
@@ -191,7 +192,7 @@ def main(argv=None):
     ap.add_argument('--providers', help='Comma list (kimi,claude,grok,gemini,chatgpt); '
                                         'default: all found in the vault')
     ap.add_argument('-o', '--output-dir',
-                    default=str(Path(__file__).resolve().parents[2]))
+                    default=str(config.archive_root()))
     args = ap.parse_args(argv)
     providers = [s.strip() for s in args.providers.split(',')] if args.providers else None
 

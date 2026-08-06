@@ -25,7 +25,7 @@ import time
 import traceback
 from pathlib import Path
 
-from ..core import browser
+from ..core import browser, config
 from ..core.manifest import SyncState, print_dry_run, write_manifest
 from ..core.model import Attachment, Chat, Turn
 from ..core.progress import progress
@@ -372,8 +372,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument('--no-raw', action='store_true',
                     help='do not save media-stripped raw.json per chat')
     ap.add_argument('-o', '--output-dir',
-                    default=str(Path(__file__).resolve().parents[2]
-                                / 'ChatGPT'))
+                    default=str(config.archive_root() / 'ChatGPT'))
     return ap
 
 

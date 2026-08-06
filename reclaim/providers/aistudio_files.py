@@ -23,6 +23,7 @@ import json
 import zipfile
 from pathlib import Path
 
+from ..core import config
 from ..core.manifest import write_manifest
 from ..core.model import Attachment, Chat, Turn
 from ..core.writer import write_chat
@@ -134,7 +135,7 @@ def main(argv=None):
                     help='Folder of Drive-exported prompt JSONs (or a Takeout .zip)')
     ap.add_argument('--titles', help='Optional JSON map: drive_id -> title')
     ap.add_argument('-o', '--output-dir',
-                    default=str(Path(__file__).resolve().parents[2] / 'Google AI Studio'))
+                    default=str(config.archive_root() / 'Google AI Studio'))
     args = ap.parse_args(argv)
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)

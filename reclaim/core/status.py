@@ -12,9 +12,10 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .config import archive_root
 from .manifest import SyncState
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = archive_root()
 
 # (provider name, output dir name) in display order
 PROVIDER_DIRS = [
@@ -147,7 +148,7 @@ def format_status(info: ProviderStatus) -> str:
 def main(argv=None):
     ap = argparse.ArgumentParser(prog='reclaim status')
     ap.add_argument('-o', '--output-dir', default=str(REPO_ROOT),
-                    help='Scan root (default: repo root)')
+                    help='Scan root (default: repo/chats)')
     args = ap.parse_args(argv)
     root = Path(args.output_dir)
     print(f'ReclaimMyChats archive status — scan root: {root}\n')

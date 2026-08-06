@@ -27,6 +27,7 @@ import re
 import time
 from pathlib import Path
 
+from ..core import config
 from ..core.manifest import SyncState, write_manifest
 from ..core.model import Attachment, Chat, Turn
 from ..core.writer import write_chat
@@ -180,7 +181,7 @@ def main(argv=None):
     ap.add_argument('source', choices=['chatgpt', 'scrapemychats'])
     ap.add_argument('path', help='conversations.json (chatgpt) or export dir (scrapemychats)')
     ap.add_argument('-o', '--output-dir',
-                    default=str(Path(__file__).resolve().parents[2] / 'ChatGPT'))
+                    default=str(config.archive_root() / 'ChatGPT'))
     args = ap.parse_args(argv)
 
     started = time.time()
