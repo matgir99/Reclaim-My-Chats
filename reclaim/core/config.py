@@ -1,18 +1,21 @@
 """User configuration: an optional `.reclaim.json` at the repo/output root.
 
-Currently one key:
+Two optional keys:
 
-    {"providers": ["googleaistudio", "chatgpt"]}
+    {"providers": ["googleaistudio", "chatgpt"], "archive": "."}
 
-restricts which providers `reclaim all` runs. Providers not listed are
-skipped entirely — no browser window, no login wait. Absent or invalid
-file/key -> all providers run (backwards compatible). Single-provider
-commands (`reclaim chatgpt`) are unaffected: explicit always wins.
+- "providers" restricts which providers `reclaim all` runs. Providers not
+  listed are skipped entirely — no browser window, no login wait. Absent
+  or invalid file/key -> all providers run (backwards compatible).
+  Single-provider commands (`reclaim chatgpt`) are unaffected: explicit
+  always wins.
+- "archive" overrides where provider output dirs live (see `archive_root`).
 """
 
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 CONFIG_NAME = '.reclaim.json'
@@ -24,9 +27,25 @@ CONFIG_NAME = '.reclaim.json'
 ARCHIVE_DIR = 'chats'
 
 
-def archive_root() -> Path:
-    """Repo/<ARCHIVE_DIR> — provider output dirs are subdirectories of it."""
-    return Path(__file__).resolve().parents[2] / ARCHIVE_DIR
+def archive_root(root: Path | None = None) -> Path:
+    """Where provider output dirs live.
+
+    Default: <repo>/<ARCHIVE_DIR>. Override once per machine with the
+    "archive" key in .reclaim.json — an absolute path is used as-is, a
+    relative path is resolved against the repo root, and "" or "." keeps
+    the pre-chats layout (provider dirs directly at the repo root). Any
+    of these may be a symlink; the code never looks at the target, so a
+    cloud-synced archive works for everyone.
+    """
+    base = Path(root) if root is not None else Path(__file__).resolve().parents[2]
+    override = load(base).get('archive')
+    if isinstance(override, str) and override.strip():
+        p = Path(override).expanduser()
+        joined = p if p.is_absolute() else base / p
+        return Path(os.path.normpath(joined))  # normalize '.' / '..' segments
+    if override == '':
+        return base  # explicit empty string: provider dirs at the root itself
+    return base / ARCHIVE_DIR
 
 
 def load(root: Path) -> dict:

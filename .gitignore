@@ -60,6 +60,9 @@ dev-probes/
 # Developer-oriented docs (local only — public repo shows product docs only)
 docs/status_and_plan/
 
+# Local user config (provider selection, archive path — machine-specific)
+.reclaim.json
+
 # Environment files (never commit secrets)
 .env
 .env.*

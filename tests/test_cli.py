@@ -167,6 +167,29 @@ class TestSyncState(unittest.TestCase):
         self.assertIsNone(s.known('anything'))
         self.assertFalse((self.tmp / '.last_sync_deepseek.json').exists())
 
+    def test_archive_root_override(self):
+        # default: <root>/chats
+        self.assertEqual(config.archive_root(self.tmp), self.tmp / 'chats')
+        # relative path -> resolved against the root
+        (self.tmp / '.reclaim.json').write_text(
+            json.dumps({'archive': 'custom'}), encoding='utf-8')
+        self.assertEqual(config.archive_root(self.tmp), self.tmp / 'custom')
+        # "." or "" -> the root itself (pre-chats layout)
+        (self.tmp / '.reclaim.json').write_text(
+            json.dumps({'archive': '.'}), encoding='utf-8')
+        self.assertEqual(config.archive_root(self.tmp), self.tmp)
+        (self.tmp / '.reclaim.json').write_text(
+            json.dumps({'archive': ''}), encoding='utf-8')
+        self.assertEqual(config.archive_root(self.tmp), self.tmp)
+        # absolute path -> used as-is (any symlink target works)
+        (self.tmp / '.reclaim.json').write_text(
+            json.dumps({'archive': '/abs/archive'}), encoding='utf-8')
+        self.assertEqual(config.archive_root(self.tmp), Path('/abs/archive'))
+        # invalid/missing key -> default
+        (self.tmp / '.reclaim.json').write_text(
+            json.dumps({'archive': 42}), encoding='utf-8')
+        self.assertEqual(config.archive_root(self.tmp), self.tmp / 'chats')
+
     def test_classify_and_is_unchanged(self):
         s = SyncState(self.tmp, 'kimi')
         self.assertFalse(s.is_unchanged('a', None))     # unknown -> fetch

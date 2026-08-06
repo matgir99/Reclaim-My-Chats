@@ -209,6 +209,29 @@ wait. Single-provider commands (`reclaim chatgpt`) are unaffected. Without
 the file, everything runs. (The file is git-ignored: it's your personal
 setup, not project config.)
 
+### Where your chats live
+
+Every provider writes under `<repo>/chats/<Provider>` — `chats/` is the
+single archive root and is git-ignored, so chat data is never pushed. Two
+common layouts, both supported without code changes:
+
+- **Cloud-synced archive** (recommended): make `chats/` a symlink to a
+  folder that is synced (e.g. Syncthing/Nextcloud) — the tool writes
+  through the link and the archive is available on every device. Any
+  symlink target works.
+- **Pre-chats layout**: provider dirs directly at the repo root. Set
+  `"archive": "."` in `.reclaim.json`.
+
+`"archive"` accepts an absolute path, a repo-relative path, or `"."`/`""`
+for the repo root itself:
+
+```json
+{"providers": ["googleaistudio", "chatgpt"], "archive": "/mnt/big-disk/chats"}
+```
+
+`reclaim status` scans the same root by default. Everything else (import,
+parse, `-o`) is unaffected.
+
 Authentication: you log in **once per provider** in a real browser window
 that appears during the first run; sessions are stored in
 `.playwright-profile/` (a normal Chromium profile, git-ignored, owner-only
