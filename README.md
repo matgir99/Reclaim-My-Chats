@@ -212,8 +212,9 @@ setup, not project config.)
 ### Where your chats live
 
 Every provider writes under `<repo>/chats/<Provider>` — `chats/` is the
-single archive root and is git-ignored, so chat data is never pushed. Two
-common layouts, both supported without code changes:
+single archive root and is git-ignored, so chat data is never pushed.
+**No setup needed:** the folder is created automatically on the first run.
+Two optional layouts, both supported without code changes:
 
 - **Cloud-synced archive** (recommended): make `chats/` a symlink to a
   folder that is synced (e.g. Syncthing/Nextcloud) — the tool writes
