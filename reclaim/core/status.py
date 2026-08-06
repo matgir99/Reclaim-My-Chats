@@ -23,6 +23,8 @@ PROVIDER_DIRS = [
     ('deepseek', 'Deepseek Chat'),
     ('kimi', 'Kimi Chat'),
     ('chatgpt', 'ChatGPT'),
+    ('claude', 'Claude'),
+    ('googlegemini', 'Google Gemini'),
 ]
 
 

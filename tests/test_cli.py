@@ -489,8 +489,10 @@ class TestDispatch(unittest.TestCase):
         # `reclaim googleaistudio --url X` must not treat --url as target.
         import reclaim.__main__ as cli
         self.assertIn('googleaistudio', cli.PROVIDERS)
-        self.assertEqual(cli.ALL_PROVIDERS,
-                         ['googleaistudio', 'deepseek', 'kimi', 'chatgpt'])
+        self.assertEqual(
+            cli.ALL_PROVIDERS,
+            ['googleaistudio', 'deepseek', 'kimi', 'chatgpt',
+             'claude', 'googlegemini'])
 
 
 if __name__ == '__main__':

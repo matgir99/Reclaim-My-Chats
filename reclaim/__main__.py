@@ -9,7 +9,7 @@ Usage:
   reclaim <provider> --log [options]       verbose progress + timings
   reclaim <provider> --dry-run [options]   preview what would be fetched
   reclaim status [-o DIR]                  offline archive overview
-  reclaim all [options]                    update all four providers, in order
+  reclaim all [options]                    update all six providers, in order
   reclaim all --rebuild                    rebuild all providers
   reclaim --version                        print version
   reclaim import kept VAULT [--providers kimi,claude] [-o DIR]
@@ -18,8 +18,9 @@ Usage:
   reclaim parse  googleaistudio --from-folder DIR [--titles MAP.json] [-o DIR]
   reclaim export haevn-md . archive.zip
 
-Providers: googleaistudio, deepseek, kimi, chatgpt (all = every provider).
-Common options: --skip N, --limit N, --dry-run, --no-raw, -o/--output-dir.
+Providers: googleaistudio, deepseek, kimi, chatgpt, claude, googlegemini
+(all = every provider). Common options: --skip N, --limit N, --dry-run,
+--no-raw, -o/--output-dir.
 Output has exactly two levels: default = essential info + summary only;
 --log = full per-chat log + progress/ETA (failures always print).
 
@@ -29,6 +30,8 @@ Examples:
   reclaim deepseek "latex"                # re-fetch chats with "latex" in title
   reclaim kimi --list                     # print chat titles, no download
   reclaim chatgpt --dry-run               # preview, nothing downloaded
+  reclaim claude --dry-run                # preview Claude, nothing downloaded
+  reclaim googlegemini --list             # list Gemini chat titles
   reclaim status                          # offline archive overview
 """
 
@@ -42,6 +45,8 @@ PROVIDERS = {
     'deepseek': 'reclaim.providers.deepseek',
     'kimi': 'reclaim.providers.kimi',
     'chatgpt': 'reclaim.providers.chatgpt',
+    'claude': 'reclaim.providers.claude',
+    'googlegemini': 'reclaim.providers.googlegemini',
 }
 ALL_PROVIDERS = list(PROVIDERS)
 PARSERS = {

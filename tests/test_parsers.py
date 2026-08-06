@@ -13,9 +13,14 @@ from typing import ClassVar
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from reclaim.core.batchexecute import (build_f_req, decode_response,
+                                       error_message, parse_frames)
 from reclaim.core.model import Attachment, Chat, Turn
 from reclaim.core.writer import img_ext, slugify, write_chat
+from reclaim.providers.claude import active_lineage, parse_chat
 from reclaim.providers.googleaistudio import entries_to_chat, parse_rpc
+from reclaim.providers.googlegemini import (extract_tokens, parse_list,
+                                            parse_read, read_to_chat)
 from reclaim.providers.aistudio_files import parse_prompt_file
 from reclaim.providers.chatgpt_import import parse_conversation
 from reclaim.providers.deepseek import record_to_chat
@@ -420,3 +425,156 @@ class TestChatGPTProvider(unittest.TestCase):
         m2 = cg._ASSET_RE.search('sediment://file_ABC123')
         assert m2 is not None
         self.assertEqual(m2.group(1), 'file_ABC123')
+
+
+class TestBatchexecute(unittest.TestCase):
+    def test_build_f_req_payload_is_stringified(self):
+        req = build_f_req('MaZiqc', [200])
+        # [[["MaZiqc","[200]",null,"generic"]]] — payload is a JSON STRING
+        outer = json.loads(req)
+        self.assertEqual(outer[0][0][0], 'MaZiqc')
+        self.assertEqual(outer[0][0][1], '[200]')
+        self.assertEqual(outer[0][0][3], 'generic')
+
+    def test_parse_frames(self):
+        # payloads must not START with digits (they would merge with the
+        # length prefix); JSON payloads always start with a quote/bracket
+        payloads = ['"12"', '["x"]', '"ok"']
+        text = ''.join(f'{len(x)}{x}' for x in payloads)
+        self.assertEqual(parse_frames(text), payloads)
+
+    def test_parse_frames_utf16_units(self):
+        # frame length is in UTF-16 units: a non-BMP char counts 2
+        smile = '\U0001F600'
+        frame = smile + 'ok'                # 2 + 1 + 1 = 4 units
+        self.assertEqual(parse_frames(f'4{frame}'), [frame])
+        frame2 = 'a' + smile + 'b'          # 1 + 2 + 1 = 4 units
+        self.assertEqual(parse_frames(f'4{frame2}'), [frame2])
+
+    def test_parse_frames_tolerates_prefix_and_truncation(self):
+        frames = parse_frames(')]}\'\n 4"ab"5cd')
+        self.assertEqual(frames, ['"ab"'])  # truncated final frame dropped
+        self.assertEqual(parse_frames(''), [])
+
+    def test_decode_response_takes_frame_two(self):
+        # realistic shape: anti-XSSI prefix, then 3 frames; frame [2] is
+        # itself a JSON string (the raw result — nesting unwrapped by the
+        # parsers' defensive row search)
+        text = ")]}'\n3\"a\"4\"bc\"15[[[1, 2], [3]]]"
+        self.assertEqual(decode_response(text), [[[1, 2], [3]]])
+
+    def test_error_message(self):
+        self.assertIsNone(error_message([[1, 2]]))
+        m1 = error_message([1013, 'x'])
+        assert m1 is not None
+        self.assertIn('1013', m1)
+        m2 = error_message([1037, 'x'])
+        assert m2 is not None
+        self.assertIn('quota', m2)
+        m3 = error_message([1060, 'x'])
+        assert m3 is not None
+        self.assertIn('1060', m3)
+
+
+class TestClaudeParse(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.data = json.loads((FIX / 'claude_sample.json').read_text())
+
+    def chat(self):
+        return parse_chat(self.data, 'conv-claude-0001',
+                          'https://claude.ai/chat/conv-claude-0001')
+
+    def test_active_lineage_filters_branches(self):
+        msgs = self.data['chat_messages']
+        lineage = active_lineage(msgs, self.data['current_leaf_message_uuid'])
+        self.assertEqual([m['uuid'] for m in lineage], ['m1', 'm2', 'm4', 'm5'])
+        # fallback: missing leaf -> full array (never render nothing)
+        self.assertEqual(len(active_lineage(msgs, None)), 5)
+
+    def test_parse_chat_shape(self):
+        chat = self.chat()
+        self.assertEqual(chat.title, 'Synthetic Claude Chat')
+        self.assertEqual([t.role for t in chat.turns],
+                         ['user', 'model', 'model', 'user'])
+        texts = [t.text for t in chat.turns]
+        self.assertEqual(texts[0], 'Hello Claude')
+        self.assertEqual(texts[1], 'Hi! How can I help?')
+        self.assertNotIn('old branch reply', ' '.join(texts))  # branch excluded
+        self.assertEqual(texts[2], 'Current answer')
+        self.assertEqual(texts[3], 'Uploaded doc question')
+
+    def test_thinking_flagged_and_skipped(self):
+        chat = self.chat()
+        model_turns = [t for t in chat.turns if t.role == 'model']
+        self.assertEqual(len(model_turns), 2)
+        self.assertFalse(model_turns[0].thought)
+        self.assertTrue(model_turns[1].thought)
+        self.assertNotIn('hidden reasoning trace', model_turns[1].text)
+        self.assertTrue(chat.had_thoughts)
+
+    def test_tool_blocks_skipped(self):
+        chat = self.chat()
+        texts = ' '.join(t.text for t in chat.turns)
+        self.assertNotIn('web_search', texts)
+
+    def test_attachments_and_files(self):
+        last = self.chat().turns[-1]
+        docs = [a for a in last.attachments if a.kind == 'document']
+        imgs = [a for a in last.attachments if a.kind == 'image']
+        self.assertEqual(len(docs), 1)
+        self.assertEqual(docs[0].filename, 'notes.pdf')
+        self.assertEqual(docs[0].data, b'PDF TEXT')  # extracted content saved
+        self.assertEqual(len(imgs), 1)
+        self.assertEqual(imgs[0].filename, 'chart.png')
+        self.assertIsNone(imgs[0].data)  # fetched page-side later
+        self.assertEqual(imgs[0].source_url,
+                         'https://cdn.claude.ai/preview/img1.png')
+
+    def test_source_url_and_provider(self):
+        chat = self.chat()
+        self.assertEqual(chat.provider, 'claude')
+        self.assertIn('conv-claude-0001', chat.source_url)
+
+
+class TestGeminiParse(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.list_data = json.loads((FIX / 'gemini_list_sample.json').read_text())
+        cls.read_data = json.loads((FIX / 'gemini_read_sample.json').read_text())
+
+    def test_parse_list_rows(self):
+        chats = parse_list(self.list_data)
+        self.assertEqual([c['id'] for c in chats], ['c-1', 'c-2'])
+        self.assertEqual(chats[0]['title'], 'Gemini chat one')
+        self.assertEqual(chats[0]['updated_at'], 1784827950)  # epoch seconds
+        self.assertEqual(chats[1]['updated_at'], 1784827900)
+
+    def test_parse_list_empty_or_unknown(self):
+        self.assertEqual(parse_list([]), [])
+        self.assertEqual(parse_list([[None, 'nope']]), [])
+
+    def test_parse_read_turns(self):
+        turns = parse_read(self.read_data)
+        self.assertEqual([t['role'] for t in turns],
+                         ['user', 'model', 'user', 'model'])
+        self.assertEqual(turns[0]['text'], 'What is e?')
+        self.assertEqual(turns[1]['text'], 'e \u2248 2.71828')
+        self.assertTrue(turns[1]['thought'])   # turn[37] flag
+        self.assertFalse(turns[3]['thought'])
+
+    def test_read_to_chat(self):
+        chat = read_to_chat(parse_read(self.read_data), 'c-1',
+                            'https://gemini.google.com/app/c-1', 'Gemini chat one')
+        self.assertEqual(chat.title, 'Gemini chat one')
+        self.assertEqual(chat.provider, 'googlegemini')
+        self.assertEqual(len(chat.turns), 4)
+        self.assertTrue(chat.had_thoughts)
+
+    def test_extract_tokens(self):
+        html = ('<script>var x = {"SNlM0e":"at123","cfb2h":"bl456",'
+                '"FdrFJe":"sid789"}</script>')
+        tokens = extract_tokens(html)
+        self.assertEqual(tokens, {'SNlM0e': 'at123', 'cfb2h': 'bl456',
+                                  'FdrFJe': 'sid789'})
+        self.assertEqual(extract_tokens('<html></html>'), {})

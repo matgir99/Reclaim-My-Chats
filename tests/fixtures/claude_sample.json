@@ -1,0 +1,64 @@
+{
+  "uuid": "conv-claude-0001",
+  "name": "Synthetic Claude Chat",
+  "created_at": "2026-01-01T10:00:00Z",
+  "updated_at": "2026-08-01T12:34:56Z",
+  "current_leaf_message_uuid": "m5",
+  "chat_messages": [
+    {
+      "uuid": "m1",
+      "parent_message_uuid": null,
+      "sender": "human",
+      "content": [
+        {"type": "text", "text": "Hello Claude"}
+      ]
+    },
+    {
+      "uuid": "m2",
+      "parent_message_uuid": "m1",
+      "sender": "assistant",
+      "content": [
+        {"type": "text", "text": "Hi! How can I help?"},
+        {"type": "tool_use", "name": "web_search", "input": {"query": "x"}}
+      ]
+    },
+    {
+      "uuid": "m3",
+      "parent_message_uuid": "m1",
+      "sender": "assistant",
+      "content": [
+        {"type": "text", "text": "old branch reply (not current)"}
+      ]
+    },
+    {
+      "uuid": "m4",
+      "parent_message_uuid": "m2",
+      "sender": "assistant",
+      "content": [
+        {"type": "thinking", "thinking": "hidden reasoning trace"},
+        {"type": "text", "text": "Current answer"}
+      ]
+    },
+    {
+      "uuid": "m5",
+      "parent_message_uuid": "m4",
+      "sender": "human",
+      "content": [
+        {"type": "text", "text": "Uploaded doc question"}
+      ],
+      "attachments": [
+        {
+          "file_name": "notes.pdf",
+          "file_type": "application/pdf",
+          "extracted_content": "PDF TEXT"
+        }
+      ],
+      "files": [
+        {
+          "file_name": "chart.png",
+          "preview_asset": {"url": "https://cdn.claude.ai/preview/img1.png"}
+        }
+      ]
+    }
+  ]
+}

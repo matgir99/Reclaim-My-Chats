@@ -77,7 +77,9 @@ python -m reclaim googleaistudio [TITLE] [--rebuild] [--list] [--dry-run]
 python -m reclaim deepseek   [TITLE] [--rebuild] [--list] [--dry-run]
 python -m reclaim kimi      [TITLE] [--rebuild] [--list] [--dry-run]
 python -m reclaim chatgpt   [TITLE] [--rebuild] [--list] [--dry-run]
-python -m reclaim all       [--rebuild]              # all four, in order
+python -m reclaim claude    [TITLE] [--rebuild] [--list] [--dry-run]
+python -m reclaim googlegemini [TITLE] [--rebuild] [--list] [--dry-run]
+python -m reclaim all       [--rebuild]              # all six, in order
 python -m reclaim status    [-o DIR]                 # offline overview
 python -m reclaim parse  aistudio --from-folder <dir-of-Drive/Takeout-json>
 python -m reclaim import chatgpt <conversations.json>

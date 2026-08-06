@@ -111,6 +111,8 @@ One program, per-provider modes (`reclaim <provider>` updates by default):
 | ChatGPT | `reclaim chatgpt` | Native REST (`/backend-api/`): conversations, Projects, two-step signed-URL file downloads |
 | ChatGPT | `reclaim import chatgpt` | Official `conversations.json` export, or scrapemychats export dirs (incl. media) |
 | Kimi | `reclaim kimi` | Native REST (`/apiv2/`, bearer from localStorage) |
+| Claude | `reclaim claude` | claude.ai API replay (cookie auth, offset pagination); active branch only, thinking omitted, tool blocks skipped in v1 |
+| Google Gemini | `reclaim googlegemini` | batchexecute RPC replay (`MaZiqc`/`hNvQHb`); thoughts flagged, images/citations skipped in v1 |
 | Kimi, Claude, Grok, Gemini | `reclaim import kept` | Kept vault (`~/.kept/vault`) — install Kept, sync, import |
 
 Output contract per chat: `<Provider>/<Project>/<title>/<title>.md` +
@@ -130,7 +132,7 @@ reclaim googleaistudio --list          # print chat titles, no download
 reclaim deepseek --dry-run             # preview what WOULD be fetched
 reclaim kimi --log                     # update with verbose progress + ETA
 reclaim chatgpt                        # update (includes ChatGPT Projects)
-reclaim all                            # update all four providers, in order
+reclaim all                            # update all six providers, in order
 reclaim all --rebuild                  # rebuild everything
 
 # Archive overview (fully offline, no browser)
@@ -167,11 +169,11 @@ reclaim <provider> --list [TITLE]        print chat titles, no download
 reclaim <provider> --log [options]       verbose progress + timings
 reclaim <provider> --dry-run [options]   preview what would be fetched
 reclaim status [-o DIR]                  offline archive overview
-reclaim all [options]                    update all four providers, in order
+reclaim all [options]                    update all six providers, in order
 ```
 
-Providers: `googleaistudio`, `deepseek`, `kimi`, `chatgpt` (`all` = every
-provider). Common options: `--skip N`, `--limit N`, `--dry-run`, `--no-raw`,
+Providers: `googleaistudio`, `deepseek`, `kimi`, `chatgpt`, `claude`,
+`googlegemini` (`all` = every provider). Common options: `--skip N`, `--limit N`, `--dry-run`, `--no-raw`,
 `-o/--output-dir`. Naming a `TITLE` (or `--url`) always fetches those chats
 freshly; nothing else is touched. `--dry-run` logs in and lists, prints what
 Archive location: every provider writes under `<repo>/chats/<Provider>`
