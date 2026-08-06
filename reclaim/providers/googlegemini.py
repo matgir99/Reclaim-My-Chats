@@ -221,30 +221,40 @@ def parse_list(data) -> list[dict]:
 def parse_read(data) -> list[dict]:
     """hNvQHb result -> [{role, text, thought}] pairs.
 
-    Turn shape (per research): turn[2] = [user prompt text, ...];
-    turn[3] = [[candidate, ...]] with text at candidate[1]; thought flag
-    at turn[37] (thinking models). Citations (candidate[2]) and
-    generated/uploaded images are v1 gaps.
+    Turn shape (per research): turn[2] = user prompt section with text at
+    [0]; turn[3] = [[candidate, ...]] with text at candidate[1] and the
+    thoughts section at candidate[37] (thinking models). Texts may be
+    list-wrapped (['...']); unwrapped defensively. Citations
+    (candidate[2]) and generated/uploaded images are v1 gaps.
     """
+    def _unwrap(v) -> str:
+        while isinstance(v, list) and v:
+            v = v[0]
+        return v if isinstance(v, str) else ''
+
     out = []
     for t in _find_rows(data, want_user=True):
         if not isinstance(t, list) or len(t) < 4:
             continue
-        user_text = ''
-        if isinstance(t[2], list) and t[2] and isinstance(t[2][0], str):
-            user_text = t[2][0]
-        model_text = ''
+        user_text = _unwrap(t[2][0]) if isinstance(t[2], list) and t[2] else ''
         cand = None
         if isinstance(t[3], list) and t[3] and isinstance(t[3][0], list) \
                 and t[3][0]:
             cand = t[3][0][0]
-        if isinstance(cand, list) and len(cand) > 1 and isinstance(cand[1], str):
-            model_text = cand[1]
-        thought = bool(t[37]) if len(t) > 37 else False
+        model_text = ''
+        thought = False
+        if isinstance(cand, list):
+            if len(cand) > 1:
+                model_text = _unwrap(cand[1])
+            if len(cand) > 37:
+                thought = bool(cand[37])
+            elif len(t) > 37:
+                thought = bool(t[37])
         if user_text.strip():
             out.append({'role': 'user', 'text': user_text, 'thought': False})
         if model_text.strip():
-            out.append({'role': 'model', 'text': model_text, 'thought': thought})
+            out.append({'role': 'model', 'text': model_text,
+                        'thought': thought})
     return out
 
 

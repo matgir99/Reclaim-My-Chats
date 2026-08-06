@@ -1,5 +1,7 @@
-# Github folder
-.github/
+# Github folder — local agent config stays private; the release
+# automation workflow IS tracked.
+.github/*
+!.github/workflows/
 
 # Python build metadata
 *.egg-info/

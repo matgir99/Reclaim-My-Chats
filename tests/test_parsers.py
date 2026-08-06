@@ -444,12 +444,25 @@ class TestBatchexecute(unittest.TestCase):
         self.assertEqual(parse_frames(text), payloads)
 
     def test_parse_frames_utf16_units(self):
-        # frame length is in UTF-16 units: a non-BMP char counts 2
-        smile = '\U0001F600'
-        frame = smile + 'ok'                # 2 + 1 + 1 = 4 units
+        # frame length is in UTF-16 units: a non-BMP char counts 2.
+        # (non-emoji test char: Deseret capital LONG I, U+10400)
+        smb = '\U00010400'
+        frame = smb + 'ok'                # 2 + 1 + 1 = 4 units
         self.assertEqual(parse_frames(f'4{frame}'), [frame])
-        frame2 = 'a' + smile + 'b'          # 1 + 2 + 1 = 4 units
+        frame2 = 'a' + smb + 'b'          # 1 + 2 + 1 = 4 units
         self.assertEqual(parse_frames(f'4{frame2}'), [frame2])
+
+    def test_parse_frames_newline_delimited(self):
+        # real wire format: {length}\n{content} per frame
+        text = ")]}'\n\n3\n\"a\"\n4\n\"bc\"\n15\n[[[1, 2], [3]]]"
+        self.assertEqual(parse_frames(text), ['"a"', '"bc"', '[[[1, 2], [3]]]'])
+
+    def test_parse_frames_nonbmp_before_later_frame(self):
+        # a non-BMP char in an early frame must not desync later frames
+        smb = '\U00010400'
+        a = smb + 'x'                     # 3 units
+        b = '["y"]'                       # 5 units
+        self.assertEqual(parse_frames(f'3\n{a}\n5\n{b}'), [a, b])
 
     def test_parse_frames_tolerates_prefix_and_truncation(self):
         frames = parse_frames(')]}\'\n 4"ab"5cd')

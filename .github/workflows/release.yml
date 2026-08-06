@@ -1,0 +1,49 @@
+name: Release
+
+# Fully automatic releases: when a push to main carries a pyproject.toml
+# version whose tag does not exist yet, create the tag AND the GitHub
+# Release (notes auto-generated from commits since the previous tag).
+# Pushes without a version bump are a no-op.
+#
+# Release procedure: bump `version` in pyproject.toml, commit, push.
+# That's all — the release appears on GitHub within a minute.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write  # create tags + releases via GITHUB_TOKEN
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Read version from pyproject.toml
+        id: v
+        run: |
+          version=$(grep -m1 '^version = ' pyproject.toml | sed 's/.*"\(.*\)".*/\1/')
+          [ -n "$version" ] || { echo "no version in pyproject.toml"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Tag already exists?
+        id: tag
+        run: |
+          git fetch --tags --quiet
+          if git rev-parse --verify --quiet "refs/tags/v${{ steps.v.outputs.version }}"; then
+            echo "exists=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=no" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create tag + GitHub Release
+        if: steps.tag.outputs.exists == 'no'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "v${{ steps.v.outputs.version }}" \
+            --target main \
+            --title "v${{ steps.v.outputs.version }}" \
+            --generate-notes

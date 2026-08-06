@@ -56,27 +56,40 @@ def _slice_utf16(s: str, start_units: int, n_units: int) -> str:
 def parse_frames(text: str) -> list[str]:
     """Split a batchexecute response body into its frames.
 
-    Tolerates whitespace and the optional ")]}'" anti-XSSI prefix. Stops
-    at the first non-digit byte that doesn't begin a frame (malformed or
-    truncated body).
+    Wire format: optional ")]}'" anti-XSSI prefix, then per frame
+    `{length}\n{content}` — the length counts the content's UTF-16 units
+    (the separating newline is not counted). Tolerates a missing newline
+    and stops cleanly at trailing garbage or a truncated final frame.
     """
     text = text.lstrip()
     if text.startswith(")]}'"):
-        text = text[4:].lstrip()
+        text = text[4:]
     frames: list[str] = []
-    i = 0
-    while i < len(text):
+    i = 0   # code-point index into text
+    u = 0   # UTF-16-unit offset of text[i] from the string start
+    n_chars = len(text)
+    while i < n_chars:
+        if not text[i].isdigit():
+            if text[i].isspace():
+                i += 1
+                u += 1
+                continue
+            break  # non-whitespace garbage -> stop
         j = i
-        while j < len(text) and text[j].isdigit():
+        while j < n_chars and text[j].isdigit():
             j += 1
-        if j == i:
-            break  # not a frame length -> stop (trailing garbage)
         n = int(text[i:j])
+        u += j - i  # digits are BMP
         i = j
-        if i + n > _utf16_len(text):
-            break  # truncated frame
-        frames.append(_slice_utf16(text, i, n))
-        i += n
+        if i < n_chars and text[i] == '\n':
+            i += 1
+            u += 1
+        frame = _slice_utf16(text, u, n)
+        if _utf16_len(frame) < n:
+            break  # truncated frame -> drop it and stop
+        frames.append(frame)
+        i += len(frame)
+        u += n
     return frames
 
 
