@@ -22,6 +22,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 from ..core import browser, config
+from ..core.events import EventSink, emit
 from ..core.manifest import SyncState, print_dry_run, write_manifest
 from ..core.model import Attachment, Chat, Turn
 from ..core.progress import progress
@@ -535,7 +536,7 @@ def extract_dom_fallback(page) -> dict:
 # ---------------------------------------------------------------------------
 def run(page, chats: list[dict], out_dir: Path, skip_unchanged: bool = False,
         updated_map: dict | None = None, save_raw: bool = True,
-        log: bool = False) -> list[dict]:
+        log: bool = False, sink: EventSink | None = None) -> list[dict]:
     """Fetch the given chats. Returns per-chat result dicts for the manifest.
 
     skip_unchanged: skip chats whose server updated_at matches the local sync
@@ -552,12 +553,14 @@ def run(page, chats: list[dict], out_dir: Path, skip_unchanged: bool = False,
 
     for i, chat in enumerate(chats):
         label = (chat.get('title') or chat['id'])[:55]
+        emit(sink, 'chat_started', PROVIDER, label, i + 1, len(chats))
         if log:
             print(progress(i + 1, len(chats), t_run))
         if skip_unchanged and sync.is_unchanged(chat['id'],
                                                 updated_map.get(chat['id'])):
             if log:
                 print(f'[{i + 1}/{len(chats)}] {label} -> skip (unchanged)')
+            emit(sink, 'chat_skipped', PROVIDER, label, i + 1, len(chats))
             continue
         t0 = time.time()
         try:
@@ -593,6 +596,7 @@ def run(page, chats: list[dict], out_dir: Path, skip_unchanged: bool = False,
             results.append({'id': chat['id'], 'title': chat['title'], 'ok': True,
                             'path': path, 'duration_s': round(time.time() - t0, 1),
                             **{k: stats[k] for k in ('turns', 'chars', 'images', 'docs')}})
+            emit(sink, 'chat_completed', PROVIDER, chat['title'], i + 1, len(chats))
             if log:
                 extra = f", {stats['images']} img" if stats['images'] else ''
                 extra += f", {stats['docs']} doc" if stats['docs'] else ''
@@ -604,6 +608,7 @@ def run(page, chats: list[dict], out_dir: Path, skip_unchanged: bool = False,
             traceback.print_exc()
             results.append({'id': chat['id'], 'title': label, 'ok': False,
                             'error': str(e)})
+            emit(sink, 'error', PROVIDER, label, i + 1, len(chats), str(e))
     sync.save()
     return results
 
@@ -655,11 +660,10 @@ def main(argv=None):
             ctx.close()
 
 
-def run_session(page, args) -> int:
+def run_session(page, args, sink: EventSink | None = None) -> int:
     """Provider session on an already-launched page; shared by main()
     (own browser) and `reclaim all` (one browser for all providers)."""
     out_dir = Path(args.output_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
     started = time.time()
     ensure_logged_in(page)
     init_replay(page)
@@ -693,12 +697,13 @@ def run_session(page, args) -> int:
     if args.dry_run:
         sync = SyncState(out_dir, PROVIDER, migrate=False)
         return print_dry_run(chats, updated_map, sync, skip_unchanged,
-                             log=args.log)
+                             log=args.log, sink=sink, provider=PROVIDER)
 
+    out_dir.mkdir(parents=True, exist_ok=True)
     print(f"\n{'=' * 50}\n  {len(chats)} chats\n{'=' * 50}\n")
     results = run(page, chats, out_dir, skip_unchanged=skip_unchanged,
                   updated_map=updated_map, save_raw=not args.no_raw,
-                  log=args.log)
+                  log=args.log, sink=sink)
     manifest = write_manifest(out_dir, PROVIDER, results, started)
     ok = sum(1 for r in results if r.get('ok'))
     print(f"\n{'=' * 50}")

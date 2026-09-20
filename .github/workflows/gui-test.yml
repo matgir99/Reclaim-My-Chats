@@ -1,0 +1,29 @@
+name: Flet GUI tests
+
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+    branches: [develop, main]
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    name: Device integration (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -e '.[gui-test]'
+      - name: Install Flet Linux build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb $(flet --version --json | python -c "import json,sys; print(' '.join(json.load(sys.stdin)['linux_dependencies']))")
+      - name: Test controls in the Flet device host
+        run: xvfb-run -a flet test linux flet_integration --tests-dir tests --yes -v

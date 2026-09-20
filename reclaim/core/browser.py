@@ -12,8 +12,7 @@ import shutil
 import time
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-USER_DATA_DIR = str(REPO_ROOT / '.playwright-profile')
+from . import config
 
 LAUNCH_ARGS = [
     '--disable-blink-features=AutomationControlled',
@@ -21,6 +20,10 @@ LAUNCH_ARGS = [
     '--disable-dev-shm-usage',
     '--window-position=-3000,-3000',   # off-screen until login needed
 ]
+
+
+class BrowserUnavailableError(RuntimeError):
+    """No usable system or Playwright Chromium installation was found."""
 
 
 def find_chrome() -> str | None:
@@ -56,15 +59,22 @@ def find_chrome() -> str | None:
     return None
 
 
-def launch(p, headless: bool = False):
+def launch(p, headless: bool = False, profile_dir: Path | None = None):
     """Launch the shared persistent profile. Returns (ctx, page)."""
-    Path(USER_DATA_DIR).mkdir(parents=True, exist_ok=True)
+    profile = Path(profile_dir) if profile_dir is not None else config.profile_root()
+    profile.mkdir(parents=True, exist_ok=True, mode=0o700)
     exe = find_chrome()
     if exe:
         print(f'Using system browser: {exe}')
     else:
+        bundled = Path(p.chromium.executable_path)
+        if not bundled.exists():
+            raise BrowserUnavailableError(
+                'No Chrome or Chromium browser was found. Install Chrome or Chromium '
+                'for this computer, then retry. You can also set RECLAIM_CHROME_PATH '
+                'to an existing browser executable.')
         print('No system Chrome/Chromium found — using Playwright bundled browser.')
-    kwargs = {'user_data_dir': USER_DATA_DIR, 'headless': headless,
+    kwargs = {'user_data_dir': str(profile), 'headless': headless,
               'args': LAUNCH_ARGS,
               'viewport': {'width': 1400, 'height': 900}}
     if exe:

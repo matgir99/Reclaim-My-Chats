@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+    branches: [develop, main]
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Quality and Python package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Require develop as the source of main PRs
+        if: github.event_name == 'pull_request' && github.base_ref == 'main'
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_REPO: ${{ github.repository }}
+        run: |
+          test "$HEAD_REF" = develop
+          test "$HEAD_REPO" = "$BASE_REPO"
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -e '.[gui-test]' build ruff pyright
+      - run: python -m unittest discover -s tests -q
+      - run: ruff check reclaim tests scripts flet_integration
+      - run: pyright reclaim tests scripts flet_integration
+      - run: python -m build
+      - run: python -c "import flet, reclaim.gui; from reclaim.__main__ import main; assert main(['--version']) == 0"
+
+  desktop:
+    name: Desktop package (${{ matrix.os }})
+    needs: quality
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -e '.[gui-test]'
+      - run: python scripts/pack_desktop.py --version 0.0.0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.os }}
+          path: dist/release/*
+          if-no-files-found: error
