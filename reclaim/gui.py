@@ -132,7 +132,10 @@ class ReclaimWindow:
         page.add(ft.Container(
             padding=20,
             content=ft.Column([
-                ft.Text('Reclaim My Chats', size=28, weight=ft.FontWeight.BOLD),
+                ft.Row([
+                    ft.Text('Reclaim My Chats', size=28, weight=ft.FontWeight.BOLD),
+                    self.settings_button,
+                ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, wrap=True),
                 ft.Text('Archive and synchronize your AI conversations'),
                 ft.Divider(),
                 ft.Text('Providers', size=20, weight=ft.FontWeight.BOLD),
@@ -148,7 +151,7 @@ class ReclaimWindow:
                 ft.Text('Archive', size=20, weight=ft.FontWeight.BOLD),
                 self.archive_total,
                 self.archive_path,
-                ft.Row([self.open_archive, self.settings_button], wrap=True),
+                self.open_archive,
                 ft.ExpansionTile(title='Details', controls=[self.log],
                                  key='details'),
             ], spacing=12),
