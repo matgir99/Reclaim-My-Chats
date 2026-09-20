@@ -375,7 +375,7 @@ class ReclaimWindow:
                 width=570,
                 content=ft.Column([
                     ft.Text('Enabled providers'),
-                    *enabled_checks.values(),
+                    *(ft.Row([check]) for check in enabled_checks.values()),
                     ft.Row([archive_field,
                             ft.Button('Browse', on_click=choose_archive,
                                       key='browse-archive')]),

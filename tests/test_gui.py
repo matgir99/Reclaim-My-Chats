@@ -111,7 +111,7 @@ class TestGui(unittest.IsolatedAsyncioTestCase):
         dialog = self.page.dialog
         assert dialog is not None
         assert dialog.actions is not None
-        dialog.content.content.controls[1].value = False  # Google AI Studio
+        dialog.content.content.controls[1].controls[0].value = False  # Google AI Studio
         await dialog.actions[1].on_click(None)
         self.assertNotIn('googleaistudio', gui.config.load(self.root)['providers'])
         self.assertTrue(self.window.checks['googleaistudio'].disabled)
