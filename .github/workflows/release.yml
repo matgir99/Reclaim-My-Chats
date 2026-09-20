@@ -1,49 +1,146 @@
 name: Release
 
-# Fully automatic releases: when a push to main carries a pyproject.toml
-# version whose tag does not exist yet, create the tag AND the GitHub
-# Release (notes auto-generated from commits since the previous tag).
-# Pushes without a version bump are a no-op.
-#
-# Release procedure: bump `version` in pyproject.toml, commit, push.
-# That's all — the release appears on GitHub within a minute.
-
 on:
   push:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
-  contents: write  # create tags + releases via GITHUB_TOKEN
+  contents: write
+
+concurrency:
+  group: release-main
+  queue: max
 
 jobs:
-  release:
+  prepare:
+    name: Verify and build Python package
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Choose release version
+        id: version
+        run: |
+          version=$(python scripts/next_version.py)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - run: python -m pip install -e '.[gui-test]' build ruff pyright
+      - run: python -m unittest discover -s tests -q
+      - run: ruff check reclaim tests scripts flet_integration
+      - run: pyright reclaim tests scripts flet_integration
+      - name: Build with the exact release version
+        env:
+          SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RECLAIMMYCHATS: ${{ steps.version.outputs.version }}
+        run: python -m build
+      - name: Inspect wheel and source metadata
+        run: python scripts/verify_python_artifacts.py --version "${{ steps.version.outputs.version }}" dist
+      - name: Install the wheel and check the CLI version
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          python -m pip install --force-reinstall --no-deps dist/*.whl
+          test "$(python -m reclaim --version)" = "reclaim $VERSION"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-packages
+          path: dist/*
+          if-no-files-found: error
+
+  desktop:
+    name: Build desktop (${{ matrix.os }})
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install desktop dependencies
+        env:
+          SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RECLAIMMYCHATS: ${{ needs.prepare.outputs.version }}
+        run: python -m pip install -e '.[gui-test]'
+      - name: Pack desktop application
+        run: python scripts/pack_desktop.py --version "${{ needs.prepare.outputs.version }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.os }}
+          path: dist/release/*
+          if-no-files-found: error
+
+  integration:
+    name: Test Flet GUI on Linux
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-
-      - name: Read version from pyproject.toml
-        id: v
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -e '.[gui-test]'
+      - name: Install Flet Linux build prerequisites
         run: |
-          version=$(grep -m1 '^version = ' pyproject.toml | sed 's/.*"\(.*\)".*/\1/')
-          [ -n "$version" ] || { echo "no version in pyproject.toml"; exit 1; }
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+          sudo apt-get update
+          sudo apt-get install -y xvfb $(flet --version --json | python -c "import json,sys; print(' '.join(json.load(sys.stdin)['linux_dependencies']))")
+      - run: xvfb-run -a flet test linux flet_integration --tests-dir tests --yes -v
 
-      - name: Tag already exists?
-        id: tag
+  publish:
+    name: Tag and publish verified artifacts
+    needs: [prepare, desktop, integration]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: '*'
+          path: release-assets
+          merge-multiple: true
+      - name: Verify all packages before tagging
         run: |
-          git fetch --tags --quiet
-          if git rev-parse --verify --quiet "refs/tags/v${{ steps.v.outputs.version }}"; then
-            echo "exists=yes" >> "$GITHUB_OUTPUT"
+          python scripts/verify_python_artifacts.py --version "$VERSION" release-assets
+          python scripts/verify_desktop_artifacts.py --version "$VERSION" release-assets
+          python scripts/write_checksums.py release-assets
+      - name: Check commit and create or reuse its tag
+        run: |
+          git fetch origin main --tags
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse origin/main)" = "$GITHUB_SHA" || { echo 'Main advanced; refusing to tag an outdated commit'; exit 1; }
+          chosen=$(python scripts/next_version.py --require-ref origin/main)
+          test "$chosen" = "$VERSION" || { echo "Version changed: $VERSION to $chosen"; exit 1; }
+          if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+            test "$(git rev-list -n 1 "v$VERSION")" = "$GITHUB_SHA" || { echo 'Tag points at another commit'; exit 1; }
           else
-            echo "exists=no" >> "$GITHUB_OUTPUT"
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git tag -a "v$VERSION" -m "Reclaim My Chats v$VERSION"
+            git push origin "refs/tags/v$VERSION"
           fi
-
-      - name: Create tag + GitHub Release
-        if: steps.tag.outputs.exists == 'no'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create draft release if needed
         run: |
-          gh release create "v${{ steps.v.outputs.version }}" \
-            --target main \
-            --title "v${{ steps.v.outputs.version }}" \
-            --generate-notes
+          if ! gh release view "v$VERSION" >/dev/null 2>&1; then
+            gh release create "v$VERSION" --verify-tag --generate-notes --draft --title "v$VERSION"
+          fi
+      - name: Upload and verify assets
+        run: |
+          gh release upload "v$VERSION" release-assets/* --clobber
+          gh release view "v$VERSION" --json assets > release-assets.json
+          python scripts/verify_release_assets.py release-assets release-assets.json
+      - name: Publish release
+        run: gh release edit "v$VERSION" --draft=false

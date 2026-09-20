@@ -1,297 +1,159 @@
 # Reclaim My Chats
 
-Reclaim your AI chat history. Bulk-export conversations from AI chat
-platforms into clean local Markdown folders — full text with LaTeX intact,
-model thoughts filtered out, original-quality images, and real downloaded
-attachments.
+Reclaim My Chats saves conversations from ChatGPT, Claude, Google Gemini,
+Google AI Studio, DeepSeek, and Kimi as local Markdown, JSON, and downloaded
+media. It has a desktop synchronization manager and a full command line
+interface (CLI). Your archive stays on your computer or in a folder you choose.
 
-Supports **Google AI Studio**, **DeepSeek Chat**, **Kimi**, and **ChatGPT**
-(incl. Projects). MIT licensed.
+## Download the desktop application
 
-## Features
+Download the archive for your operating system from [GitHub
+Releases](https://github.com/matgir99/Reclaim-My-Chats/releases). Desktop
+downloads begin with `v3.3.0`; the earlier `v3.2.0` release has no executable
+assets. The application contains Python and Flet, so you do not need to
+install either to run the download.
 
-- **Native scrapers** over each platform's own internal data layer — no
-  visual/DOM scraping, no manual copy-paste
-- **ChatGPT Projects** mirrored as subfolders (`ChatGPT/<Project>/<title>/`)
-- **Clean output**: structural thought flags (no model reasoning text),
-  LaTeX `$...$`/`$$...$$` intact, original images, downloaded attachments
-- **Incremental sync**: update by default — chats whose server timestamp
-  matches the local sync record are skipped automatically; `--rebuild`
-  re-fetches everything
-- **Per-chat canonical dump**: `<title>.md` + `chat.json` (machine-readable)
-  + `raw.json` (media-stripped provider response) + media files
-- **Interop**: importers for third-party captures, exporter to HAEVN
-  Markdown for search
-- **Privacy-aware**: session cookies live only in a local git-ignored
-  browser profile; nothing is uploaded anywhere
+| System | Release asset | How to start |
+|:--|:--|:--|
+| Linux x86_64 | `Reclaim-My-Chats-*-linux-x86_64.tar.gz` | Extract it and run `ReclaimMyChats/ReclaimMyChats` |
+| Windows x86_64 | `Reclaim-My-Chats-*-windows-x86_64.zip` | Extract it and open `ReclaimMyChats.exe` |
+| macOS | `Reclaim-My-Chats-*-macos-*.zip` | Extract it and open `ReclaimMyChats.app` |
 
-## Requirements
+Install Chrome or Chromium if the application reports that no browser is
+available. The first update of each provider may show a browser window for
+you to log in. Reclaim My Chats keeps that session in a local Playwright
+profile and uses it for subsequent updates. The desktop download does not
+contain a browser or account credentials. Unsigned Windows and macOS builds
+may show their usual security prompts.
 
-- **Git** and **Python 3.12+** (any newer installed version is used
-  automatically; the project is developed on 3.14)
-- **Playwright** — installed automatically by `pip install -e .`
-- A **Chrome or Chromium** browser — a system install is auto-detected
-  (Linux/macOS/Windows paths + `PATH`); if you have none, Playwright's
-  bundled Chromium works: `python -m playwright install chromium`
+The main window lets you select providers, update selected or all enabled
+providers, preview a dry run, rebuild selected archives, inspect progress and
+errors, and open or change the archive folder. Rebuild fetches every selected
+conversation again and overwrites its local copy. A dry run contacts the
+providers to list conversations, but does not write to the archive.
 
-## Install
+See [GUI usage and testing](docs/GUI.md) for settings, profile migration,
+and development commands.
 
-### Linux
+## Install and use the CLI
+
+The CLI requires Python 3.12 or newer and a Chrome or Chromium browser.
+Clone the repository and install the base package:
 
 ```bash
-# 1. Git + Python, if missing:
-#    Debian/Ubuntu:  sudo apt install git python3 python3-venv
-#    Fedora:         sudo dnf install git python3
 git clone https://github.com/matgir99/Reclaim-My-Chats.git
 cd Reclaim-My-Chats
-python3 -m venv .venv && source .venv/bin/activate
-pip install -e .
-# 2. Browser: system Chrome/Chromium is auto-detected. If you have neither:
-python -m playwright install chromium
-sudo python -m playwright install-deps chromium   # system libs it needs
-```
-
-### macOS
-
-```bash
-# 1. Git + Python, if missing (Homebrew):  brew install git python
-git clone https://github.com/matgir99/Reclaim-My-Chats.git
-cd Reclaim-My-Chats
-python3 -m venv .venv && source .venv/bin/activate
-pip install -e .
-# 2. Browser: /Applications/Google Chrome.app is auto-detected. Otherwise:
-python -m playwright install chromium
-```
-
-### Windows
-
-**Native (CLI fully supported; only the `run.sh` bash wrapper is not):**
-
-1. Install Python 3.12+ from https://www.python.org/downloads/ — tick
-   **"Add python.exe to PATH"** in the installer. Git from
-   https://git-scm.com/download/win.
-2. In PowerShell:
-
-```powershell
-git clone https://github.com/matgir99/Reclaim-My-Chats.git
-cd Reclaim-My-Chats
-py -m venv .venv
-.venv\Scripts\Activate.ps1
-# if activation is blocked: Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
-pip install -e .
-python -m playwright install chromium   # only if Chrome is not installed
-```
-
-Use `reclaim ...` (or `python -m reclaim ...`) — all providers, `status`,
-`all` work natively.
-
-**WSL2 (full support, including `run.sh`):** `wsl --install`, then follow
-the Linux steps inside the Ubuntu terminal.
-
-### Verify your install
-
-```bash
-reclaim --version     # e.g. reclaim 3.1.0
-reclaim status        # offline overview; shows "not archived yet" on a fresh setup
-```
-
-If `reclaim` is not found: the venv isn't active — run `source .venv/bin/activate`
-first (`.venv\Scripts\Activate.ps1` on Windows), or just use
-`python3 -m reclaim ...` from the repo (no install needed).
-
-## How it works
-
-One program, per-provider modes (`reclaim <provider>` updates by default):
-
-| Provider | Command | How |
-|---|---|---|
-| Google AI Studio | `reclaim googleaistudio` | Replays the app's own `ResolveDriveResource` RPC (SAPISIDHASH auth) — text, structural thought flags, inline original images, Drive attachment downloads |
-| Google AI Studio (offline) | `reclaim parse googleaistudio` | Drive folder download / Takeout zip — no browser needed |
-| DeepSeek | `reclaim deepseek` | Reads the `deepseek-chat` IndexedDB directly — raw markdown, citations mapped, thinking skipped |
-| ChatGPT | `reclaim chatgpt` | Native REST (`/backend-api/`): conversations, Projects, two-step signed-URL file downloads |
-| ChatGPT | `reclaim import chatgpt` | Official `conversations.json` export, or scrapemychats export dirs (incl. media) |
-| Kimi | `reclaim kimi` | Native REST (`/apiv2/`, bearer from localStorage) |
-| Claude | `reclaim claude` | claude.ai API replay (cookie auth, offset pagination); active branch only, thinking omitted, tool blocks skipped in v1 |
-| Google Gemini | `reclaim googlegemini` | batchexecute RPC replay (`MaZiqc`/`hNvQHb`); thoughts flagged, images/citations skipped in v1 |
-| Kimi, Claude, Grok, Gemini | `reclaim import kept` | Kept vault (`~/.kept/vault`) — install Kept, sync, import |
-
-Output contract per chat: `<Provider>/<Project>/<title>/<title>.md` +
-`chat.json` + `raw.json` + media. Thoughts omitted, filenames de-duplicated,
-manifests track every run (see `docs/ARCHITECTURE.md`).
-
-## Quickstart
-
-```bash
-# Google AI Studio (first run opens a window for Google login)
-reclaim googleaistudio                 # update: new + changed chats only
-reclaim googleaistudio --rebuild       # everything, freshly (overwrite)
-reclaim googleaistudio "latex"         # chats whose title contains "latex"
-reclaim googleaistudio --list          # print chat titles, no download
-
-# DeepSeek / Kimi / ChatGPT (first run logs in via browser window)
-reclaim deepseek --dry-run             # preview what WOULD be fetched
-reclaim kimi --log                     # update with verbose progress + ETA
-reclaim chatgpt                        # update (includes ChatGPT Projects)
-reclaim all                            # update all six providers, in order
-reclaim all --rebuild                  # rebuild everything
-
-# Archive overview (fully offline, no browser)
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
+reclaim --version
 reclaim status
+```
 
-# Detached runs with PID + log (Linux/macOS bash)
-./run.sh googleaistudio --rebuild      # ./run.sh progress | stop
-./run.sh all                           # all providers, sequentially
+On Windows, create the environment with `py -m venv .venv` and activate it
+with `.venv\Scripts\Activate.ps1`. If you want to launch the GUI from Python,
+install the optional dependency: `python -m pip install -e '.[gui]'`, then run
+`reclaim gui` or `reclaim-gui`.
 
-# AI Studio offline (no browser): download the "Google AI Studio" folder
-# from drive.google.com (or a Takeout zip), then
-reclaim parse googleaistudio --from-folder ~/Downloads/"Google AI Studio" \
-    --titles titles.json                # optional drive_id -> title map
+Common commands:
 
-# ChatGPT via official export (no browser):
-# chatgpt.com → Settings → Data Controls → Export, then
-reclaim import chatgpt ~/Downloads/conversations.json
+```bash
+reclaim chatgpt                       # update new and changed chats
+reclaim claude --dry-run              # preview after contacting Claude
+reclaim googlegemini --rebuild        # fetch every Gemini chat again
+reclaim googleaistudio "latex"       # one title match
+reclaim deepseek --list               # list titles without archiving
+reclaim kimi --url CHAT_URL           # one exact chat
+reclaim all                           # update enabled providers in one browser session
+reclaim status                        # inspect the local archive offline
+```
 
-# Kimi / Claude / Grok / Gemini via Kept
-reclaim import kept ~/.kept/vault --providers kimi
+The other modes remain available:
 
-# Push the whole archive into HAEVN's search UI
+```bash
+reclaim parse googleaistudio --from-folder DIRECTORY
+reclaim import chatgpt conversations.json
+reclaim import kept VAULT --providers kimi,claude
+reclaim import scrapemychats EXPORT_DIRECTORY
 reclaim export haevn-md . archive.zip
 ```
 
-### CLI surface
+Run `reclaim <provider> --help` for `--skip`, `--limit`, `--log`, `--no-raw`,
+and `-o/--output-dir`. Single provider commands run even if that provider is
+disabled in settings; `reclaim all` uses the configured provider list.
 
-```
-reclaim <provider> [TITLE] [options]     update: new + changed chats only
-reclaim <provider> --rebuild [options]   everything, freshly (overwrite)
-reclaim <provider> "latex"               chats whose title contains "latex"
-reclaim <provider> --url URL             one exact chat
-reclaim <provider> --list [TITLE]        print chat titles, no download
-reclaim <provider> --log [options]       verbose progress + timings
-reclaim <provider> --dry-run [options]   preview what would be fetched
-reclaim status [-o DIR]                  offline archive overview
-reclaim all [options]                    update all six providers, in order
-```
+## Archive and settings
 
-Providers: `googleaistudio`, `deepseek`, `kimi`, `chatgpt`, `claude`,
-`googlegemini` (`all` = every provider). Common options: `--skip N`, `--limit N`, `--dry-run`, `--no-raw`,
-`-o/--output-dir`. Naming a `TITLE` (or `--url`) always fetches those chats
-freshly; nothing else is touched. `--dry-run` logs in and lists, prints what
-Archive location: every provider writes under `<repo>/chats/<Provider>`
-(`chats/` is the single archive root — gitignored, never pushed). In the
-owner's setup `chats/` is a symlink to a cloud-synced folder, so the
-archive lives on every device while the public repo stays clean.
-`reclaim status` scans the same root by default.
+Each provider writes to `<archive>/<Provider>/<chat>/`. A chat folder contains
+readable Markdown, `chat.json`, optional `raw.json`, and downloaded media.
+ChatGPT Projects become subfolders. A run manifest and sync record in each
+provider folder support incremental updates and the offline status view.
+See [the output contract](docs/OUTPUT.md) for details.
 
-a run would fetch (`would fetch: N (M new, K changed) · would skip: J
-unchanged`), and downloads nothing.
+The GUI and CLI use the same `.reclaim.json` settings. For a source checkout,
+the default archive is `<checkout>/chats` and the default browser profile is
+`<checkout>/.playwright-profile`. Installed Python packages and standalone
+desktop downloads use an operating system data folder instead:
 
-Output has exactly two levels — no in between:
+| System | Default data folder |
+|:--|:--|
+| Linux | `$XDG_DATA_HOME/ReclaimMyChats` or `~/.local/share/ReclaimMyChats` |
+| macOS | `~/Library/Application Support/ReclaimMyChats` |
+| Windows | `%LOCALAPPDATA%\ReclaimMyChats` |
 
-- **Default: essential info + summary.** Real runs print the `N chats`
-  header and the `Done: X ok, Y failed` summary (failures always print);
-  `--dry-run` prints the `would fetch: ...` counts line plus the affected
-  titles.
-- **`--log`: full log.** Every chat gets a line
-  (`[i/N] Title -> Nt, N,NNN chars` / `-> skip (unchanged)`), plus verbose
-  progress (`[i/N] NN% · elapsed M:SS · ETA M:SS`) and per-chat detail
-  (path/files/timings). `--dry-run --log` prints the same per-chat lines
-  with `fetch (new|changed|fresh)` / `skip (unchanged)` before the counts.
+The archive is `chats/` and the browser profile is `.playwright-profile/`
+inside that data folder by default. Set `RECLAIM_HOME` to use an existing
+checkout or another data folder. In the GUI, **Settings** can choose an
+archive and an existing browser profile. This lets a standalone download
+reuse the login sessions from a checkout without copying cookies. Do not open
+two Reclaim processes with the same profile simultaneously.
 
-### Choose your providers
-
-`reclaim all` runs every provider by default. If you don't use some of
-them, create `.reclaim.json` in the repo root listing only yours:
+For manual configuration:
 
 ```json
-{"providers": ["googleaistudio", "chatgpt"]}
+{
+  "providers": ["chatgpt", "claude"],
+  "archive": "/path/to/chats",
+  "profile": "/path/to/existing/.playwright-profile"
+}
 ```
 
-Providers not listed are skipped entirely — no browser window, no login
-wait. Single-provider commands (`reclaim chatgpt`) are unaffected. Without
-the file, everything runs. (The file is git-ignored: it's your personal
-setup, not project config.)
+Relative paths are resolved from the data folder. `"archive": "."` puts
+provider directories directly in that folder. `.reclaim.json`, the archive,
+and the profile are ignored by Git when they live in a checkout. The profile
+holds live login sessions; treat it like a browser profile. No account
+passwords are stored in the settings file.
 
-### Where your chats live
+## Develop Reclaim My Chats
 
-Every provider writes under `<repo>/chats/<Provider>` — `chats/` is the
-single archive root and is git-ignored, so chat data is never pushed.
-**No setup needed:** the folder is created automatically on the first run.
-Two optional layouts, both supported without code changes:
-
-- **Cloud-synced archive** (recommended): make `chats/` a symlink to a
-  folder that is synced (e.g. Syncthing/Nextcloud) — the tool writes
-  through the link and the archive is available on every device. Any
-  symlink target works.
-- **Pre-chats layout**: provider dirs directly at the repo root. Set
-  `"archive": "."` in `.reclaim.json`.
-
-`"archive"` accepts an absolute path, a repo-relative path, or `"."`/`""`
-for the repo root itself:
-
-```json
-{"providers": ["googleaistudio", "chatgpt"], "archive": "/mnt/big-disk/chats"}
-```
-
-`reclaim status` scans the same root by default. Everything else (import,
-parse, `-o`) is unaffected.
-
-Authentication: you log in **once per provider** in a real browser window
-that appears during the first run; sessions are stored in
-`.playwright-profile/` (a normal Chromium profile, git-ignored, owner-only
-permissions). Update runs need no re-login unless sessions expire. To
-remove stored credentials at any time: log out of the sites in the profile
-browser and delete `.playwright-profile/`.
-
-## Troubleshooting
-
-- **`reclaim: command not found`** — venv not active (`source .venv/bin/activate`),
-  or use `python3.14 -m reclaim ...` from the repo without installing.
-- **Login window doesn't appear / session expired** — log in to the site in the
-  profile browser and retry; the wait is 15 min by default, override with
-  `RECLAIM_LOGIN_TIMEOUT=1800` (seconds).
-- **Browser profile locked (`SingletonLock`)** — a previous run left Chrome
-  running: `./run.sh stop`, or delete `.playwright-profile/Singleton*`.
-- **No system Chrome found** — install Chromium for Playwright and its Linux
-  deps: `python -m playwright install chromium && playwright install-deps`.
-- **Why does `--dry-run` still open a browser?** — by design: it logs in and
-  lists chats to compute the preview, but downloads and writes nothing.
-
-## Security notes
-
-- The repo and its git history contain **no chat data, no cookies, no
-  tokens** — the archive and the browser profile are git-ignored by design.
-  Never force-add them.
-- The browser profile holds live session cookies for your accounts; treat
-  it like any other browser profile. Anyone with read access to your
-  machine could use them (same as your everyday browser).
-- `raw.json` strips long strings (e.g. time-limited signed download URLs).
-- Never commit `output/*` or `.playwright-profile/`; `.gitignore` already
-  covers all of this.
-
-## Development
+`develop` is the integration branch. `main` contains released code and remains
+the default branch. Changes reach `main` through a tested pull request from
+`develop`. Merging it triggers the release workflow: it builds and verifies
+the Python and desktop packages, then creates the version tag and publishes
+the GitHub Release. The first GUI release is `v3.3.0`; ordinary later merges
+increment the patch number. No version edit or special commit message is
+needed. See [releasing](docs/RELEASING.md).
 
 ```bash
-./scripts/run_tests.sh  # offline unit tests (fixtures, no browser)
-ruff check reclaim/ tests/
-pyright reclaim/ tests/
+python -m pip install -e '.[gui-test]' build ruff pyright
+python -m unittest discover -s tests -q
+ruff check reclaim tests scripts flet_integration
+pyright reclaim tests scripts flet_integration
+python -m build
+flet test linux flet_integration --tests-dir tests --yes
+python scripts/pack_desktop.py --version 0.0.0
 ```
 
-```
-reclaim/
-├── __main__.py            # unified CLI: <provider> | all | status | import | export | parse
-├── core/                  # browser, manifest, model, progress, status, writer
-├── providers/             # googleaistudio, aistudio_files (parse mode), deepseek,
-│                          # chatgpt, chatgpt_import, kept_vault, kimi
-└── exporters/             # haevn_md
-docs/                      # plan, architecture, research, provider notes
-tests/                     # fixtures + offline unit tests
-scripts/                   # shared shell helpers (newest-python picker)
-```
+The Flet device tests require the Flutter Linux build prerequisites listed in
+[Flet's Linux guide](https://flet.dev/docs/publish/linux/). `flet pack` uses
+PyInstaller and does not need that Flutter toolchain. A packaged executable
+must also be launched outside the development environment as a separate
+smoke test.
 
-## Docs
+The six native provider modules share browser, manifest, and archive code in
+`reclaim/core`. The CLI and Flet GUI use the same `ArchiveController`; the GUI
+runs its blocking provider work in a worker thread. See [architecture](docs/ARCHITECTURE.md).
 
-- `docs/ARCHITECTURE.md` — hub-and-spoke design rationale
-- `docs/OUTPUT.md` — the archive output contract
-- `docs/CLI_REDESIGN.md` — v3 CLI design spec
-- `NOTICE.md` — attribution and licensing notes
-- `LICENSE` — MIT
+## License
+
+MIT. See [LICENSE](LICENSE) and [NOTICE.md](NOTICE.md).

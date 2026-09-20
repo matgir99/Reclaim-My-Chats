@@ -15,6 +15,8 @@ import json
 import time
 from pathlib import Path
 
+from .events import EventSink, emit
+
 
 def write_manifest(out_dir: Path, provider: str, results: list[dict],
                    started: float) -> Path:
@@ -113,7 +115,8 @@ def plan_fetch(chats: list[dict], updated_map: dict | None, sync: SyncState,
 
 
 def print_dry_run(chats: list[dict], updated_map: dict | None, sync: SyncState,
-                  skip_unchanged: bool, log: bool = False) -> int:
+                  skip_unchanged: bool, log: bool = False,
+                  sink: EventSink | None = None, provider: str = '') -> int:
     """Print what a run WOULD do (--dry-run). Returns the exit code (0).
 
     Default (quiet): the counts line plus the titles that would be fetched.
@@ -121,6 +124,13 @@ def print_dry_run(chats: list[dict], updated_map: dict | None, sync: SyncState,
     counts line. Nothing is downloaded or written."""
     updated_map = updated_map or {}
     plan = plan_fetch(chats, updated_map, sync, skip_unchanged)
+    if sink is not None:
+        for i, chat in enumerate(chats, 1):
+            state = sync.classify(chat['id'], updated_map.get(chat['id']))
+            action = 'skip' if skip_unchanged and state == 'unchanged' else 'fetch'
+            emit(sink, 'chat_planned', provider,
+                 str(chat.get('title') or chat.get('name') or chat.get('id') or '?'),
+                 i, len(chats), f'{action} ({state})')
     if log:
         for i, c in enumerate(chats, 1):
             st = sync.classify(c['id'], updated_map.get(c['id']))

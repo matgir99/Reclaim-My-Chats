@@ -1,17 +1,16 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=80", "setuptools-scm[simple]>=8"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "reclaimmychats"
-version = "3.2.0"
-description = "Archive AI chat history from Google AI Studio, DeepSeek, Kimi and ChatGPT into clean local Markdown"
+dynamic = ["version"]
+description = "Archive AI chat history from six providers into clean local Markdown"
 readme = "README.md"
 requires-python = ">=3.12"
-license = { text = "MIT" }
+license = "MIT"
 dependencies = ["playwright>=1.61"]
 classifiers = [
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -21,15 +20,25 @@ classifiers = [
     "Operating System :: Microsoft :: Windows",
 ]
 
+[project.optional-dependencies]
+gui = ["flet==1.0.0", "flet-desktop==1.0.0"]
+gui-test = ["flet[test]==1.0.0", "flet-desktop==1.0.0", "flet-cli==1.0.0", "pyinstaller>=6"]
+
 [project.scripts]
 reclaim = "reclaim.__main__:main"
+
+[project.gui-scripts]
+reclaim-gui = "reclaim.gui:main"
 
 [tool.setuptools.packages.find]
 include = ["reclaim*"]
 
 [tool.ruff]
 line-length = 99
-target-version = "py314"
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
 
 [tool.pyright]
-pythonVersion = "3.14"
+pythonVersion = "3.12"

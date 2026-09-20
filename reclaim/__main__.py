@@ -9,6 +9,7 @@ Usage:
   reclaim <provider> --log [options]       verbose progress + timings
   reclaim <provider> --dry-run [options]   preview what would be fetched
   reclaim status [-o DIR]                  offline archive overview
+  reclaim gui                              launch the desktop application
   reclaim all [options]                    update all six providers, in order
   reclaim all --rebuild                    rebuild all providers
   reclaim --version                        print version
@@ -38,7 +39,6 @@ Examples:
 from __future__ import annotations
 
 import sys
-import traceback
 
 PROVIDERS = {
     'googleaistudio': 'reclaim.providers.googleaistudio',
@@ -71,13 +71,9 @@ def _run_all(rest: list[str]) -> int:
     if rest and rest[0] in ('-h', '--help'):
         print(USAGE)
         return 0
-    # Validate args once up front — argparse exits before any browser launch.
-    first = __import__(PROVIDERS[ALL_PROVIDERS[0]], fromlist=['parse_args'])
-    first.parse_args(list(rest))
-
-    from pathlib import Path
-    from .core import browser, config
-    root = Path(__file__).resolve().parents[1]
+    from .core import config, service
+    service.provider_module(ALL_PROVIDERS[0]).parse_args(list(rest))
+    root = config.default_root()
     chosen, skipped, unknown = config.selected_providers(root, ALL_PROVIDERS)
     for prov in skipped:
         print(f'  {prov}: skipped (not in {config.CONFIG_NAME} providers)')
@@ -88,28 +84,12 @@ def _run_all(rest: list[str]) -> int:
         print('nothing to do — no providers selected')
         return 1
 
-    from playwright.sync_api import sync_playwright
-    codes: list[tuple[str, int]] = []
-    with sync_playwright() as p:
-        ctx, page = browser.launch(p)
-        try:
-            for prov in chosen:
-                print(f'\n========== {prov} ==========')
-                mod = __import__(PROVIDERS[prov],
-                                 fromlist=['parse_args', 'run_session'])
-                try:
-                    args = mod.parse_args(list(rest))
-                    codes.append((prov, mod.run_session(page, args)))
-                except Exception:
-                    traceback.print_exc()
-                    codes.append((prov, 2))
-        finally:
-            ctx.close()
+    summary = service.ArchiveController(root).run_cli(chosen, rest)
     print('\n===== summary =====')
-    for prov, code in codes:
+    for prov, code in summary.codes:
         status = 'ok' if code == 0 else f'exit {code}'
         print(f'  {prov}: {status}')
-    return 0 if all(code == 0 for _, code in codes) else 2
+    return summary.exit_code
 
 
 def main(argv=None):
@@ -131,6 +111,12 @@ def main(argv=None):
         return mod.main(rest)
     if cmd == 'all':
         return _run_all(rest)
+    if cmd == 'gui':
+        if rest:
+            print('usage: reclaim gui')
+            return 2
+        from .gui import main as gui_main
+        return gui_main()
     if cmd == 'status':
         mod = __import__('reclaim.core.status', fromlist=['main'])
         return mod.main(rest)
