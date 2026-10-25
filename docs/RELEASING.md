@@ -12,14 +12,28 @@ commit-message convention. `setuptools-scm` gives development commits a
 development version and release artifacts the exact tagged version.
 
 The workflow builds the Python wheel and source distribution with an explicit
-version override before creating the tag. It checks their metadata and the
-Linux, Windows, and macOS desktop archives. Only then does it create or reuse
+version override before creating the tag. It checks their metadata, installs
+the wheel in a fresh environment, and launches each extracted Linux, Windows,
+and macOS application with isolated data. This also starts the bundled
+Playwright driver without opening a browser or contacting a provider.
+Only then does it create or reuse
 the tag, create a draft release, upload and verify assets, and publish it.
 Rerunning a failed workflow at the same `main` commit reuses its tag and
-release. If `main` has advanced, use the Release workflow's manual trigger on
+resumes an incomplete draft. Published release downloads are never replaced.
+Uploads are checked against GitHub's SHA-256 digests before publication.
+Temporary workflow packages expire after three days; the downloads on the
+Release page remain available. After temporary artifacts expire, rerun all
+jobs to rebuild them. If `main` has advanced, use the Release workflow's manual trigger on
 the current `main` commit; it will not tag an older commit. No dummy commit is
 needed.
 
-`main` remains the public default branch and should require a pull request,
-the CI checks, and the Flet device test. Direct and force pushes and branch
-deletion should remain disabled. The `develop` branch is for ordinary work.
+`main` remains the public default branch. Require **Quality and Python
+package** and **Device integration (Linux)** before merging; zero approving
+reviews is appropriate for a solo maintainer. Desktop packaging checks run
+on PRs that change packaging and on manual requests, and all three platforms
+are checked for every release. Do not require a check that only runs for
+selected paths. See [maintainer settings](MAINTAINING.md) for administrator bypass.
+
+Reviewed bot and contributor PRs may target `main`; bring those commits back
+into `develop` before the next release PR. Keep release merges sequential:
+wait for one release to finish before merging another release PR.

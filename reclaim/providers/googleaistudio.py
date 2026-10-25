@@ -20,6 +20,7 @@ import time
 import traceback
 from html.parser import HTMLParser
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from ..core import browser, config
 from ..core.events import EventSink, emit
@@ -72,7 +73,8 @@ window.__msRpc = async function(rpcName, payload) {
 def init_replay(page):
     """Inject the RPC helper and capture the app's public API key (memory only)."""
     def grab_key(req):
-        if 'alkalimakersuite-pa.clients6.google.com' in req.url:
+        url = urlsplit(req.url)
+        if url.scheme == 'https' and url.hostname == 'alkalimakersuite-pa.clients6.google.com':
             k = req.headers.get('x-goog-api-key')
             if k:
                 try:

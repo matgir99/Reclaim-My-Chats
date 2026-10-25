@@ -14,10 +14,14 @@ Thanks for considering a contribution to ReclaimMyChats!
 
 ## Before opening a PR
 
+Use a small branch and normally target `develop`. A focused fix can target
+`main`; it will also be brought back into `develop`. Describe the problem,
+the resulting behavior, and what you tested. See the [maintainer guide](docs/MAINTAINING.md).
+
 ```bash
 ./scripts/run_tests.sh  # offline tests must pass
-ruff check reclaim/ tests/
-pyright reclaim/ tests/
+ruff check reclaim tests scripts flet_integration
+pyright reclaim tests scripts flet_integration
 ```
 
 Use the newest installed Python (the scripts pick it automatically).

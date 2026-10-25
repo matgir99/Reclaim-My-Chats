@@ -195,7 +195,10 @@ def list_all_conversations(page, token: str) -> list[dict]:
         try:
             add(list_project_conversations(page, token, p['id']), p['name'])
         except Exception as e:
-            print(f"  WARNING: listing project '{p['name']}' failed: {e}")
+            raise RuntimeError(
+                f"Could not list ChatGPT project '{p['name']}': {e}. "
+                'The archive may be incomplete; retry the update.'
+            ) from e
     add(list_conversations(page, token), None)
     return out
 

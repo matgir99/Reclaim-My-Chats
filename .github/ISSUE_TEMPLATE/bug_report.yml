@@ -1,0 +1,56 @@
+name: Bug report
+description: Report a reproducible problem with Reclaim My Chats.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: This is a hobby project. Please share a small example and exclude private chat data and browser profiles.
+  - type: input
+    id: version
+    attributes:
+      label: Application version
+      description: Use the download filename or the output of reclaim --version.
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: Operating system and architecture
+      placeholder: For example, Ubuntu 24.04 x86_64 or Windows 11 x86_64
+    validations:
+      required: true
+  - type: dropdown
+    id: provider
+    attributes:
+      label: Provider or component
+      options:
+        - ChatGPT
+        - Claude
+        - Google Gemini
+        - Google AI Studio
+        - DeepSeek
+        - Kimi
+        - GUI or packaging
+        - CLI or imports and exports
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Describe the action, expected result, and actual result.
+    validations:
+      required: true
+  - type: textarea
+    id: error
+    attributes:
+      label: Redacted error message
+      description: Include the relevant error from Details or the terminal. Remove private information.
+      render: text
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy
+      options:
+        - label: I have excluded real conversations, credentials, cookies, and browser profiles.
+          required: true

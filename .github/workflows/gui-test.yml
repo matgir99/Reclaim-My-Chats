@@ -2,17 +2,23 @@ name: Flet GUI tests
 
 on:
   push:
-    branches: [develop, main]
+    branches: [develop]
   pull_request:
     branches: [develop, main]
+  workflow_call:
 
 permissions:
   contents: read
+
+concurrency:
+  group: gui-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   integration:
     name: Device integration (Linux)
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v6
         with:

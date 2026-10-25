@@ -21,7 +21,7 @@ def git(*args: str) -> str:
 
 def next_version(expected_ref: str | None = None) -> str:
     head = git('rev-parse', 'HEAD')
-    if expected_ref is not None and head != git('rev-parse', expected_ref):
+    if expected_ref is not None and head != git('rev-parse', f'{expected_ref}^{{commit}}'):
         raise ValueError(f'HEAD is not {expected_ref}; refusing to release a stale commit')
 
     tags = []
