@@ -45,3 +45,9 @@ unchanged. `.reclaim_manifest.json` records when the last run started, its
 duration, per-chat results, and totals such as chats, successes, failures,
 images, and documents. The GUI and `reclaim status` read these local records
 and files; they do not infer live provider state without contacting it.
+
+GUI updates and `reclaim all` also write `.reclaim_last_attempt.json` with the
+operation's start time, exit code, and error. An operation failure is displayed
+separately from chat failures, preserving the previous archive manifest and its
+actual chat counts. A later successful run clears or supersedes that failure.
+Dry runs write neither archive records nor attempt records.

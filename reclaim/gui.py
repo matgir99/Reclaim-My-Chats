@@ -64,6 +64,8 @@ def status_text(info: status.ProviderStatus) -> str:
     if info.last_run:
         summary += (f' · last run {info.last_run["ok"]} ok, '
                     f'{info.last_run["failed"]} failed')
+    if info.last_error:
+        summary += f' · last attempt failed: {info.last_error}'
     return summary
 
 

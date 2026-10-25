@@ -10,7 +10,7 @@ from pathlib import Path
 
 from . import browser, config
 from .events import EventSink, emit
-from .manifest import write_manifest
+from .manifest import write_attempt
 
 PROVIDER_DIRS = {
     'googleaistudio': 'Google AI Studio',
@@ -107,22 +107,22 @@ class ArchiveController:
                         print(f'\n========== {name} ==========')
                     emit(sink, 'provider_started', name, current=index,
                          total=len(chosen))
+                    error = None
                     try:
                         code = provider_module(name).run_session(page, parsed[name], sink=sink)
                     except Exception as exc:
                         traceback.print_exc()
                         code = 2
+                        error = str(exc)
                         emit(sink, 'error', name, message=str(exc))
-                        if mode != 'dry-run' and not getattr(parsed[name], 'dry_run', False):
-                            out = Path(getattr(parsed[name], 'output_dir',
-                                               config.archive_root(self.root) / PROVIDER_DIRS[name]))
-                            try:
-                                out.mkdir(parents=True, exist_ok=True)
-                                write_manifest(out, name, [{'ok': False, 'error': str(exc)}],
-                                               started)
-                            except OSError as save_error:
-                                emit(sink, 'error', name,
-                                     message=f'Could not save failed run status: {save_error}')
+                    if mode != 'dry-run' and not getattr(parsed[name], 'dry_run', False):
+                        out = Path(getattr(parsed[name], 'output_dir',
+                                           config.archive_root(self.root) / PROVIDER_DIRS[name]))
+                        try:
+                            write_attempt(out, started, code, error)
+                        except OSError as save_error:
+                            emit(sink, 'error', name,
+                                 message=f'Could not save run status: {save_error}')
                     codes.append((name, code))
                     emit(sink, 'provider_completed', name, current=index,
                          total=len(chosen), message=f'exit {code}')
