@@ -1,10 +1,9 @@
 name: Flet GUI tests
 
 on:
-  push:
-    branches: [develop]
   pull_request:
     branches: [develop, main]
+  workflow_dispatch:
   workflow_call:
 
 permissions:

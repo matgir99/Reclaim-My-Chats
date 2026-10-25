@@ -45,7 +45,7 @@ def smoke(archive: Path) -> None:
         expected = {'chatgpt', 'claude', 'googlegemini', 'googleaistudio', 'deepseek', 'kimi'}
         if set(data.get('providers', [])) != expected:
             raise RuntimeError('packaged application is missing providers')
-        if Path(data['archive']) != root / 'data' / 'chats':
+        if Path(data['archive']).resolve() != (root / 'data' / 'chats').resolve():
             raise RuntimeError('packaged application used the wrong archive directory')
         print(f'Packaged GUI and Playwright driver started successfully: {archive.name}')
 

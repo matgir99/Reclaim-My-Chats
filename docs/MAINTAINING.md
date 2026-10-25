@@ -31,11 +31,12 @@ requests only**. This preserves intentional emergency merges while requiring
 a PR record and preventing direct pushes through that bypass. Normally wait
 for checks even when bypass is available.
 
-An administrator-role bypass also applies to future administrators. Give
-contributors write access unless they actually need to manage settings. In
-an organization, the maintain role is another option. If more administrators
-join, reconsider the broad administrator bypass before granting that access.
-Only trusted people should be administrators; they can change the rules.
+This is a personal repository: you are its owner and invited collaborators
+have write access. Separate administrator and maintain roles become relevant
+if you later transfer it to an organization. An administrator-role bypass
+would then cover every administrator. Give contributors write or maintain
+access unless they need to manage settings, and reconsider the broad bypass
+before granting administrator access. Administrators can change the rules.
 
 ## Free automation and reports
 
@@ -47,6 +48,12 @@ Review **Billing → Budgets and alerts** in your own account. For no paid
 Actions usage, use a $0 Actions budget with **Stop usage when budget limit is
 reached** enabled. An alert-only budget does not stop spending. Optional AI
 features have their own usage rules; these workflows require no AI subscription.
+In particular, **AI Scan for pull requests** is a separate metered feature,
+including on public repositories. Leave it disabled for a setup with no AI
+spending. CodeQL does not require AI Scan.
+
+GUI device checks run on PRs, manual requests, and releases. Development
+pushes run the fast offline GUI tests without repeating the device build.
 
 Dependabot checks Python and Actions dependencies monthly and groups updates.
 Security updates are separate and may arrive earlier. CodeQL scans Python and
