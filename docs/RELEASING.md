@@ -20,6 +20,8 @@ Only then does it create or reuse
 the tag, create a draft release, upload and verify assets, and publish it.
 Rerunning a failed workflow at the same `main` commit reuses its tag and
 resumes an incomplete draft. Published release downloads are never replaced.
+Draft lookup uses the authenticated release list when GitHub's tag endpoint
+does not expose the draft. Ambiguous drafts and API errors stop publication.
 Uploads are checked against GitHub's SHA-256 digests before publication.
 Temporary workflow packages expire after three days; the downloads on the
 Release page remain available. After temporary artifacts expire, rerun all
