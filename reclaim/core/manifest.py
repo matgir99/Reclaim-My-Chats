@@ -12,6 +12,8 @@ update timestamps can skip unchanged chats; others fall back to
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 import time
 from pathlib import Path
 
@@ -38,6 +40,21 @@ def write_manifest(out_dir: Path, provider: str, results: list[dict],
     path = out_dir / '.reclaim_manifest.json'
     path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False))
     return path
+
+
+def write_attempt(out_dir: Path, started: float, code: int, error: str | None) -> None:
+    """Keep operation failures separate from actual per-chat archive statistics."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    data = {'started': time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(started)),
+            'exit_code': code, 'error': error}
+    fd, tmp = tempfile.mkstemp(prefix='.reclaim-attempt-', dir=out_dir)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+            json.dump(data, stream, ensure_ascii=False)
+        os.replace(tmp, out_dir / '.reclaim_last_attempt.json')
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
 
 
 class SyncState:

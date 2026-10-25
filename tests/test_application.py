@@ -13,6 +13,7 @@ from reclaim.core import browser, config
 from reclaim.core import status
 from reclaim.core.events import ProgressEvent
 from reclaim.core.manifest import SyncState, print_dry_run
+from reclaim.core.manifest import write_attempt, write_manifest
 from reclaim.core.service import ArchiveController, BusyOperationError, RunSummary
 
 
@@ -63,6 +64,16 @@ class TestApplicationConfig(unittest.TestCase):
 
 
 class TestProgressEvents(unittest.TestCase):
+    def test_a_later_cli_manifest_supersedes_an_older_failed_attempt(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            out = root / 'ChatGPT'
+            write_attempt(out, 10, 2, 'listing failed')
+            self.assertEqual(status.describe('chatgpt', 'ChatGPT', root).last_error,
+                             'listing failed')
+            write_manifest(out, 'chatgpt', [{'ok': True}], 20)
+            self.assertIsNone(status.describe('chatgpt', 'ChatGPT', root).last_error)
+
     def test_dry_run_emits_structured_plan_without_writing(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -112,11 +123,40 @@ class _FakeProvider:
 
 
 class TestArchiveController(unittest.TestCase):
+    def test_status_write_failure_cannot_be_reported_as_success(self):
+        with tempfile.TemporaryDirectory() as temp:
+            fake = _FakeProvider()
+            events: list[ProgressEvent] = []
+            with (patch('reclaim.core.service.provider_module', return_value=fake),
+                  patch('reclaim.core.service.write_attempt', side_effect=PermissionError('read only')),
+                  patch('reclaim.core.service.browser.launch', return_value=(_FakeContext(), object())),
+                  patch('playwright.sync_api.sync_playwright', return_value=_FakePlaywright())):
+                result = ArchiveController(Path(temp)).run(['chatgpt'], sink=events.append)
+            self.assertEqual(result.exit_code, 2)
+            self.assertTrue(any(e.kind == 'error' and 'Could not save run status' in e.message
+                                for e in events))
+
+    def test_failed_dry_run_does_not_write_attempt_or_archive_records(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            fake = _FakeProvider()
+            with (patch('reclaim.core.service.provider_module', return_value=fake),
+                  patch.object(fake, 'run_session', side_effect=RuntimeError('listing failed')),
+                  patch('reclaim.core.service.browser.launch', return_value=(_FakeContext(), object())),
+                  patch('playwright.sync_api.sync_playwright', return_value=_FakePlaywright())):
+                result = ArchiveController(root).run(['chatgpt'], 'dry-run')
+            self.assertEqual(result.exit_code, 2)
+            self.assertEqual(list(root.iterdir()), [])
+
     def test_provider_exception_is_reported_persisted_and_does_not_stop_other_providers(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             controller = ArchiveController(root)
             failed, good = _FakeProvider(), _FakeProvider()
+            out = root / 'chats' / 'ChatGPT'
+            out.mkdir(parents=True)
+            manifest = write_manifest(out, 'chatgpt', [{'ok': True}, {'ok': True}], 1)
+            previous = manifest.read_bytes()
             ctx = _FakeContext()
             events: list[ProgressEvent] = []
             with (patch('reclaim.core.service.provider_module',
@@ -130,7 +170,10 @@ class TestArchiveController(unittest.TestCase):
             self.assertTrue(any(e.kind == 'error' and e.message == 'listing failed'
                                 for e in events))
             infos = status.scan(root / 'chats')
-            self.assertEqual(next(i for i in infos if i.provider == 'chatgpt').last_run['failed'], 1)
+            info = next(i for i in infos if i.provider == 'chatgpt')
+            self.assertEqual(info.last_error, 'listing failed')
+            self.assertEqual(info.last_run['chats'], 2)
+            self.assertEqual(manifest.read_bytes(), previous)
             self.assertTrue(ctx.closed)
             self.assertFalse(controller.busy)
 

@@ -38,6 +38,7 @@ class ProviderStatus:
     last_sync: str | None = None   # manifest 'started' timestamp
     duration_s: float | None = None
     last_run: dict[str, int] = field(default_factory=dict)
+    last_error: str | None = None
     archive_images: int = 0        # totals from the chat.json files on disk
     archive_docs: int = 0
     archive_chars: int = 0
@@ -91,6 +92,11 @@ def describe(provider: str, dirname: str, root: Path) -> ProviderStatus:
     if not info.archived:
         return info
     manifest = _read_json(pdir / '.reclaim_manifest.json')
+    attempt = _read_json(pdir / '.reclaim_last_attempt.json')
+    # A later successful single-provider CLI run supersedes an older GUI failure.
+    if (attempt.get('exit_code')
+            and str(attempt.get('started', '')) >= str(manifest.get('started', ''))):
+        info.last_error = attempt.get('error') or f'Provider returned exit {attempt["exit_code"]}'
     if manifest:
         info.last_sync = manifest.get('started')
         info.duration_s = manifest.get('duration_s')
@@ -144,6 +150,8 @@ def format_status(info: ProviderStatus) -> str:
         lines.append(f'  last sync: {info.last_sync} · {info.duration_s}s')
     else:
         lines.append('  last run: (no manifest yet)')
+    if info.last_error:
+        lines.append(f'  last attempt failed: {info.last_error}')
     return '\n'.join(lines)
 
 

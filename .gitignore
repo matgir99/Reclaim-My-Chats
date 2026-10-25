@@ -59,6 +59,8 @@ Thumbs.db
 *.log
 *.pid
 .reclaim_manifest.json
+.reclaim_last_attempt.json
+.reclaim-attempt-*
 .last_sync_*.json
 
 # Pre-v1.0.0 standalone scrapers (local reference only — never public)
