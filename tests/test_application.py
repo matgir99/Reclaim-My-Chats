@@ -123,6 +123,19 @@ class _FakeProvider:
 
 
 class TestArchiveController(unittest.TestCase):
+    def test_status_write_failure_cannot_be_reported_as_success(self):
+        with tempfile.TemporaryDirectory() as temp:
+            fake = _FakeProvider()
+            events: list[ProgressEvent] = []
+            with (patch('reclaim.core.service.provider_module', return_value=fake),
+                  patch('reclaim.core.service.write_attempt', side_effect=PermissionError('read only')),
+                  patch('reclaim.core.service.browser.launch', return_value=(_FakeContext(), object())),
+                  patch('playwright.sync_api.sync_playwright', return_value=_FakePlaywright())):
+                result = ArchiveController(Path(temp)).run(['chatgpt'], sink=events.append)
+            self.assertEqual(result.exit_code, 2)
+            self.assertTrue(any(e.kind == 'error' and 'Could not save run status' in e.message
+                                for e in events))
+
     def test_failed_dry_run_does_not_write_attempt_or_archive_records(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

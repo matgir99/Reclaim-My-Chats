@@ -121,6 +121,7 @@ class ArchiveController:
                         try:
                             write_attempt(out, started, code, error)
                         except OSError as save_error:
+                            code = 2
                             emit(sink, 'error', name,
                                  message=f'Could not save run status: {save_error}')
                     codes.append((name, code))
