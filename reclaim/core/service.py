@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import threading
 import traceback
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from . import browser, config
 from .events import EventSink, emit
+from .manifest import write_manifest
 
 PROVIDER_DIRS = {
     'googleaistudio': 'Google AI Studio',
@@ -100,6 +102,7 @@ class ArchiveController:
             ctx, page = browser.launch(playwright, profile_dir=config.profile_root(self.root))
             try:
                 for index, name in enumerate(chosen, 1):
+                    started = time.time()
                     if mode == 'cli':
                         print(f'\n========== {name} ==========')
                     emit(sink, 'provider_started', name, current=index,
@@ -110,6 +113,16 @@ class ArchiveController:
                         traceback.print_exc()
                         code = 2
                         emit(sink, 'error', name, message=str(exc))
+                        if mode != 'dry-run' and not getattr(parsed[name], 'dry_run', False):
+                            out = Path(getattr(parsed[name], 'output_dir',
+                                               config.archive_root(self.root) / PROVIDER_DIRS[name]))
+                            try:
+                                out.mkdir(parents=True, exist_ok=True)
+                                write_manifest(out, name, [{'ok': False, 'error': str(exc)}],
+                                               started)
+                            except OSError as save_error:
+                                emit(sink, 'error', name,
+                                     message=f'Could not save failed run status: {save_error}')
                     codes.append((name, code))
                     emit(sink, 'provider_completed', name, current=index,
                          total=len(chosen), message=f'exit {code}')

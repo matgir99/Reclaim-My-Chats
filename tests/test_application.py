@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from reclaim.core import browser, config
+from reclaim.core import status
 from reclaim.core.events import ProgressEvent
 from reclaim.core.manifest import SyncState, print_dry_run
 from reclaim.core.service import ArchiveController, BusyOperationError, RunSummary
@@ -111,6 +112,28 @@ class _FakeProvider:
 
 
 class TestArchiveController(unittest.TestCase):
+    def test_provider_exception_is_reported_persisted_and_does_not_stop_other_providers(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            controller = ArchiveController(root)
+            failed, good = _FakeProvider(), _FakeProvider()
+            ctx = _FakeContext()
+            events: list[ProgressEvent] = []
+            with (patch('reclaim.core.service.provider_module',
+                        side_effect=lambda name: failed if name == 'chatgpt' else good),
+                  patch.object(failed, 'run_session', side_effect=RuntimeError('listing failed')),
+                  patch('reclaim.core.service.browser.launch', return_value=(ctx, object())),
+                  patch('playwright.sync_api.sync_playwright', return_value=_FakePlaywright())):
+                result = controller.run(['chatgpt', 'claude'], sink=events.append)
+            self.assertEqual(result.codes, (('chatgpt', 2), ('claude', 0)))
+            self.assertEqual(result.exit_code, 2)
+            self.assertTrue(any(e.kind == 'error' and e.message == 'listing failed'
+                                for e in events))
+            infos = status.scan(root / 'chats')
+            self.assertEqual(next(i for i in infos if i.provider == 'chatgpt').last_run['failed'], 1)
+            self.assertTrue(ctx.closed)
+            self.assertFalse(controller.busy)
+
     def test_mode_translation_and_events(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

@@ -1,0 +1,16 @@
+name: Feature request
+description: Suggest an improvement to Reclaim My Chats.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: Explain what you are trying to do and how the change would help.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Suggested behavior
+      description: Describe a small example of the proposed behavior.

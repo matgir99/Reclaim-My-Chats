@@ -4,21 +4,30 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sys
 from pathlib import Path
+
+
+def verify(directory: Path, response: dict) -> None:
+    remote = {item['name']: item for item in response['assets']}
+    local = {path.name: path for path in directory.iterdir() if path.is_file()}
+    if len(local) != 6:
+        raise ValueError(f'expected six release assets, found {len(local)}')
+    if set(remote) != set(local):
+        raise ValueError('GitHub release asset names differ from local files')
+    for name, path in local.items():
+        expected = 'sha256:' + hashlib.sha256(path.read_bytes()).hexdigest()
+        if (remote[name]['size'] != path.stat().st_size
+                or remote[name].get('digest') != expected):
+            raise ValueError(f'GitHub release asset size or SHA-256 differs: {name}')
+    print('verified six uploaded assets and their SHA-256 digests')
 
 
 def main() -> int:
     directory = Path(sys.argv[1])
     response = json.loads(Path(sys.argv[2]).read_text(encoding='utf-8'))
-    remote = {item['name']: item['size'] for item in response['assets']}
-    local = {path.name: path.stat().st_size for path in directory.iterdir()
-             if path.is_file()}
-    if len(local) != 6:
-        raise ValueError(f'expected six release assets, found {len(local)}')
-    if any(remote.get(name) != size for name, size in local.items()):
-        raise ValueError(f'GitHub release assets differ from local files: {local} vs {remote}')
-    print('verified six uploaded assets')
+    verify(directory, response)
     return 0
 
 

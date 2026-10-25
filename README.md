@@ -127,12 +127,20 @@ passwords are stored in the settings file.
 ## Develop Reclaim My Chats
 
 `develop` is the integration branch. `main` contains released code and remains
-the default branch. Changes reach `main` through a tested pull request from
-`develop`. Merging it triggers the release workflow: it builds and verifies
+the default branch. Normally, changes reach `main` through a tested pull request
+from `develop`. Reviewed contributor and bot fixes can also target `main`;
+merge these back into `develop` afterward. Merging triggers the release workflow: it builds and verifies
 the Python and desktop packages, then creates the version tag and publishes
 the GitHub Release. The first GUI release is `v3.3.0`; ordinary later merges
 increment the patch number. No version edit or special commit message is
-needed. See [releasing](docs/RELEASING.md).
+needed. See [releasing](docs/RELEASING.md) and the short
+[maintainer guide](docs/MAINTAINING.md).
+
+Report reproducible bugs through [Issues](https://github.com/matgir99/Reclaim-My-Chats/issues/new/choose)
+and ask usage questions in [Discussions](https://github.com/matgir99/Reclaim-My-Chats/discussions).
+Exclude real conversations, credentials, and browser profiles from reports.
+Use [private reporting](SECURITY.md) for security problems. This is a hobby
+project with no guaranteed response time.
 
 ```bash
 python -m pip install -e '.[gui-test]' build ruff pyright

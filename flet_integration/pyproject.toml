@@ -2,7 +2,7 @@
 name = "reclaimmychats-flet-integration"
 version = "0.0.0"
 requires-python = ">=3.12"
-dependencies = ["flet==1.0.0", "reclaimmychats>=3.2"]
+dependencies = ["flet==1.0.4", "reclaimmychats>=3.2"]
 
 [tool.flet.dev_packages]
 reclaimmychats = ".."

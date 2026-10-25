@@ -6,16 +6,18 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-main
-  queue: max
+  cancel-in-progress: false
 
 jobs:
   prepare:
     name: Verify and build Python package
     runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    timeout-minutes: 15
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
@@ -44,13 +46,17 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          python -m pip install --force-reinstall --no-deps dist/*.whl
-          test "$(python -m reclaim --version)" = "reclaim $VERSION"
+          python -m venv "$RUNNER_TEMP/wheel-smoke"
+          "$RUNNER_TEMP/wheel-smoke/bin/python" -m pip install dist/*.whl
+          cd "$RUNNER_TEMP"
+          test "$("$RUNNER_TEMP/wheel-smoke/bin/python" -I -m reclaim --version)" = "reclaim $VERSION"
+          RECLAIM_HOME="$RUNNER_TEMP/wheel-data" "$RUNNER_TEMP/wheel-smoke/bin/python" -I -m reclaim status
       - uses: actions/upload-artifact@v4
         with:
           name: python-packages
           path: dist/*
           if-no-files-found: error
+          retention-days: 3
 
   desktop:
     name: Build desktop (${{ matrix.os }})
@@ -60,6 +66,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v6
         with:
@@ -73,33 +80,37 @@ jobs:
         run: python -m pip install -e '.[gui-test]'
       - name: Pack desktop application
         run: python scripts/pack_desktop.py --version "${{ needs.prepare.outputs.version }}"
+      - name: Install Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb $(flet --version --json | python -c "import json,sys; print(' '.join(json.load(sys.stdin)['linux_dependencies']))")
+      - name: Launch the extracted desktop application
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            xvfb-run -a python scripts/smoke_desktop.py dist/release/*
+          else
+            python scripts/smoke_desktop.py dist/release/*
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: desktop-${{ matrix.os }}
           path: dist/release/*
           if-no-files-found: error
+          retention-days: 3
 
   integration:
-    name: Test Flet GUI on Linux
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.12'
-      - run: python -m pip install -e '.[gui-test]'
-      - name: Install Flet Linux build prerequisites
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y xvfb $(flet --version --json | python -c "import json,sys; print(' '.join(json.load(sys.stdin)['linux_dependencies']))")
-      - run: xvfb-run -a flet test linux flet_integration --tests-dir tests --yes -v
+    if: github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/gui-test.yml
 
   publish:
     name: Tag and publish verified artifacts
     needs: [prepare, desktop, integration]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
     env:
       GH_TOKEN: ${{ github.token }}
       VERSION: ${{ needs.prepare.outputs.version }}
@@ -132,15 +143,5 @@ jobs:
             git tag -a "v$VERSION" -m "Reclaim My Chats v$VERSION"
             git push origin "refs/tags/v$VERSION"
           fi
-      - name: Create draft release if needed
-        run: |
-          if ! gh release view "v$VERSION" >/dev/null 2>&1; then
-            gh release create "v$VERSION" --verify-tag --generate-notes --draft --title "v$VERSION"
-          fi
-      - name: Upload and verify assets
-        run: |
-          gh release upload "v$VERSION" release-assets/* --clobber
-          gh release view "v$VERSION" --json assets > release-assets.json
-          python scripts/verify_release_assets.py release-assets release-assets.json
-      - name: Publish release
-        run: gh release edit "v$VERSION" --draft=false
+      - name: Publish or safely resume the draft
+        run: python scripts/publish_release.py --repo "$GITHUB_REPOSITORY" --tag "v$VERSION" release-assets

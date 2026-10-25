@@ -10,6 +10,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import ClassVar
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -364,6 +365,15 @@ class TestKimiProvider(unittest.TestCase):
 
 
 class TestChatGPTProvider(unittest.TestCase):
+    def test_failed_project_listing_cannot_report_a_complete_archive(self):
+        from reclaim.providers import chatgpt as cg
+        with (patch.object(cg, 'list_projects', return_value=[{'id': 'p', 'name': 'Example'}]),
+              patch.object(cg, 'list_project_conversations', side_effect=RuntimeError('HTTP 503')),
+              patch.object(cg, 'list_conversations') as main_list):
+            with self.assertRaisesRegex(RuntimeError, 'archive may be incomplete'):
+                cg.list_all_conversations(None, 'synthetic-token')
+            main_list.assert_not_called()
+
 
     def test_list_projects_pagination(self):
         import reclaim.providers.chatgpt as cg

@@ -2,6 +2,9 @@
 # automation workflow IS tracked.
 .github/*
 !.github/workflows/
+!.github/dependabot.yml
+!.github/ISSUE_TEMPLATE/
+!.github/PULL_REQUEST_TEMPLATE.md
 
 # Python build metadata
 *.egg-info/

@@ -50,9 +50,14 @@ The Flet device tests run the real controls with a deterministic fake
 controller. Linux device tests require Flutter, a display, and the packages
 listed in [Flet's Linux build
 requirements](https://flet.dev/docs/publish/linux/). The separate `flet pack`
-build uses PyInstaller. Launch the resulting executable outside the Python
-environment to catch import and packaged-path problems; the device tests do
-not test the PyInstaller binary.
+build uses PyInstaller. `scripts/smoke_desktop.py ARCHIVE` extracts and launches
+the actual packaged application in an isolated directory, checks its GUI and
+Playwright driver, and closes it. CI uses this on Linux, Windows, and macOS.
+These startup checks need no provider accounts. A real authenticated dry run
+and update still need manual testing with your own account.
+
+Flet is pinned to 1.0.4, which fixes the Flutter JNI dependency conflict that
+broke fresh integration-test builds with 1.0.0.
 
 The Linux archive also contains a `.desktop` template. If you install it in
 your application menu, set its `Exec=` line to the absolute path of the

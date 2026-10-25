@@ -250,14 +250,16 @@ class ReclaimWindow:
         def receive(event: ProgressEvent) -> None:
             loop.call_soon_threadsafe(queue.put_nowait, event)
 
-        async def execute() -> RunSummary:
+        def execute() -> RunSummary:
             try:
-                return await asyncio.to_thread(self.controller.run, providers, mode, receive)
+                return self.controller.run(providers, mode, receive)
             finally:
-                await queue.put(None)
+                # Use the same thread-safe channel as events so completion
+                # cannot overtake progress/error messages still in transit.
+                loop.call_soon_threadsafe(queue.put_nowait, None)
 
         try:
-            task = asyncio.create_task(execute())
+            task = asyncio.create_task(asyncio.to_thread(execute))
             while (event := await queue.get()) is not None:
                 self._event(event)
             result = await task

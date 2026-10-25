@@ -57,6 +57,13 @@ class TestNextVersion(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('stale commit', result.stderr)
 
+    def test_annotated_tag_is_accepted_as_an_expected_commit_ref(self):
+        self.commit()
+        self.git('tag', '-a', 'v3.3.0', '-m', 'Release')
+        result = self.version('--require-ref', 'v3.3.0')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), '3.3.0')
+
 
 if __name__ == '__main__':
     unittest.main()
