@@ -6,10 +6,10 @@ field `at`, "cfb2h" -> `bl` param, "FdrFJe" -> `f.sid` param) and rotate
 with every deploy, so they are re-extracted each run.
 
   POST https://gemini.google.com/_/BardChatUi/data/batchexecute
-  RPCs: MaZiqc (list, payload [200]) · hNvQHb (read)
+  RPCs: MaZiqc (cursor-paginated list) · hNvQHb (read)
 
-Shapes per research (EricAndrechek/gemini-usage, HanaokaYuzu/Gemini-API;
-see docs/status_and_plan/GEMINI_CLAUDE_PLAN.md). Field positions WILL
+Shapes per MIT references Kept and EricAndrechek/gemini-usage;
+see docs/UPSTREAM_REVIEW.md. Field positions WILL
 drift — parsers here are defensive (documented candidate paths + a
 recursive fallback) and live recon must confirm. Generated/uploaded
 images and citations are v1 gaps (documented below).
@@ -36,9 +36,9 @@ BATCH_URL = 'https://gemini.google.com/_/BardChatUi/data/batchexecute'
 PROVIDER = 'googlegemini'
 
 LIST_RPC = 'MaZiqc'
-LIST_PAYLOAD = [200]
+LIST_PAGE_SIZE = 100
 READ_RPC = 'hNvQHb'
-MAX_TURNS = 100  # v1: fixed window; very long chats may need pagination (recon)
+MAX_TURNS = 10000  # upstream-supported window; refuse a response that fills it
 
 RPC_JS = """window.__ggRpc = async function(a) {
     const form = new URLSearchParams();
@@ -129,7 +129,7 @@ def rpc_call(page, tokens: dict, rpcid: str, payload, reqid: int,
                 last_err = f'HTTP {r["status"]}: {r["text"][:120]}'
                 time.sleep(2 + attempt * 2)
                 continue
-            decoded = decode_response(r['text'])
+            decoded = decode_response(r['text'], rpcid)
             err = error_message(decoded)
             if err is None:
                 return 200, r['text']
@@ -151,11 +151,16 @@ def rpc_call(page, tokens: dict, rpcid: str, payload, reqid: int,
 def _find_rows(data, want_user: bool = False):
     """Locate the rows/turns array in a decoded batchexecute payload.
 
-    Documented candidate paths first (data[0][1], then data[0][0]),
+    Documented candidate paths first (data[2], data[0], legacy nested rows),
     then a recursive search for the deepest array whose elements look
     like the expected rows. Returns the best candidate or [].
     """
     candidates = []
+    if isinstance(data, list):
+        if len(data) > 2:
+            candidates.append(data[2])
+        if data:
+            candidates.append(data[0])
     if isinstance(data, list) and data and isinstance(data[0], list):
         for i in (1, 0):
             if len(data[0]) > i:
@@ -166,16 +171,18 @@ def _find_rows(data, want_user: bool = False):
             return -1
         n_ok = 0
         for el in cand:
-            if not isinstance(el, list) or not el or not isinstance(el[0], str):
+            if not isinstance(el, list) or not el:
                 continue
             if want_user:
                 # read rows: turn[2] user prompt array + turn[3] candidates
-                if (len(el) > 3 and isinstance(el[2], list)
+                if (isinstance(el[0], (str, list)) and len(el) > 3
+                        and isinstance(el[2], list)
                         and isinstance(el[3], list)):
                     n_ok += 1
             else:
                 # list rows: [chatId, title, ...]
-                if len(el) > 1:
+                if (len(el) > 1 and isinstance(el[0], str) and el[0]
+                        and isinstance(el[1], str)):
                     n_ok += 1
         return n_ok
 
@@ -190,7 +197,7 @@ def _find_rows(data, want_user: bool = False):
             for el in o:
                 walk(el)
 
-    for c in candidates:
+    for c in [*candidates, data]:
         walk(c)
     return best if best is not None else []
 
@@ -233,8 +240,21 @@ def parse_read(data) -> list[dict]:
             v = v[0]
         return v if isinstance(v, str) else ''
 
+    rows = _find_rows(data, want_user=True)
+    def timestamp(row):
+        for index in (1, 4):
+            if len(row) > index and isinstance(row[index], list) and row[index]:
+                value = row[index][0]
+                if isinstance(value, (int, float)) and value > 1e9:
+                    return value
+        return None
+
+    if rows and all(timestamp(row) is not None for row in rows):
+        rows = sorted(rows, key=lambda row: timestamp(row) or 0)
+    elif rows and all(isinstance(row[0], list) for row in rows):
+        rows = list(reversed(rows))  # current API metadata [conversation_id, reply_id]
     out = []
-    for t in _find_rows(data, want_user=True):
+    for t in rows:
         if not isinstance(t, list) or len(t) < 4:
             continue
         user_text = _unwrap(t[2][0]) if isinstance(t[2], list) and t[2] else ''
@@ -255,13 +275,16 @@ def parse_read(data) -> list[dict]:
             out.append({'role': 'user', 'text': user_text, 'thought': False})
         if model_text.strip():
             out.append({'role': 'model', 'text': model_text,
-                        'thought': thought})
+                        'thought': False, 'had_thoughts': thought})
+        elif thought:
+            out.append({'role': 'model', 'text': '', 'thought': True})
     return out
 
 
 def read_to_chat(parsed: list[dict], chat_id: str, source_url: str,
                  title: str = '') -> Chat:
-    turns = [Turn(role=e['role'], text=e['text'], thought=e['thought'])
+    turns = [Turn(role=e['role'], text=e['text'], thought=e['thought'],
+                  had_thoughts=e.get('had_thoughts', False))
              for e in parsed]
     return Chat(id=chat_id, title=title or '(untitled)',
                 source_url=source_url, turns=turns, provider=PROVIDER)
@@ -271,23 +294,43 @@ def read_to_chat(parsed: list[dict], chat_id: str, source_url: str,
 # Listing + fetching
 # ---------------------------------------------------------------------------
 def list_chats(page, tokens: dict, reqid: int) -> tuple[list[dict], int]:
-    status, text = rpc_call(page, tokens, LIST_RPC, LIST_PAYLOAD, reqid)
-    if status != 200:
-        raise RuntimeError(f'{LIST_RPC} HTTP {status}')
-    chats = parse_list(decode_response(text))
-    if not chats:
-        raise RuntimeError(f'{LIST_RPC} returned no chats (shape changed?)')
-    return chats, reqid + 1
+    chats, cursor = [], None
+    seen_ids, seen_cursors = set(), set()
+    while True:
+        payload = [LIST_PAGE_SIZE, cursor, [0, None, 1]]
+        status, text = rpc_call(page, tokens, LIST_RPC, payload, reqid)
+        reqid += 1
+        if status != 200:
+            raise RuntimeError(f'{LIST_RPC} HTTP {status}')
+        data = decode_response(text, LIST_RPC)
+        batch = parse_list(data)
+        for item in batch:
+            if item['id'] not in seen_ids:
+                seen_ids.add(item['id'])
+                chats.append(item)
+        if not batch and data != [] and not any(
+                len(data) > index and data[index] == [] for index in (0, 2)):
+            raise RuntimeError(f'{LIST_RPC} returned an unknown conversation list shape')
+        cursor = data[1] if len(data) > 1 and isinstance(data[1], str) else None
+        if not cursor:
+            return chats, reqid
+        if cursor in seen_cursors:
+            raise RuntimeError('Gemini returned a repeated conversation cursor')
+        seen_cursors.add(cursor)
 
 
 def fetch_chat(page, tokens: dict, chat_id: str, reqid: int,
                title: str = '') -> tuple[Chat, list, int]:
-    payload = [chat_id, MAX_TURNS, None, 1, [0], [4], None, 1]
+    payload = [chat_id, MAX_TURNS]
     status, text = rpc_call(page, tokens, READ_RPC, payload, reqid)
     if status != 200:
         raise RuntimeError(f'{READ_RPC} HTTP {status}')
-    raw = decode_response(text)
+    raw = decode_response(text, READ_RPC)
+    if len(_find_rows(raw, want_user=True)) >= MAX_TURNS:
+        raise RuntimeError('Gemini message history may be truncated; refusing an incomplete archive')
     parsed = parse_read(raw)
+    if not parsed:
+        raise RuntimeError('Gemini returned no readable messages; response shape may have changed')
     chat = read_to_chat(parsed, chat_id,
                         f'https://gemini.google.com/app/{chat_id}', title)
     return chat, raw, reqid + 1

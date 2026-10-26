@@ -355,9 +355,10 @@ class TestKimiProvider(unittest.TestCase):
         self.assertIn('What is e?', self.chat.turns[0].text)
 
     def test_blocks_and_think_flag(self):
-        think_turns = [t for t in self.chat.turns if t.thought]
-        self.assertEqual(len(think_turns), 1)
-        self.assertIn('Here is the answer:', think_turns[0].text)
+        mixed_turns = [t for t in self.chat.visible_turns() if t.had_thoughts]
+        self.assertEqual(len(mixed_turns), 1)
+        self.assertIn('Here is the answer:', mixed_turns[0].text)
+        self.assertTrue(self.chat.had_thoughts)
 
     def test_text_content(self):
         vis = self.chat.visible_turns()
@@ -479,10 +480,9 @@ class TestBatchexecute(unittest.TestCase):
         self.assertEqual(frames, ['"ab"'])  # truncated final frame dropped
         self.assertEqual(parse_frames(''), [])
 
-    def test_decode_response_takes_frame_two(self):
-        # realistic shape: anti-XSSI prefix, then 3 frames; frame [2] is
-        # itself a JSON string (the raw result — nesting unwrapped by the
-        # parsers' defensive row search)
+    def test_decode_response_reads_legacy_bare_third_frame(self):
+        # Legacy synthetic captures put a bare result in frame [2]. Current
+        # wrb.fr records are covered by the provider compatibility tests.
         text = ")]}'\n3\"a\"4\"bc\"15[[[1, 2], [3]]]"
         self.assertEqual(decode_response(text), [[[1, 2], [3]]])
 
@@ -527,12 +527,13 @@ class TestClaudeParse(unittest.TestCase):
         self.assertEqual(texts[2], 'Current answer')
         self.assertEqual(texts[3], 'Uploaded doc question')
 
-    def test_thinking_flagged_and_skipped(self):
+    def test_thinking_removed_without_hiding_answer(self):
         chat = self.chat()
         model_turns = [t for t in chat.turns if t.role == 'model']
         self.assertEqual(len(model_turns), 2)
         self.assertFalse(model_turns[0].thought)
-        self.assertTrue(model_turns[1].thought)
+        self.assertFalse(model_turns[1].thought)
+        self.assertTrue(model_turns[1].had_thoughts)
         self.assertNotIn('hidden reasoning trace', model_turns[1].text)
         self.assertTrue(chat.had_thoughts)
 
@@ -583,7 +584,8 @@ class TestGeminiParse(unittest.TestCase):
                          ['user', 'model', 'user', 'model'])
         self.assertEqual(turns[0]['text'], 'What is e?')
         self.assertEqual(turns[1]['text'], 'e \u2248 2.71828')
-        self.assertTrue(turns[1]['thought'])   # turn[37] flag
+        self.assertFalse(turns[1]['thought'])
+        self.assertTrue(turns[1]['had_thoughts'])  # turn[37] describes removed reasoning
         self.assertFalse(turns[3]['thought'])
 
     def test_read_to_chat(self):

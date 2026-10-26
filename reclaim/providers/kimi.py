@@ -35,7 +35,7 @@ BASE_URL = 'https://www.kimi.com'
 API = 'https://www.kimi.com/apiv2'
 PROVIDER = 'kimi'
 PAGE_SIZE = 50
-MSG_PAGE_SIZE = 200
+MSG_PAGE_SIZE = 1000
 _THINK_HINT = re.compile(r'think|reason', re.I)
 
 _FETCH_JS = """async (args) => {
@@ -144,21 +144,38 @@ def ensure_logged_in(page):
 
 def list_chats(page, token: str) -> list[dict]:
     chats, page_token = [], ''
+    seen_tokens, seen_ids = set(), set()
     while True:
         body = {'project_id': '', 'page_size': PAGE_SIZE, 'query': ''}
         if page_token:
             body['page_token'] = page_token
         data = _api(page, token, 'kimi.chat.v1.ChatService/ListChats', body)
-        chats.extend(data.get('chats') or [])
+        batch = data.get('chats')
+        if not isinstance(batch, list):
+            raise RuntimeError('unexpected Kimi conversation list shape')
+        for item in batch:
+            cid = item.get('id') or item.get('chat_id') if isinstance(item, dict) else None
+            if not cid:
+                raise RuntimeError('unexpected Kimi conversation row')
+            if cid not in seen_ids:
+                seen_ids.add(cid)
+                chats.append(item)
         page_token = data.get('nextPageToken') or ''
         if not page_token:
             return chats
+        if not isinstance(page_token, str) or page_token in seen_tokens:
+            raise RuntimeError('Kimi returned an invalid or repeated conversation cursor')
+        seen_tokens.add(page_token)
 
 
 def list_messages(page, token: str, chat_id: str) -> list[dict]:
     data = _api(page, token, 'kimi.gateway.chat.v1.ChatService/ListMessages',
                 {'chat_id': chat_id, 'page_size': MSG_PAGE_SIZE})
-    msgs = data.get('messages') or data.get('items') or []
+    msgs = next((data[key] for key in ('messages', 'items') if key in data), None)
+    if not isinstance(msgs, list):
+        raise RuntimeError('unexpected Kimi message list shape')
+    if data.get('nextPageToken') or len(msgs) >= MSG_PAGE_SIZE:
+        raise RuntimeError('Kimi message history may be truncated; refusing an incomplete archive')
     return list(reversed(msgs))  # API returns newest-first
 
 
@@ -166,7 +183,7 @@ def _msg_to_turn(msg: dict) -> tuple[Turn | None, list[str]]:
     """Convert one API message. Returns (turn, [image urls])."""
     role_raw = (msg.get('role') or msg.get('sender') or '').lower()
     role = 'user' if role_raw in ('user', 'human') else 'model'
-    if role_raw == 'system':
+    if role_raw not in ('user', 'human', 'assistant', 'model'):
         return None, []
 
     texts, images, thought = [], [], False
@@ -182,7 +199,9 @@ def _msg_to_turn(msg: dict) -> tuple[Turn | None, list[str]]:
         if _THINK_HINT.search(btype):
             thought = True
             continue
-        text = (block.get('text') or {}).get('content') or block.get('content') or ''
+        block_text = block.get('text')
+        text = (block_text.get('content') if isinstance(block_text, dict) else block_text)
+        text = text or block.get('content') or ''
         if isinstance(text, str) and text:
             texts.append(text)
         # best-effort image blocks (url or base64 payloads, various shapes)
@@ -194,9 +213,10 @@ def _msg_to_turn(msg: dict) -> tuple[Turn | None, list[str]]:
                 images.append(v)
 
     text = '\n'.join(t for t in texts if t and t.strip()).strip()
-    if not text and not images:
+    if not text and not images and not thought:
         return None, []
-    return Turn(role=role, text=text, thought=thought), images
+    return Turn(role=role, text=text, thought=thought and not text and not images,
+                had_thoughts=thought), images
 
 
 def parse_chat(meta: dict, messages: list[dict]) -> tuple[Chat, dict]:
@@ -271,6 +291,8 @@ def run(page, token: str, chats: list[dict], out_dir: Path,
                     pass
             messages = list_messages(page, token, chat_id)
             chat, image_map = parse_chat(meta, messages)
+            if not chat.visible_turns():
+                raise RuntimeError('Kimi returned no readable messages; response shape may have changed')
             n_imgs = _materialize_images(page, chat, image_map)
             stats = write_chat(chat, out_dir)
             if save_raw:

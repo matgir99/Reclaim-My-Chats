@@ -55,12 +55,30 @@ def _linearize(mapping: dict, current_node: str | None) -> list[dict]:
     if not roots:
         return []
     path = [roots[0]]
+    seen_nodes = {id(roots[0])}
     while True:
         children = path[-1].get('children') or []
         nxt = next((mapping[c] for c in children if c in mapping), None)
-        if nxt is None:
+        if nxt is None or id(nxt) in seen_nodes:
             return path
+        seen_nodes.add(id(nxt))
         path.append(nxt)
+
+
+def _content_parts(msg: dict) -> list:
+    """Visible text/media parts, including current interactive Markdown replies."""
+    content = msg.get('content') or {}
+    if content.get('content_type') == 'text':
+        fallback = ((msg.get('metadata') or {}).get('model_dil_v2') or {}).get('fallbackMarkdown')
+        if isinstance(fallback, str) and fallback.strip():
+            return [re.sub(r'<escape>([\s\S]*?)</escape>', r'\1', fallback)]
+    if content.get('content_type') == 'code' and isinstance(content.get('text'), str):
+        text = content['text']
+        fence = '`' * max(3, max((len(m[0]) + 1 for m in re.finditer(r'`+', text)), default=3))
+        language = str(content.get('language') or '').replace('\n', '')
+        return [f'{fence}{language}\n{text}\n{fence}']
+    parts = content.get('parts') or []
+    return parts if isinstance(parts, list) else []
 
 
 def _node_to_turn(node: dict) -> Turn | None:
@@ -68,7 +86,7 @@ def _node_to_turn(node: dict) -> Turn | None:
     if not msg:
         return None
     meta = msg.get('metadata') or {}
-    if meta.get('is_visually_hidden_from_conversation'):
+    if meta.get('is_visually_hidden_from_conversation') or meta.get('is_thinking_preamble_message'):
         return None
     role = (msg.get('author') or {}).get('role', '')
     if role not in ('user', 'assistant'):
@@ -79,7 +97,7 @@ def _node_to_turn(node: dict) -> Turn | None:
         return None
 
     texts, images_notes = [], []
-    for part in content.get('parts', []) or []:
+    for part in _content_parts(msg):
         if isinstance(part, str):
             texts.append(part)
         elif isinstance(part, dict):

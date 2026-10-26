@@ -82,6 +82,9 @@ Run `reclaim <provider> --help` for `--skip`, `--limit`, `--log`, `--no-raw`,
 and `-o/--output-dir`. Single provider commands run even if that provider is
 disabled in settings; `reclaim all` uses the configured provider list.
 
+See the [provider compatibility review](docs/UPSTREAM_REVIEW.md) for current
+format support, upstream sources, and limits on older or very long histories.
+
 ## Archive and settings
 
 Each provider writes to `<archive>/<Provider>/<chat>/`. A chat folder contains

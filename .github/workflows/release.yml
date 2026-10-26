@@ -34,6 +34,10 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
       - run: python -m pip install -e '.[gui-test]' build ruff pyright
       - run: python -m unittest discover -s tests -q
+      - name: Install isolated browser for protocol regression tests
+        run: python -m playwright install --with-deps --only-shell chromium
+      - name: Test provider requests with synthetic browser responses
+        run: python -m unittest discover -s tests -p browser_protocols.py -v
       - run: ruff check reclaim tests scripts flet_integration
       - run: pyright reclaim tests scripts flet_integration
       - name: Build with the exact release version
