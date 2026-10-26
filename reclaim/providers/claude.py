@@ -36,7 +36,7 @@ from ..core.writer import write_chat, write_raw
 
 BASE_URL = 'https://claude.ai'
 PROVIDER = 'claude'
-LIST_LIMIT = 100
+LIST_LIMIT = 50
 
 _GET_JS = """async (args) => {
     const resp = await fetch(args.url, {
@@ -160,7 +160,7 @@ def list_chats(page, org: str) -> list[dict]:
             if not isinstance(cursor, str) or cursor in seen_cursors:
                 raise RuntimeError('Claude returned an invalid or repeated conversation cursor')
             seen_cursors.add(cursor)
-        elif len(batch) < LIST_LIMIT:
+        elif not batch:
             return items
         offset += len(batch)
 

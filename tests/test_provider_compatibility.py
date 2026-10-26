@@ -186,6 +186,13 @@ class TestChatGPTCompatibility(unittest.TestCase):
 
 
 class TestClaudeCompatibility(unittest.TestCase):
+    def test_short_offset_pages_do_not_hide_remaining_chats(self):
+        pages = [[{'uuid': 'one'}], [{'uuid': 'two'}], []]
+        with patch.object(claude, '_get', side_effect=pages) as get:
+            chats = claude.list_chats(None, 'synthetic-org')
+        self.assertEqual([chat['id'] for chat in chats], ['one', 'two'])
+        self.assertIn('offset=2', get.call_args.args[1])
+
     def test_cursor_envelopes_and_legacy_offset_lists(self):
         pages = [{'conversations': [{'uuid': 'one', 'name': 'First'}], 'nextCursor': 'next &/='},
                  {'items': [{'uuid': 'two', 'name': 'Second'}]}]
