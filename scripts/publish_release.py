@@ -18,9 +18,27 @@ def existing_release(repository: str, tag: str) -> dict | None:
                             text=True, capture_output=True, check=False)
     if result.returncode == 0:
         return json.loads(result.stdout)
-    if 'HTTP 404' in result.stderr:
+    if 'HTTP 404' not in result.stderr:
+        raise RuntimeError(f'cannot check existing release: {result.stderr.strip()}')
+
+    # The tag endpoint can return 404 for a draft. The authenticated release
+    # list includes drafts, including ones left behind by an interrupted run.
+    query = f'.[] | select(.tag_name == {json.dumps(tag)}) | .id'
+    listed = subprocess.run(['gh', 'api', '--paginate',
+                             f'repos/{repository}/releases?per_page=100', '--jq', query],
+                            text=True, capture_output=True, check=False)
+    if listed.returncode != 0:
+        raise RuntimeError(f'cannot list release drafts: {listed.stderr.strip()}')
+    identifiers = listed.stdout.split()
+    if not identifiers:
         return None
-    raise RuntimeError(f'cannot check existing release: {result.stderr.strip()}')
+    if len(identifiers) != 1 or not identifiers[0].isdigit():
+        raise RuntimeError(f'expected one release for {tag}; refusing an ambiguous lookup')
+    found = subprocess.run(['gh', 'api', f'repos/{repository}/releases/{identifiers[0]}'],
+                           text=True, capture_output=True, check=False)
+    if found.returncode != 0:
+        raise RuntimeError(f'cannot read release draft: {found.stderr.strip()}')
+    return json.loads(found.stdout)
 
 
 def publish(repository: str, tag: str, directory: Path) -> None:

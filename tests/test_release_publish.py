@@ -64,9 +64,43 @@ class TestPublishing(unittest.TestCase):
                                subprocess.CompletedProcess([], 1, '', error))):
                 with self.assertRaises(RuntimeError):
                     publish_release.existing_release('example/repo', 'v3.3.0')
-        with patch.object(publish_release.subprocess, 'run', return_value=
-                          subprocess.CompletedProcess([], 1, '', 'HTTP 404')):
+        with patch.object(publish_release.subprocess, 'run', side_effect=[
+                subprocess.CompletedProcess([], 1, '', 'HTTP 404'),
+                subprocess.CompletedProcess([], 0, '', '')]):
             self.assertIsNone(publish_release.existing_release('example/repo', 'v3.3.0'))
+
+    def test_draft_missing_from_tag_endpoint_is_found_in_paginated_list(self):
+        with patch.object(publish_release.subprocess, 'run', side_effect=[
+                subprocess.CompletedProcess([], 1, '', 'HTTP 404'),
+                subprocess.CompletedProcess([], 0, '123\n', ''),
+                subprocess.CompletedProcess([], 0, json.dumps(self.draft), '')]) as run:
+            self.assertEqual(publish_release.existing_release('example/repo', 'v3.3.0'), self.draft)
+        self.assertIn('--paginate', run.call_args_list[1].args[0])
+        self.assertEqual(run.call_args_list[2].args[0][-1], 'repos/example/repo/releases/123')
+
+    def test_draft_list_errors_are_not_treated_as_an_absent_release(self):
+        for error in ['HTTP 404', 'HTTP 403', 'HTTP 500', 'network unavailable']:
+            with (self.subTest(error=error),
+                  patch.object(publish_release.subprocess, 'run', side_effect=[
+                      subprocess.CompletedProcess([], 1, '', 'HTTP 404'),
+                      subprocess.CompletedProcess([], 1, '', error)])):
+                with self.assertRaisesRegex(RuntimeError, 'cannot list release drafts'):
+                    publish_release.existing_release('example/repo', 'v3.3.0')
+
+    def test_duplicate_drafts_are_rejected(self):
+        with patch.object(publish_release.subprocess, 'run', side_effect=[
+                subprocess.CompletedProcess([], 1, '', 'HTTP 404'),
+                subprocess.CompletedProcess([], 0, '123\n456\n', '')]):
+            with self.assertRaisesRegex(RuntimeError, 'ambiguous lookup'):
+                publish_release.existing_release('example/repo', 'v3.3.0')
+
+    def test_draft_disappearing_after_listing_is_an_error(self):
+        with patch.object(publish_release.subprocess, 'run', side_effect=[
+                subprocess.CompletedProcess([], 1, '', 'HTTP 404'),
+                subprocess.CompletedProcess([], 0, '123\n', ''),
+                subprocess.CompletedProcess([], 1, '', 'HTTP 404')]):
+            with self.assertRaisesRegex(RuntimeError, 'cannot read release draft'):
+                publish_release.existing_release('example/repo', 'v3.3.0')
 
     def test_release_response_is_read_without_exposing_authentication(self):
         response = subprocess.CompletedProcess([], 0, json.dumps(self.draft), '')
