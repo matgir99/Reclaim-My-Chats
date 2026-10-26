@@ -21,8 +21,8 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-gui = ["flet==1.0.4", "flet-desktop==1.0.4"]
-gui-test = ["flet[test]==1.0.4", "flet-desktop==1.0.4", "flet-cli==1.0.4", "pyinstaller>=6"]
+gui = ["flet==1.0.5", "flet-desktop==1.0.5"]
+gui-test = ["flet[test]==1.0.5", "flet-desktop==1.0.5", "flet-cli==1.0.5", "pyinstaller>=6"]
 
 [project.scripts]
 reclaim = "reclaim.__main__:main"
