@@ -36,6 +36,5 @@ on PRs that change packaging and on manual requests, and all three platforms
 are checked for every release. Do not require a check that only runs for
 selected paths. See [maintainer settings](MAINTAINING.md) for administrator bypass.
 
-Reviewed bot and contributor PRs may target `main`; bring those commits back
-into `develop` before the next release PR. Keep release merges sequential:
+All contributor and bot changes must merge into `develop` first; only this repository's `develop` PR may merge into `main`. The required **Quality and Python package** check enforces that PR source. Dependabot version updates target `develop`; retarget any default-branch security update PRs to `develop` before merging. Synchronize `main` back into `develop` after a release. Keep release merges sequential:
 wait for one release to finish before merging another release PR.

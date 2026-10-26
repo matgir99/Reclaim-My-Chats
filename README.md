@@ -127,9 +127,9 @@ passwords are stored in the settings file.
 ## Develop Reclaim My Chats
 
 `develop` is the integration branch. `main` contains released code and remains
-the default branch. Normally, changes reach `main` through a tested pull request
-from `develop`. Reviewed contributor and bot fixes can also target `main`;
-merge these back into `develop` afterward. Merging triggers the release workflow: it builds and verifies
+the default branch. All changes reach `main` through a tested pull request from this repository's
+`develop` branch. Contributor and Dependabot PRs must target `develop` first;
+retarget any Dependabot security PRs opened against `main` to `develop`. Merging triggers the release workflow: it builds and verifies
 the Python and desktop packages, then creates the version tag and publishes
 the GitHub Release. The first GUI release is `v3.3.0`; ordinary later merges
 increment the patch number. No version edit or special commit message is
