@@ -22,13 +22,17 @@ class Attachment:
 
 @dataclass
 class Turn:
-    """One conversation turn (thoughts are kept here, filtered at write time)."""
+    """One turn: `thought` hides a reasoning-only turn at write time.
+
+    `had_thoughts` records reasoning removed from an otherwise visible answer.
+    """
     role: str                     # 'user' | 'model'
     text: str = ''
     thought: bool = False
     images: list[bytes] = field(default_factory=list)   # inline images
     attachments: list[Attachment] = field(default_factory=list)
     error: str | None = None      # API-side error marker, if any
+    had_thoughts: bool = False    # reasoning removed from an otherwise visible turn
 
 
 @dataclass
@@ -42,7 +46,7 @@ class Chat:
 
     @property
     def had_thoughts(self) -> bool:
-        return any(t.thought for t in self.turns)
+        return any(t.thought or t.had_thoughts for t in self.turns)
 
     @property
     def errors(self) -> list[str]:

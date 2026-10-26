@@ -11,12 +11,19 @@ copied verbatim unless explicitly stated below.
 
 | Project | What we used | License |
 |---|---|---|
-| [egroup-labs/kept](https://github.com/egroup-labs/kept) | Kimi endpoint/auth research + vault importer (planned, WS3 of `docs/PLAN.md`) | MIT |
-| [aiamblichus/haevn](https://github.com/aiamblichus/haevn) | Provider-architecture and bulk-sync resume design ideas | MIT |
+| [egroup-labs/kept](https://github.com/egroup-labs/kept) | Kimi endpoint/auth research, implemented vault importer, Claude/Gemini pagination and response formats | MIT |
+| [aiamblichus/haevn](https://github.com/aiamblichus/haevn) | Provider architecture, bulk-sync resume ideas and DeepSeek history API/message formats | MIT |
 | [blueberrycongee/DeepSeek-Chat-Exporter](https://github.com/blueberrycongee/DeepSeek-Chat-Exporter) | "Extract original markdown from app state instead of rendered HTML" — the principle behind our IndexedDB approach | MIT |
-| [pionxzh/chatgpt-exporter](https://github.com/pionxzh/chatgpt-exporter) | ChatGPT native provider: `/backend-api/` endpoints, session auth, two-step file download (JSON wrapper -> signed URL), Projects via `gizmos/snorlax/sidebar` + `gizmos/<id>/conversations` | MIT |
+| [pionxzh/chatgpt-exporter](https://github.com/pionxzh/chatgpt-exporter) | ChatGPT API endpoints, session/workspace auth, two-step downloads, Projects and interactive Markdown fallback | MIT |
 | [conradqh/scrapemychats](https://github.com/conradqh/scrapemychats) | Confirmation of the real-Chrome bulk-export pattern for ChatGPT | MIT |
 | [queelius/ctk](https://github.com/queelius/ctk) | Tree/conversation-format design ideas for importers | MIT |
+| [glebmish/claude-exporter](https://github.com/glebmish/claude-exporter) | Claude API documentation, active message lineage and content-block formats | MIT |
+| [EricAndrechek/gemini-usage](https://github.com/EricAndrechek/gemini-usage) | Gemini RPC framing, authentication tokens and result-field documentation | MIT |
+| [Lumjiel/deepseek-mindtrace](https://github.com/Lumjiel/deepseek-mindtrace) | DeepSeek pinned/unpinned pagination and older-history limit research | MIT |
+| [EdgeTypE/better-deepseek](https://github.com/EdgeTypE/better-deepseek) | Confirmation of current DeepSeek history endpoints and cache format | MIT |
+
+The [provider compatibility review](docs/UPSTREAM_REVIEW.md) pins the inspected
+upstream revisions and records adopted changes and remaining limits.
 
 If we ever copy code (rather than ideas) from any MIT project above, the
 relevant file(s) will carry that project's copyright notice and license text
@@ -43,5 +50,9 @@ beyond those of the data's owner (you).
 ## Runtime dependencies
 
 - [Playwright](https://github.com/microsoft/playwright) (Apache-2.0) — the
-  only third-party Python package at runtime. We call its public API; no
-  code is vendored or modified.
+  base package's direct Python runtime dependency.
+- [Flet](https://github.com/flet-dev/flet) (Apache-2.0), including its desktop
+  host — optional GUI dependencies, included in standalone desktop releases.
+
+These packages have their own transitive dependencies. We call their public
+APIs; no dependency source is vendored or modified.

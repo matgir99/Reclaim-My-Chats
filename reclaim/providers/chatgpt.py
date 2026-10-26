@@ -24,6 +24,7 @@ import re
 import time
 import traceback
 from pathlib import Path
+from urllib.parse import urlencode
 
 from ..core import browser, config
 from ..core.events import EventSink, emit
@@ -31,16 +32,36 @@ from ..core.manifest import SyncState, print_dry_run, write_manifest
 from ..core.model import Attachment, Chat, Turn
 from ..core.progress import progress
 from ..core.writer import write_chat, write_raw
-from .chatgpt_import import _SKIP_CONTENT_TYPES, _IMG_EXT, _linearize
+from .chatgpt_import import _SKIP_CONTENT_TYPES, _IMG_EXT, _content_parts, _linearize
 
 BASE_URL = 'https://chatgpt.com'
 PROVIDER = 'chatgpt'
 PAGE_LIMIT = 100
 
 _GET_JS = """async (args) => {
+    const headers = {'authorization': 'Bearer ' + args.token,
+                     'x-authorization': 'Bearer ' + args.token,
+                     'accept': 'application/json'};
+    const selected = document.cookie.split(';').map(s => s.trim())
+        .find(s => s.startsWith('_account='));
+    if (selected) {
+        const workspace = decodeURIComponent(selected.slice('_account='.length));
+        if (!window.__reclaimAccount || window.__reclaimAccount.workspace !== workspace) {
+            const check = await fetch('/backend-api/accounts/check/v4-2023-04-27', {
+                headers, credentials: 'include', signal: AbortSignal.timeout(60000),
+            });
+            if (!check.ok) return {status: check.status, text: 'workspace lookup failed'};
+            const accounts = await check.json();
+            const accountId = accounts.accounts?.[workspace]?.account?.account_id;
+            if (!accountId) throw new Error('Selected ChatGPT workspace could not be resolved; reload ChatGPT and retry');
+            window.__reclaimAccount = {workspace, accountId};
+        }
+        headers['Chatgpt-Account-Id'] = window.__reclaimAccount.accountId;
+    }
     const resp = await fetch(args.url, {
-        headers: {'authorization': 'Bearer ' + args.token, 'accept': 'application/json'},
+        headers,
         credentials: 'include',
+        signal: AbortSignal.timeout(60000),
     });
     const text = await resp.text();
     return {status: resp.status, text};
@@ -121,16 +142,29 @@ def ensure_logged_in(page):
 
 def list_conversations(page, token: str) -> list[dict]:
     items, offset = [], 0
+    seen = set()
     while True:
         data = _get(page, token,
                     f'{BASE_URL}/backend-api/conversations?offset={offset}'
                     f'&limit={PAGE_LIMIT}&order=updated')
-        batch = data.get('items') or []
-        items.extend(batch)
-        total = data.get('total', 0)
+        batch = data.get('items') if isinstance(data, dict) else None
+        if not isinstance(batch, list):
+            raise RuntimeError('unexpected ChatGPT conversation list shape')
+        added = 0
+        for item in batch:
+            if not isinstance(item, dict) or not item.get('id'):
+                raise RuntimeError('unexpected ChatGPT conversation row')
+            if item['id'] not in seen:
+                seen.add(item['id'])
+                items.append(item)
+                added += 1
         offset += len(batch)
-        if not batch or offset >= total:
+        # The service can report a null or underestimated total. Only an
+        # empty page proves this listing is exhausted, even after short pages.
+        if not batch:
             return items
+        if not added:
+            raise RuntimeError('ChatGPT conversation pagination made no progress')
 
 
 # ---------------------------------------------------------------------------
@@ -142,35 +176,54 @@ def list_projects(page, token: str) -> list[dict]:
     """GET /backend-api/gizmos/snorlax/sidebar (cursor-paginated).
     Returns [{'id': 'g-p-...', 'name': '...'}]."""
     projects, cursor = [], None
+    seen_cursors, seen_ids = set(), set()
     while True:
         url = (f'{BASE_URL}/backend-api/gizmos/snorlax/sidebar'
                f'?conversations_per_gizmo=0')
         if cursor is not None:
-            url += f'&cursor={cursor}'
+            url += '&' + urlencode({'cursor': cursor})
         data = _get(page, token, url)
-        for it in data.get('items') or []:
+        batch = data.get('items') if isinstance(data, dict) else None
+        if not isinstance(batch, list):
+            raise RuntimeError('unexpected ChatGPT project list shape')
+        for it in batch:
             g = (it.get('gizmo') or {}).get('gizmo') or {}
             gid = g.get('id')
-            if gid:
+            if gid and gid not in seen_ids:
+                seen_ids.add(gid)
                 name = (g.get('display') or {}).get('name') or g.get('name') or ''
                 projects.append({'id': gid, 'name': name})
         cursor = data.get('cursor')
         if cursor is None:
             return projects
+        if cursor in seen_cursors:
+            raise RuntimeError('ChatGPT returned a repeated project cursor')
+        seen_cursors.add(cursor)
 
 
 def list_project_conversations(page, token: str, gizmo_id: str) -> list[dict]:
     """GET /backend-api/gizmos/<id>/conversations (alphanumeric cursor)."""
     items, cursor = [], 0
+    seen_cursors, seen_ids = set(), set()
     while True:
         data = _get(page, token,
                     f'{BASE_URL}/backend-api/gizmos/{gizmo_id}/conversations'
-                    f'?cursor={cursor}&limit=50')
-        batch = data.get('items') or []
-        items.extend(batch)
+                    f'?{urlencode({"cursor": cursor, "limit": 50})}')
+        batch = data.get('items') if isinstance(data, dict) else None
+        if not isinstance(batch, list):
+            raise RuntimeError('unexpected ChatGPT project conversation list shape')
+        for item in batch:
+            if not isinstance(item, dict) or not item.get('id'):
+                raise RuntimeError('unexpected ChatGPT project conversation row')
+            if item['id'] not in seen_ids:
+                seen_ids.add(item['id'])
+                items.append(item)
         cursor = data.get('cursor')
         if not batch or cursor is None:
             return items
+        if cursor in seen_cursors:
+            raise RuntimeError('ChatGPT returned a repeated project conversation cursor')
+        seen_cursors.add(cursor)
 
 
 def list_all_conversations(page, token: str) -> list[dict]:
@@ -215,7 +268,7 @@ def _node_to_turn(node: dict) -> tuple[Turn | None, list[str]]:
     if not msg:
         return None, []
     meta = msg.get('metadata') or {}
-    if meta.get('is_visually_hidden_from_conversation'):
+    if meta.get('is_visually_hidden_from_conversation') or meta.get('is_thinking_preamble_message'):
         return None, []
     role = (msg.get('author') or {}).get('role', '')
     if role not in ('user', 'assistant'):
@@ -226,7 +279,7 @@ def _node_to_turn(node: dict) -> tuple[Turn | None, list[str]]:
         return None, []
 
     texts, asset_ids = [], []
-    for part in content.get('parts', []) or []:
+    for part in _content_parts(msg):
         if isinstance(part, str):
             texts.append(part)
         elif isinstance(part, dict):
@@ -237,6 +290,12 @@ def _node_to_turn(node: dict) -> tuple[Turn | None, list[str]]:
             elif part.get('text'):
                 texts.append(part['text'])
 
+    for attachment in meta.get('attachments') or []:
+        if isinstance(attachment, dict):
+            fid = attachment.get('id')
+            if isinstance(fid, str) and re.fullmatch(r'file[-_][A-Za-z0-9-]+', fid):
+                asset_ids.append(fid)
+    asset_ids = list(dict.fromkeys(asset_ids))
     text = '\n\n'.join(t for t in texts if t and t.strip())
     if not text.strip() and not asset_ids:
         return None, []
@@ -252,12 +311,7 @@ def _download_asset(page, token: str, file_id: str) -> tuple[bytes | None, dict]
     Returns (bytes, meta)."""
     meta_url = f'{BASE_URL}/backend-api/files/download/{file_id}?post_id=&inline=false'
     try:
-        resp = page.request.get(
-            meta_url, headers={'Authorization': f'Bearer {token}'},
-            timeout=120000)
-        if resp.status != 200:
-            return None, {}
-        meta = resp.json()
+        meta = _get(page, token, meta_url)
     except Exception:
         return None, {}
     if meta.get('status') != 'success' or not meta.get('download_url'):
@@ -279,26 +333,30 @@ def fetch_conversation(page, token: str, conv_id: str, title: str = '') -> tuple
         turn, asset_ids = _node_to_turn(node)
         if turn is None:
             continue
+        uploads = {a['id']: a for a in (((node.get('message') or {}).get('metadata') or {}).get('attachments') or [])
+                   if isinstance(a, dict) and a.get('id')}
         for fid in asset_ids:
             blob, meta = _download_asset(page, token, fid)
             if blob is None:
                 turn.text += '\n\n*[attachment could not be downloaded]*'
                 continue
             mime = (meta.get('mime_type') or '').split(';')[0]
-            name = meta.get('file_name') or f'file_{fid[:12]}'
+            name = meta.get('file_name') or uploads.get(fid, {}).get('name') or f'file_{fid[:12]}'
             if mime.startswith('image/'):
                 turn.images.append(blob)
             else:
                 if '.' not in name:
-                    name += {'.pdf': 'application/pdf'}.get(mime, '') or ''
+                    name += {'application/pdf': '.pdf'}.get(mime, '')
                 turn.attachments.append(Attachment(
                     filename=name,
                     kind='image' if _IMG_EXT.search(name) else 'document',
                     data=blob, description=name))
         turns.append(turn)
-    return (Chat(id=conv_id, title=title or data.get('title', '') or '(untitled)',
-                 source_url=f'{BASE_URL}/c/{conv_id}', turns=turns,
-                 provider=PROVIDER), data)
+    chat = Chat(id=conv_id, title=title or data.get('title', '') or '(untitled)',
+                source_url=f'{BASE_URL}/c/{conv_id}', turns=turns, provider=PROVIDER)
+    if not chat.visible_turns():
+        raise RuntimeError('ChatGPT returned no readable messages; response shape may have changed')
+    return chat, data
 
 
 def run(page, token: str, items: list[dict], out_dir: Path,

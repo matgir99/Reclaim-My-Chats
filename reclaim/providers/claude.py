@@ -14,7 +14,7 @@ pagination). Every chat carries abandoned edit-branches in
 `chat_messages`; the active lineage is recovered by walking
 `parent_message_uuid` pointers from `current_leaf_message_uuid` to the
 root (fallback: full array, never render nothing). Thinking blocks are
-skipped (thought flag on the turn), tool_use/tool_result blocks are
+removed without hiding the accompanying answer; tool_use/tool_result blocks are
 skipped in v1 (known gap — artifacts/research reports live there).
 """
 
@@ -25,6 +25,7 @@ import json
 import time
 import traceback
 from pathlib import Path
+from urllib.parse import urlencode
 
 from ..core import browser, config
 from ..core.events import EventSink, emit
@@ -35,7 +36,7 @@ from ..core.writer import write_chat, write_raw
 
 BASE_URL = 'https://claude.ai'
 PROVIDER = 'claude'
-LIST_LIMIT = 100
+LIST_LIMIT = 50
 
 _GET_JS = """async (args) => {
     const resp = await fetch(args.url, {
@@ -122,19 +123,44 @@ def ensure_logged_in(page) -> str:
 def list_chats(page, org: str) -> list[dict]:
     """GET .../chat_conversations, offset-paginated. Normalized items:
     {'id': uuid, 'title': name, 'updated_at': <ISO string>}."""
-    items, offset = [], 0
+    items, offset, cursor = [], 0, None
+    seen_ids, seen_cursors = set(), set()
     while True:
+        query: dict[str, str | int] = {'limit': LIST_LIMIT}
+        query['cursor' if cursor is not None else 'offset'] = cursor if cursor is not None else offset
         data = _get(page, f'{BASE_URL}/api/organizations/{org}'
-                          f'/chat_conversations?offset={offset}&limit={LIST_LIMIT}')
-        batch = data if isinstance(data, list) else data.get('data') or []
+                          f'/chat_conversations?{urlencode(query)}')
+        cursor_mode = isinstance(data, dict) and any(
+            key in data for key in ('conversations', 'items', 'cursor', 'nextCursor'))
+        if isinstance(data, list):
+            batch = data
+        elif isinstance(data, dict):
+            batch = next((data[key] for key in ('conversations', 'items', 'data')
+                          if key in data), None)
+        else:
+            batch = None
         if not isinstance(batch, list):
-            raise RuntimeError('unexpected list shape: ' + json.dumps(data)[:200])
+            raise RuntimeError('unexpected Claude conversation list shape')
+        added = 0
         for it in batch:
             if not isinstance(it, dict) or not it.get('uuid'):
+                raise RuntimeError('unexpected Claude conversation row')
+            if it['uuid'] in seen_ids:
                 continue
+            seen_ids.add(it['uuid'])
             items.append({'id': it['uuid'], 'title': it.get('name') or '',
                           'updated_at': it.get('updated_at')})
-        if len(batch) < LIST_LIMIT:
+            added += 1
+        if batch and not added:
+            raise RuntimeError('Claude conversation pagination made no progress')
+        if cursor_mode:
+            cursor = data.get('nextCursor') or data.get('cursor')
+            if not cursor:
+                return items
+            if not isinstance(cursor, str) or cursor in seen_cursors:
+                raise RuntimeError('Claude returned an invalid or repeated conversation cursor')
+            seen_cursors.add(cursor)
+        elif not batch:
             return items
         offset += len(batch)
 
@@ -153,12 +179,12 @@ def active_lineage(messages: list[dict], leaf_uuid) -> list[dict]:
     if leaf_uuid and leaf_uuid in by_uuid:
         chain: list[dict] = []
         cur = leaf_uuid
-        while cur and cur in by_uuid:
+        seen = set()
+        while cur and cur in by_uuid and cur not in seen:
+            seen.add(cur)
             m = by_uuid[cur]
             chain.append(m)
             parent = m.get('parent_message_uuid')
-            if parent == cur:
-                break  # self-loop safety
             cur = parent
         chain.reverse()
         return chain
@@ -182,6 +208,8 @@ def _block_turn(m: dict) -> tuple[str, bool, list[Attachment]]:
         elif btype == 'thinking':
             thought = True
         # tool_use / tool_result / image blocks: skipped in v1 (documented gap)
+    if not texts and isinstance(m.get('text'), str):
+        texts.append(m['text'])
     atts: list[Attachment] = []
     for a in m.get('attachments') or []:  # pasted/uploaded files
         if not isinstance(a, dict):
@@ -210,11 +238,12 @@ def parse_chat(data: dict, chat_id: str, source_url: str,
     for m in active_lineage(data.get('chat_messages') or [],
                             data.get('current_leaf_message_uuid')):
         text, thought, atts = _block_turn(m)
-        if not text and not atts:
+        if not text and not atts and not thought:
             continue
         sender = m.get('sender')
         turns.append(Turn(role='user' if sender == 'human' else 'model',
-                          text=text, thought=thought, attachments=atts))
+                          text=text, thought=thought and not text and not atts,
+                          had_thoughts=thought, attachments=atts))
     name = title or data.get('name') or '(untitled)'
     return Chat(id=chat_id, title=name, source_url=source_url,
                 turns=turns, provider=PROVIDER)
@@ -225,6 +254,8 @@ def fetch_conversation(page, org: str, conv_id: str, title: str = '') -> tuple[C
                       f'{conv_id}?tree=true&rendering_mode=messages'
                       f'&render_all_tools=true')
     chat = parse_chat(data, conv_id, f'{BASE_URL}/chat/{conv_id}', title)
+    if not chat.visible_turns():
+        raise RuntimeError('Claude returned no readable messages; response shape may have changed')
     # Materialize image uploads (signed preview URLs, page-side).
     for turn in chat.turns:
         for att in turn.attachments:

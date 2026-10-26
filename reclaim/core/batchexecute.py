@@ -4,7 +4,7 @@ Used by the `googlegemini` provider (BardChatUi/data/batchexecute) — the
 same protocol family the Gemini web app itself speaks. Pure functions
 only, no browser imports, so everything here is offline-testable.
 
-Protocol (per research; see docs/status_and_plan/GEMINI_CLAUDE_PLAN.md):
+Protocol (per MIT references; see docs/UPSTREAM_REVIEW.md):
 
     POST https://gemini.google.com/_/BardChatUi/data/batchexecute
          ?rpcids=<rpcid>&_reqid=<counter>&rt=c&source-path=/app
@@ -16,7 +16,7 @@ the classic batchexecute pitfall (build_f_req handles it).
 
 Response: optional ")]}'" anti-XSSI prefix, then length-prefixed frames
 (length in UTF-16 code units — non-BMP chars count double). The RPC
-result is frame [2], itself a JSON string (decode_response returns it).
+result is the JSON string at index 2 of the matching `wrb.fr` record.
 """
 
 from __future__ import annotations
@@ -93,21 +93,59 @@ def parse_frames(text: str) -> list[str]:
     return frames
 
 
-def decode_response(text: str) -> list:
-    """The RPC result of a batchexecute response.
+def decode_response(text: str, rpcid: str | None = None) -> list:
+    """Decode the matching RPC record, independent of telemetry/frame order.
 
-    Returns the parsed JSON of frame [2] when possible (it is itself a
-    JSON string); otherwise the raw frames list so callers can diagnose.
+    Google also serves unframed JSON lines. Legacy captures containing a
+    bare payload in the third frame remain readable. Unknown/error pages
+    raise instead of masquerading as an empty conversation list.
     """
     frames = parse_frames(text)
+    cleaned = text.lstrip()
+    if cleaned.startswith(")]}'"):
+        cleaned = cleaned[4:].lstrip()
+    objects = []
+    for fragment in [*frames, cleaned, *cleaned.splitlines()]:
+        try:
+            obj = json.loads(fragment)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(obj, list):
+            objects.append(obj)
+    saw_rpc = False
+    stack = list(objects)
+    while stack:
+        obj = stack.pop(0)
+        if obj and obj[0] == 'wrb.fr':
+            saw_rpc = True
+            if len(obj) < 3 or (rpcid is not None and obj[1] != rpcid):
+                continue
+            try:
+                result = json.loads(obj[2])
+            except (ValueError, TypeError) as exc:
+                raise RuntimeError('invalid JSON in batchexecute RPC result') from exc
+            if not isinstance(result, list):
+                raise RuntimeError('missing batchexecute RPC result')
+            return result
+        stack.extend(item for item in obj if isinstance(item, list))
+    if saw_rpc:
+        raise RuntimeError(f'batchexecute response has no result for RPC {rpcid}')
     if len(frames) >= 3:
         try:
-            data = json.loads(frames[2])
-            if isinstance(data, list):
-                return data
-        except Exception:
-            pass
-    return frames
+            result = json.loads(frames[2])
+        except ValueError:
+            result = None
+        if isinstance(result, list):
+            return result
+    # Plain payloads are useful for saved captures, but never return strings
+    # or protocol telemetry as if they were chat data.
+    try:
+        result = json.loads(cleaned)
+    except ValueError:
+        result = None
+    if isinstance(result, list):
+        return result
+    raise RuntimeError('unrecognized batchexecute response; login or protocol may have changed')
 
 
 # Known error codes from the Gemini web client (gemini-webapi research).

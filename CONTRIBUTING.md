@@ -14,8 +14,8 @@ Thanks for considering a contribution to ReclaimMyChats!
 
 ## Before opening a PR
 
-Use a small branch and normally target `develop`. A focused fix can target
-`main`; it will also be brought back into `develop`. Describe the problem,
+Use a small branch and target `develop`. Release PRs to `main` must come
+from this repository's `develop` branch. Describe the problem,
 the resulting behavior, and what you tested. See the [maintainer guide](docs/MAINTAINING.md).
 
 ```bash
