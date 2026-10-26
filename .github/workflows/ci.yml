@@ -19,6 +19,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      - name: Require develop as the source of main pull requests
+        if: github.event_name == 'pull_request' && github.base_ref == 'main'
+        env:
+          PR_HEAD_BRANCH: ${{ github.head_ref }}
+          PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+        shell: bash
+        run: |
+          if [[ "$PR_HEAD_BRANCH" != "develop" || "$PR_HEAD_REPOSITORY" != "$GITHUB_REPOSITORY" ]]; then
+            echo "::error::Pull requests to main must come from this repository's develop branch. Target develop first."
+            exit 1
+          fi
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
