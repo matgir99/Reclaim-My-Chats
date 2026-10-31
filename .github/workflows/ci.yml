@@ -30,10 +30,10 @@ jobs:
             echo "::error::Pull requests to main must come from this repository's develop branch. Target develop first."
             exit 1
           fi
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - run: python -m pip install -e '.[gui-test]' build ruff pyright
