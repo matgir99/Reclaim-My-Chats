@@ -11,6 +11,8 @@ import os
 import shutil
 import time
 from pathlib import Path
+from typing import Callable
+from urllib.parse import urlsplit
 
 from . import config
 
@@ -101,7 +103,14 @@ def set_window_bounds(page, state='normal', left=None, top=None):
         pass
 
 
-def interactive_login(page, check_url_fragment: str, ready_url_glob: str,
+def on_host(host: str) -> Callable[[str], bool]:
+    """Match a page on `host` itself. A URL glob such as
+    `**/aistudio.google.com/**` also matches Google's sign-in page, whose
+    address carries the destination in `?continue=`."""
+    return lambda url: urlsplit(url).hostname == host
+
+
+def interactive_login(page, check_url_fragment: str, ready_url: str | Callable[[str], bool],
                       provider_name: str, timeout_ms: int = 300000):
     """Bring the window forward for a human login, then hide it again.
 
@@ -116,7 +125,7 @@ def interactive_login(page, check_url_fragment: str, ready_url_glob: str,
     print(f'  LOG IN to {provider_name} in the browser window.')
     print('  Waiting (up to 5 minutes)...')
     print('=' * 50 + '\n')
-    page.wait_for_url(ready_url_glob, timeout=timeout_ms)
+    page.wait_for_url(ready_url, timeout=timeout_ms)
     print('Logged in! Hiding window...\n')
     set_window_bounds(page, state='minimized')
     time.sleep(2)

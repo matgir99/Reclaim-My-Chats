@@ -84,6 +84,8 @@ disabled in settings; `reclaim all` uses the configured provider list.
 
 See the [provider compatibility review](docs/UPSTREAM_REVIEW.md) for current
 format support, upstream sources, and limits on older or very long histories.
+Planned work, including archived/deleted chat handling and update checks
+when the app starts, is in the [roadmap](docs/ROADMAP.md).
 
 ## Archive and settings
 
@@ -110,6 +112,9 @@ checkout or another data folder. In the GUI, **Settings** can choose an
 archive and an existing browser profile. This lets a standalone download
 reuse the login sessions from a checkout without copying cookies. Do not open
 two Reclaim processes with the same profile simultaneously.
+
+Kimi accounts outside mainland China use kimi.ai, which is the default. For
+a mainland China account, set `RECLAIM_KIMI_URL=https://www.kimi.com`.
 
 For manual configuration:
 

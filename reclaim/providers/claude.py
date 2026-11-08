@@ -25,7 +25,7 @@ import json
 import time
 import traceback
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 from ..core import browser, config
 from ..core.events import EventSink, emit
@@ -83,7 +83,10 @@ def ensure_logged_in(page) -> str:
     /api/organizations and take the first org's uuid. Waits for a human
     login (window shown) if the sessionKey cookie is missing.
     """
-    if not _cookies(page).get('sessionKey'):
+    # Page-side fetch() needs a claude.ai page even when the session cookie
+    # already exists: from about:blank or another provider's page in
+    # `reclaim all`, every request fails with "Failed to fetch".
+    if urlsplit(page.url).hostname != urlsplit(BASE_URL).hostname:
         try:
             page.goto(BASE_URL, wait_until='domcontentloaded', timeout=60000)
         except Exception:

@@ -14,6 +14,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+from reclaim.core import browser
 from reclaim.core.batchexecute import decode_response
 from reclaim.core.writer import write_chat
 from reclaim.providers import chatgpt, chatgpt_import, claude, deepseek, googlegemini, kimi
@@ -91,6 +92,15 @@ class TestGoogleTransport(unittest.TestCase):
                 decode_response(text, 'MaZiqc')
 
 
+class TestGoogleLogin(unittest.TestCase):
+    def test_sign_in_page_carrying_the_destination_is_not_logged_in(self):
+        ready = browser.on_host('aistudio.google.com')
+        self.assertFalse(ready('https://accounts.google.com/v3/signin/accountchooser'
+                               '?continue=https://aistudio.google.com/library'))
+        self.assertFalse(ready('https://aistudio.google.com.example.net/library'))
+        self.assertTrue(ready('https://aistudio.google.com/library'))
+
+
 class TestGeminiCompatibility(unittest.TestCase):
     @staticmethod
     def turn(reply_id: str, when: int, question: str, answer: str, thinking=None) -> list:
@@ -166,6 +176,41 @@ class TestChatGPTCompatibility(unittest.TestCase):
         node['message']['metadata']['is_thinking_preamble_message'] = True
         self.assertEqual(chatgpt._node_to_turn(node), (None, []))
         self.assertIsNone(chatgpt_import._node_to_turn(node))
+
+    def test_chat_fetched_by_url_keeps_its_project_folder(self):
+        def fetched(_page, _token, conv_id, _title=''):
+            chat = chatgpt_import.parse_conversation(
+                {'id': conv_id, 'title': f'Chat {conv_id}', 'current_node': 'one',
+                 'mapping': {'one': message('Synthetic answer')}})
+            assert chat is not None
+            return chat, {'gizmo_type': 'snorlax', 'gizmo_id': 'g-p-synthetic'}
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(chatgpt, 'fetch_conversation', side_effect=fetched), \
+                patch.object(chatgpt.time, 'sleep'):
+            out = Path(tmp)
+            chatgpt.run(None, 'synthetic-token', [{'id': 'url', 'title': ''}], out,
+                        save_raw=False, project_names={'g-p-synthetic': 'Research'})
+            chatgpt.run(None, 'synthetic-token', [{'id': 'listed', 'title': '', '_project': None}],
+                        out, save_raw=False, project_names={'g-p-synthetic': 'Research'})
+            self.assertTrue((out / 'Research' / 'Chat url' / 'Chat url.md').exists())
+            self.assertTrue((out / 'Chat listed' / 'Chat listed.md').exists())
+
+    def test_rate_limits_wait_for_retry_after_and_report_429(self):
+        page = Mock()
+        page.evaluate.side_effect = [{'status': 429, 'text': '', 'retryAfter': '7'},
+                                     {'status': 429, 'text': '', 'retryAfter': None},
+                                     {'status': 200, 'text': '{"ok": true}', 'retryAfter': None}]
+        with patch.object(chatgpt.time, 'sleep') as sleep:
+            self.assertEqual(chatgpt._get(page, 'synthetic-token', 'https://chatgpt.com/x'),
+                             {'ok': True})
+        self.assertEqual([c.args[0] for c in sleep.call_args_list],
+                         [7.0, chatgpt.RATE_LIMIT_WAITS[1]])
+        page.evaluate.side_effect = None
+        page.evaluate.return_value = {'status': 429, 'text': '', 'retryAfter': None}
+        with patch.object(chatgpt.time, 'sleep') as sleep:
+            with self.assertRaisesRegex(RuntimeError, 'HTTP 429: rate limited'):
+                chatgpt._get(page, 'synthetic-token', 'https://chatgpt.com/x')
+        self.assertEqual(sleep.call_count, len(chatgpt.RATE_LIMIT_WAITS))
 
     def test_tool_calls_are_skipped_but_missing_recipient_is_kept(self):
         search = message('{"search_query": [{"q": "synthetic"}]}')
@@ -287,6 +332,14 @@ class TestKimiCompatibility(unittest.TestCase):
         self.assertEqual(turn.text, 'An answer')
         self.assertEqual(kimi._msg_to_turn({'role': 'tool', 'content': 'Internal output'}), (None, []))
 
+    def test_empty_final_page_ends_listing_but_unknown_shape_fails(self):
+        pages = [{'chats': [{'id': 'one'}], 'nextPageToken': 'next'}, {}]
+        with patch.object(kimi, '_api', side_effect=pages):
+            self.assertEqual([c['id'] for c in kimi.list_chats(None, 'synthetic-token')], ['one'])
+        with patch.object(kimi, '_api', return_value={'error': 'synthetic'}):
+            with self.assertRaisesRegex(RuntimeError, 'list shape'):
+                kimi.list_chats(None, 'synthetic-token')
+
     def test_repeated_cursor_and_reported_message_truncation_fail(self):
         data = {'chats': [{'id': 'one'}], 'nextPageToken': 'same'}
         with patch.object(kimi, '_api', return_value=data):
@@ -298,19 +351,34 @@ class TestKimiCompatibility(unittest.TestCase):
 
 
 class TestDeepSeekCompatibility(unittest.TestCase):
-    def test_both_pinned_lists_and_cursor_fallback(self):
-        pages = [{'chat_sessions': [{'id': 'first', 'updated_at': 100}], 'has_more': True},
-                 {'chat_sessions': [{'id': 'second'}], 'has_more': False},
-                 {'chat_sessions': [{'id': 'pinned'}], 'has_more': False}]
+    def test_single_pass_cursor_follows_each_rows_pinned_flag(self):
+        # Shape seen live: pinned=true lists pinned chats first, then unpinned ones.
+        pages = [{'chat_sessions': [{'id': 'pinned', 'pinned': True, 'updated_at': 300},
+                                    {'id': 'pinned-old', 'pinned': True, 'updated_at': 50}],
+                  'has_more': True},
+                 {'chat_sessions': [{'id': 'pinned-old', 'pinned': True, 'updated_at': 50},
+                                    {'id': 'recent', 'pinned': False, 'updated_at': 200}],
+                  'has_more': True},
+                 {'chat_sessions': [{'id': 'recent', 'pinned': False, 'updated_at': 200},
+                                    {'id': 'older', 'pinned': False, 'updated_at': 100}],
+                  'has_more': False}]
         with patch.object(deepseek, '_api_get', side_effect=pages) as get:
             chats = deepseek.list_chats(None)
-        self.assertEqual([chat['id'] for chat in chats], ['first', 'second', 'pinned'])
-        self.assertEqual(get.call_args_list[1].args[2]['lte_cursor.updated_at'], 100)
-        self.assertEqual(get.call_args.args[2]['lte_cursor.pinned'], 'true')
+        self.assertEqual([chat['id'] for chat in chats], ['pinned', 'pinned-old', 'recent', 'older'])
+        self.assertEqual([call.args[2] for call in get.call_args_list], [
+            {'lte_cursor.pinned': 'true'},
+            {'lte_cursor.pinned': 'true', 'lte_cursor.updated_at': 50},
+            {'lte_cursor.pinned': 'false', 'lte_cursor.updated_at': 200}])
 
     def test_stuck_pagination_is_an_error(self):
-        data = {'chat_sessions': [{'id': 'same', 'updated_at': 100}], 'has_more': True}
+        # Live failure of the old two-pass listing: the same page again with has_more.
+        data = {'chat_sessions': [{'id': 'same', 'pinned': False, 'updated_at': 100}],
+                'has_more': True}
         with patch.object(deepseek, '_api_get', return_value=data):
+            with self.assertRaisesRegex(RuntimeError, 'archive may be incomplete'):
+                deepseek.list_chats(None)
+        missing_time = {'chat_sessions': [{'id': 'one'}], 'has_more': True}
+        with patch.object(deepseek, '_api_get', return_value=missing_time):
             with self.assertRaisesRegex(RuntimeError, 'archive may be incomplete'):
                 deepseek.list_chats(None)
 

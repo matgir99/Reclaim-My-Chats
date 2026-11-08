@@ -139,6 +139,72 @@ class TestWriterOverwrite(unittest.TestCase):
         self.assertIn('two', (d / 'Foo_1.md').read_text())
 
 
+class TestMovedChats(unittest.TestCase):
+    """A renamed chat or project gets a new folder; the old one is retired."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.out = self.tmp / 'ChatGPT'
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def save(self, sync, title, project=None, text='answer', images=()):
+        chat = Chat(id='x1', title=title, source_url='https://x', provider='test',
+                    turns=[Turn('user', text), Turn('model', 'reply', images=list(images))],
+                    project=project)
+        stats = write_chat(chat, self.out)
+        sync.mark('x1', 1, str(stats['md']))
+        return stats['dir']
+
+    def test_moved_into_project_and_renamed(self):
+        sync = SyncState(self.out, 'chatgpt')
+        old = self.save(sync, 'Old title', text='first', images=[b'\x89PNG one'])
+        (old / 'notes.pdf').write_bytes(b'%PDF only in old folder')
+        new = self.save(sync, 'New title', project='Research', text='second',
+                        images=[b'\x89PNG one'])
+        self.assertFalse(old.exists())
+        self.assertEqual(new, self.out / 'Research' / 'New title')
+        self.assertEqual(sorted(p.name for p in new.iterdir()),
+                         ['New title.md', 'chat.json', 'image_1.png', 'notes.pdf'])
+        self.assertEqual(sync.known('x1'), {'updated_at': 1,
+                                            'md': 'Research/New title/New title.md'})
+        # Renaming the project removes the emptied project folder as well.
+        newest = self.save(sync, 'New title', project='Research 2026')
+        self.assertFalse((self.out / 'Research').exists())
+        self.assertTrue((newest / 'notes.pdf').exists())
+
+    def test_conflicting_media_or_another_chat_keeps_old_folder(self):
+        sync = SyncState(self.out, 'chatgpt')
+        old = self.save(sync, 'Old title', images=[b'\x89PNG one'])
+        self.save(sync, 'New title', images=[b'\x89PNG different'])
+        self.assertTrue((old / 'image_1.png').exists())
+        self.assertFalse((old / 'Old title.md').exists())
+
+        sync = SyncState(self.out, 'chatgpt')
+        shared = self.save(sync, 'Shared')
+        (shared / 'Shared_1.md').write_text('another chat with the same title')
+        self.save(sync, 'Moved')
+        self.assertTrue((shared / 'Shared.md').exists())
+
+    def test_absolute_record_from_moved_archive_is_rebased(self):
+        sync = SyncState(self.out, 'chatgpt')
+        old = self.save(sync, 'Old title')
+        sync._state['x1']['md'] = '/elsewhere/before/move/ChatGPT/Old title/Old title.md'
+        self.save(sync, 'New title')
+        self.assertFalse(old.exists())
+
+    def test_record_outside_archive_is_never_touched(self):
+        outside = self.tmp / 'outside'
+        outside.mkdir()
+        (outside / 'chat.json').write_text(json.dumps({'id': 'x1'}))
+        (outside / 'keep.md').write_text('not part of the archive')
+        sync = SyncState(self.out, 'chatgpt')
+        sync._state['x1'] = {'updated_at': 1, 'md': str(outside / 'keep.md')}
+        self.save(sync, 'Title')
+        self.assertTrue((outside / 'keep.md').exists())
+
+
 class TestSyncState(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())

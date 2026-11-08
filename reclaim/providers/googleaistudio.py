@@ -255,7 +255,7 @@ def ensure_logged_in(page):
     page.goto(LIBRARY_URL, wait_until='domcontentloaded', timeout=60000)
     time.sleep(3)
     browser.interactive_login(page, 'accounts.google.com',
-                              '**/aistudio.google.com/**', 'Google')
+                              browser.on_host('aistudio.google.com'), 'Google')
 
 
 def get_chat_list(page) -> list[dict]:

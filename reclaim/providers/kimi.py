@@ -1,7 +1,12 @@
-"""Kimi (kimi.com) provider (scrape mode) — native API replay.
+"""Kimi provider (scrape mode) — native API replay.
+
+Kimi serves accounts outside mainland China at kimi.ai (Google or non-+86
+phone sign-in) and mainland accounts at kimi.com. Both run the same web app
+and API. The default is kimi.ai; set RECLAIM_KIMI_URL=https://www.kimi.com
+for a mainland account.
 
 Endpoints and auth learned from Kept's MIT-licensed adapter
-(docs/providers/kimi.md). The session Bearer token lives in kimi.com's
+(docs/providers/kimi.md). The session Bearer token lives in the site's
 localStorage; we read it after login and replay three Connect-style JSON
 endpoints:
 
@@ -19,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import time
 import traceback
@@ -31,8 +37,8 @@ from ..core.model import Chat, Turn
 from ..core.progress import progress
 from ..core.writer import write_chat, write_raw
 
-BASE_URL = 'https://www.kimi.com'
-API = 'https://www.kimi.com/apiv2'
+BASE_URL = os.environ.get('RECLAIM_KIMI_URL', '').strip().rstrip('/') or 'https://www.kimi.ai'
+API = f'{BASE_URL}/apiv2'
 PROVIDER = 'kimi'
 PAGE_SIZE = 50
 MSG_PAGE_SIZE = 1000
@@ -71,7 +77,7 @@ def _api(page, token: str, path: str, body: dict, retries: int = 3) -> dict:
 
 
 def get_token(page) -> str:
-    """Find the session token in kimi.com storage and validate it."""
+    """Find the session token in Kimi's site storage and validate it."""
     inventory = page.evaluate("""() => {
         const out = [];
         for (const store of [localStorage, sessionStorage]) {
@@ -128,7 +134,6 @@ def ensure_logged_in(page):
     print('  LOG IN to Kimi in the browser window.')
     print('  Waiting (up to 15 minutes)...')
     print('=' * 50 + '\n')
-    import os
     deadline = time.time() + int(os.environ.get('RECLAIM_LOGIN_TIMEOUT', '900'))
     while time.time() < deadline:
         try:
@@ -150,7 +155,8 @@ def list_chats(page, token: str) -> list[dict]:
         if page_token:
             body['page_token'] = page_token
         data = _api(page, token, 'kimi.chat.v1.ChatService/ListChats', body)
-        batch = data.get('chats')
+        # Protobuf JSON omits empty fields: the page after the last chat is {}.
+        batch = data.get('chats', [] if data == {} else None) if isinstance(data, dict) else None
         if not isinstance(batch, list):
             raise RuntimeError('unexpected Kimi conversation list shape')
         for item in batch:
