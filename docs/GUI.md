@@ -1,20 +1,20 @@
 # Desktop GUI
 
-The Flet window manages archive updates for all six native providers. On
-startup it reads local files only: archived chat counts, last manifest time,
+The Flet window manages database updates for all six native providers. On
+startup it reads local files only: saved chat counts, last manifest time,
 and the last run result. It shows live changes only after a dry run or update
 contacts a provider.
 
 Use **Update selected** for checked providers or **Update all** for every
 provider enabled in settings. **Dry run** lists current provider chats and
-previews the work without writing archive files. **Rebuild selected** asks for
+previews the work without writing to the database. **Rebuild selected** asks for
 confirmation, then fetches all selected chats again. The progress bar and
 Details panel show the operation; provider errors appear in the summary and
 details. Playwright work runs in a worker thread, keeping the window
 responsive while login or downloads take time.
 
 **Settings** writes the shared `.reclaim.json`. It can choose enabled
-providers, an archive directory, and an existing browser profile. The profile
+providers, a database folder, and an existing browser profile. The profile
 field is useful when a standalone download should reuse a checkout's
 `.playwright-profile`; point it at that folder. The field stores a path, not
 account passwords. Close any other Reclaim process using that profile before
@@ -50,15 +50,15 @@ The Flet device tests run the real controls with a deterministic fake
 controller. Linux device tests require Flutter, a display, and the packages
 listed in [Flet's Linux build
 requirements](https://flet.dev/docs/publish/linux/). The separate `flet pack`
-build uses PyInstaller. `scripts/smoke_desktop.py ARCHIVE` extracts and launches
+build uses PyInstaller. `scripts/smoke_desktop.py PACKAGE` extracts and launches
 the actual packaged application in an isolated directory, checks its GUI and
 Playwright driver, and closes it. CI uses this on Linux, Windows, and macOS.
 These startup checks need no provider accounts. A real authenticated dry run
 and update still need manual testing with your own account.
 
-Flet is pinned to 1.0.4, which fixes the Flutter JNI dependency conflict that
-broke fresh integration-test builds with 1.0.0.
+Flet is pinned to 1.0.5. Version 1.0.4 fixed the Flutter JNI dependency
+conflict that broke fresh integration-test builds with 1.0.0.
 
-The Linux archive also contains a `.desktop` template. If you install it in
+The Linux package also contains a `.desktop` template. If you install it in
 your application menu, set its `Exec=` line to the absolute path of the
 extracted `ReclaimMyChats` executable first.

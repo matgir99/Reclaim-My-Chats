@@ -10,15 +10,19 @@ still needs a decision or live evidence. Completed items move to
 
 An update should mirror what happened in the chat app since the last run:
 new and edited chats, renamed chats, chats moved between projects or
-notebooks, archived chats and deleted chats. The archive remains a backup:
+notebooks, archived chats and deleted chats. The database remains a backup:
 an update never deletes a chat. Chats that disappear or are archived at
 the provider are moved into separate folders, where the owner decides
 whether to keep or delete them.
 
+Terms: the **database** is the local folder holding every saved chat.
+**Archived** means only the provider's own archive feature, which this
+section reproduces with `_Archived` folders.
+
 ### Folder layout
 
 ```
-<archive>/<Provider>/
+<database>/<Provider>/
 ├── <Project>/<Chat>/          # active chats, as today
 ├── <Chat>/
 ├── _Archived/<Project>/<Chat>/  # archived at the provider
@@ -33,7 +37,7 @@ them.
 
 ### Lifecycle events
 
-| At the provider | Detected by | Archive action |
+| At the provider | Detected by | Database action |
 |:--|:--|:--|
 | New chat | Listed, no sync record | Download (today) |
 | Edited chat | Listed, newer timestamp | Download again (today) |
@@ -74,7 +78,7 @@ listings look broken.
 
 ### Provider capabilities (verify live before enabling each)
 
-| Provider | Archive | Deletion signal | Grouping |
+| Provider | Archive feature | Deletion signal | Grouping |
 |:--|:--|:--|:--|
 | ChatGPT | Yes: `is_archived` on conversations; archived listing to confirm | Conversation request fails | Projects (supported) |
 | Claude | None known for chats | HTTP 404 on the conversation | Projects exist; not yet mapped to folders |
@@ -106,8 +110,8 @@ one at a time with synthetic tests of each response shape.
 
 ### Goal
 
-Keep the archive current without a terminal, on Linux, Windows and macOS,
-while the owner stays in control of what enters the archive.
+Keep the database current without a terminal, on Linux, Windows and macOS,
+while the owner stays in control of what enters the database.
 
 ### Design
 
@@ -128,7 +132,7 @@ while the owner stays in control of what enters the archive.
   browser profile and accounts belong to the user's session.
 - **Manual use.** Without the startup check, the **Check for updates**
   button runs the same Check → Review → Merge. Other commands are buttons
-  too: dry run, rebuild, status, tidy, open archive, settings, and the
+  too: dry run, rebuild, status, tidy, open database folder, settings, and the
   `_Archived`/`_Deleted` review (section 3).
 - **No surprise login windows.** The automatic check never waits for a
   login; a provider that needs one shows "login required" with a

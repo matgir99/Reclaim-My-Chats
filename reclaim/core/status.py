@@ -32,7 +32,8 @@ PROVIDER_DIRS = [
 class ProviderStatus:
     provider: str
     dir: str
-    archived: bool = False
+    present: bool = False          # the provider folder exists in the database
+    chats: int = 0                 # distinct chats (chat.json ids) in the database
     chat_folders: int = 0          # chat dirs with a chat.json on disk
     synced_chats: int = 0          # distinct chats in the sync record
     last_sync: str | None = None   # manifest 'started' timestamp
@@ -57,17 +58,21 @@ def _count_chat_folders(pdir: Path) -> int:
 
 
 def _archive_totals(pdir: Path) -> dict[str, int]:
-    """Archive-level totals from the chat.json files themselves.
+    """Database totals from the chat.json files themselves.
 
     The run manifest only describes the LAST run, so after an idle update
     (0 chats processed) its totals read zero — useless. The chat.json files
-    are the source of truth for what's actually archived.
+    are the source of truth for what the database holds. A chat saved in
+    two folders (an older copy left by a rename) counts once.
     """
     images = docs = chars = 0
+    ids: set[str] = set()
     for cj in pdir.rglob('chat.json'):
         if not cj.is_file():
             continue
-        for turn in _read_json(cj).get('turns') or []:
+        payload = _read_json(cj)
+        ids.add(str(payload.get('id') or cj.parent))
+        for turn in payload.get('turns') or []:
             if not isinstance(turn, dict):
                 continue
             chars += len(turn.get('text') or '')
@@ -81,15 +86,15 @@ def _archive_totals(pdir: Path) -> dict[str, int]:
                     images += 1
                 else:
                     docs += 1
-    return {'images': images, 'docs': docs, 'chars': chars}
+    return {'images': images, 'docs': docs, 'chars': chars, 'chats': len(ids)}
 
 
 def describe(provider: str, dirname: str, root: Path) -> ProviderStatus:
     """One provider's status from local files only."""
     pdir = Path(root) / dirname
     info = ProviderStatus(provider=provider, dir=str(pdir),
-                          archived=pdir.is_dir())
-    if not info.archived:
+                          present=pdir.is_dir())
+    if not info.present:
         return info
     manifest = _read_json(pdir / '.reclaim_manifest.json')
     attempt = _read_json(pdir / '.reclaim_last_attempt.json')
@@ -115,7 +120,7 @@ def describe(provider: str, dirname: str, root: Path) -> ProviderStatus:
         if legacy:
             alt = pdir / f'.last_sync_{legacy}.json'
             if alt.exists():
-                sync_path = alt  # pre-rename archive; migration happens on run
+                sync_path = alt  # pre-rename sync record; migration happens on run
     sync = _read_json(sync_path)
     info.synced_chats = len(sync)
     info.chat_folders = _count_chat_folders(pdir)
@@ -123,6 +128,7 @@ def describe(provider: str, dirname: str, root: Path) -> ProviderStatus:
     info.archive_images = totals['images']
     info.archive_docs = totals['docs']
     info.archive_chars = totals['chars']
+    info.chats = totals['chats']
     return info
 
 
@@ -133,16 +139,20 @@ def scan(root: Path) -> list[ProviderStatus]:
 
 def format_status(info: ProviderStatus) -> str:
     """Human-readable block for one provider."""
-    if not info.archived:
-        return f'{info.dir} — not archived yet'
+    if not info.present:
+        return f'{info.dir} — no chats saved yet'
     lines = [info.dir]
-    lines.append(f'  chats archived: {info.chat_folders} '
+    lines.append(f'  chats in database: {info.chats} '
                  f'(sync records: {info.synced_chats})')
+    if info.chat_folders > info.chats:
+        extra = info.chat_folders - info.chats
+        lines.append(f'  older copies: {extra} extra folder{"s" if extra != 1 else ""} '
+                     'of chats saved elsewhere')
     img = (f'{info.archive_images} image' if info.archive_images == 1
            else f'{info.archive_images} images')
     doc = (f'{info.archive_docs} doc' if info.archive_docs == 1
            else f'{info.archive_docs} docs')
-    lines.append(f'  archive totals: {img} · {doc} · {info.archive_chars:,} chars')
+    lines.append(f'  database totals: {img} · {doc} · {info.archive_chars:,} chars')
     if info.last_run:
         r = info.last_run
         lines.append(f'  last run: {r["ok"]} ok, {r["failed"]} failed '
@@ -161,7 +171,7 @@ def main(argv=None):
                     help='Scan root (default: repo/chats)')
     args = ap.parse_args(argv)
     root = Path(args.output_dir)
-    print(f'ReclaimMyChats archive status — scan root: {root}\n')
+    print(f'ReclaimMyChats database status — scan root: {root}\n')
     for info in scan(root):
         print(format_status(info))
         print()

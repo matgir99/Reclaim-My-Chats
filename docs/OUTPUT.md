@@ -1,8 +1,9 @@
-# Archive output
+# Database output
 
-The default root is `chats/` inside a checkout or the application's data
-folder. Set `archive` in `.reclaim.json` or use `-o` on a provider command to
-choose another destination. Provider folders have these names:
+The database is the folder holding every saved chat. Its default location is
+`chats/` inside a checkout or the application's data folder. Set `archive` in
+`.reclaim.json` (the key name is kept for compatibility) or use `-o` on a
+provider command to choose another destination. Provider folders have these names:
 
 | Provider command | Folder |
 |:--|:--|
@@ -48,6 +49,6 @@ and files; they do not infer live provider state without contacting it.
 
 GUI updates and `reclaim all` also write `.reclaim_last_attempt.json` with the
 operation's start time, exit code, and error. An operation failure is displayed
-separately from chat failures, preserving the previous archive manifest and its
+separately from chat failures, preserving the previous run manifest and its
 actual chat counts. A later successful run clears or supersedes that failure.
-Dry runs write neither archive records nor attempt records.
+Dry runs write neither sync records nor attempt records.

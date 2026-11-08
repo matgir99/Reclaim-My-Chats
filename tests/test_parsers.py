@@ -371,7 +371,7 @@ class TestChatGPTProvider(unittest.TestCase):
         with (patch.object(cg, 'list_projects', return_value=[{'id': 'p', 'name': 'Example'}]),
               patch.object(cg, 'list_project_conversations', side_effect=RuntimeError('HTTP 503')),
               patch.object(cg, 'list_conversations') as main_list):
-            with self.assertRaisesRegex(RuntimeError, 'archive may be incomplete'):
+            with self.assertRaisesRegex(RuntimeError, 'database may be incomplete'):
                 cg.list_all_conversations(None, 'synthetic-token')
             main_list.assert_not_called()
 

@@ -346,7 +346,7 @@ class TestKimiCompatibility(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'repeated conversation cursor'):
                 kimi.list_chats(None, 'synthetic-token')
         with patch.object(kimi, '_api', return_value={'messages': [], 'nextPageToken': 'more'}):
-            with self.assertRaisesRegex(RuntimeError, 'incomplete archive'):
+            with self.assertRaisesRegex(RuntimeError, 'refusing to save an incomplete chat'):
                 kimi.list_messages(None, 'synthetic-token', 'synthetic-chat')
 
 
@@ -375,11 +375,11 @@ class TestDeepSeekCompatibility(unittest.TestCase):
         data = {'chat_sessions': [{'id': 'same', 'pinned': False, 'updated_at': 100}],
                 'has_more': True}
         with patch.object(deepseek, '_api_get', return_value=data):
-            with self.assertRaisesRegex(RuntimeError, 'archive may be incomplete'):
+            with self.assertRaisesRegex(RuntimeError, 'database may be incomplete'):
                 deepseek.list_chats(None)
         missing_time = {'chat_sessions': [{'id': 'one'}], 'has_more': True}
         with patch.object(deepseek, '_api_get', return_value=missing_time):
-            with self.assertRaisesRegex(RuntimeError, 'archive may be incomplete'):
+            with self.assertRaisesRegex(RuntimeError, 'database may be incomplete'):
                 deepseek.list_chats(None)
 
     def test_business_error_cannot_fall_back_to_cached_success(self):

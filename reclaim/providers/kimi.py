@@ -181,7 +181,7 @@ def list_messages(page, token: str, chat_id: str) -> list[dict]:
     if not isinstance(msgs, list):
         raise RuntimeError('unexpected Kimi message list shape')
     if data.get('nextPageToken') or len(msgs) >= MSG_PAGE_SIZE:
-        raise RuntimeError('Kimi message history may be truncated; refusing an incomplete archive')
+        raise RuntimeError('Kimi message history may be truncated; refusing to save an incomplete chat')
     return list(reversed(msgs))  # API returns newest-first
 
 
@@ -331,7 +331,7 @@ def run(page, token: str, chats: list[dict], out_dir: Path,
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog='reclaim kimi',
-        description='Archive Kimi chats (update by default).')
+        description='Save Kimi chats to the database (update by default).')
     ap.add_argument('title', nargs='?',
                     help='fetch chats whose title contains this '
                          '(case-insensitive)')

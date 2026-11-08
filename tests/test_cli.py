@@ -400,7 +400,7 @@ class TestStatus(unittest.TestCase):
             json.dumps({'a': {}, 'b': {}, 'c': {}}))
         infos = status.scan(self.root)
         ga_info = next(i for i in infos if i.provider == 'googleaistudio')
-        self.assertTrue(ga_info.archived)
+        self.assertTrue(ga_info.present)
         self.assertEqual(ga_info.chat_folders, 2)
         self.assertEqual(ga_info.synced_chats, 3)
         self.assertEqual(ga_info.last_run['ok'], 3)
@@ -409,9 +409,19 @@ class TestStatus(unittest.TestCase):
         self.assertEqual(ga_info.last_sync, '2026-08-04 20:03:01')
         self.assertEqual(ga_info.duration_s, 42.3)
         ds = next(i for i in infos if i.provider == 'deepseek')
-        self.assertFalse(ds.archived)
-        self.assertIn('not archived', status.format_status(ds))
-        self.assertIn('chats archived: 2', status.format_status(ga_info))
+        self.assertFalse(ds.present)
+        self.assertIn('no chats saved yet', status.format_status(ds))
+        self.assertIn('chats in database: 2', status.format_status(ga_info))
+
+    def test_chat_saved_in_two_folders_counts_once(self):
+        ga = self._ga_dir()
+        for name in ('Old title', 'New title'):
+            (ga / name).mkdir()
+            (ga / name / 'chat.json').write_text(json.dumps({'id': 'same-chat'}))
+        info = next(i for i in status.scan(self.root) if i.provider == 'googleaistudio')
+        self.assertEqual((info.chats, info.chat_folders), (3, 4))
+        self.assertIn('older copies: 1 extra folder of chats saved elsewhere',
+                      status.format_status(info))
 
     def test_failures_reported(self):
         ga = self._ga_dir()
@@ -462,8 +472,8 @@ class TestStatus(unittest.TestCase):
         self.assertEqual(ga_info.archive_images, 4)
         self.assertEqual(ga_info.archive_docs, 1)
         out = status.format_status(ga_info)
-        self.assertIn('archive totals: 4 images · 1 doc · 14 chars', out)
-        # last-run manifest line still present alongside archive totals
+        self.assertIn('database totals: 4 images · 1 doc · 14 chars', out)
+        # last-run manifest line still present alongside database totals
         self.assertIn('last run: 3 ok, 0 failed', out)
 
 
@@ -546,7 +556,7 @@ class TestDispatch(unittest.TestCase):
             with redirect_stdout(buf):
                 code = cli.main(['status', '-o', str(root)])
             self.assertEqual(code, 0)
-            self.assertIn('not archived yet', buf.getvalue())
+            self.assertIn('no chats saved yet', buf.getvalue())
         finally:
             shutil.rmtree(root, ignore_errors=True)
 

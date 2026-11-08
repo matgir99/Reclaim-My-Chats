@@ -129,7 +129,7 @@ def list_chats(page) -> list[dict]:
         cursor = (bool(last.get('pinned')), last.get('updated_at'))
         if (not added or not isinstance(cursor[1], (int, float))
                 or isinstance(cursor[1], bool) or cursor in seen_cursors):
-            raise RuntimeError('DeepSeek conversation pagination made no progress; archive may be incomplete')
+            raise RuntimeError('DeepSeek conversation pagination made no progress; the database may be incomplete')
         seen_cursors.add(cursor)
         params = {'lte_cursor.pinned': 'true' if cursor[0] else 'false',
                   'lte_cursor.updated_at': cursor[1]}
@@ -339,7 +339,7 @@ def run(page, records: list[dict], out_dir: Path,
                 rec = fetch_record(page, chat.id)
                 chat = record_to_chat(rec)
                 if not chat.visible_turns():
-                    raise RuntimeError('DeepSeek returned no readable messages; refusing an empty archive')
+                    raise RuntimeError('DeepSeek returned no readable messages; refusing to save an empty chat')
             n_files = materialize_attachments(page, chat)
             stats = write_chat(chat, out_dir)
             if save_raw:
@@ -371,7 +371,7 @@ def run(page, records: list[dict], out_dir: Path,
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog='reclaim deepseek',
-        description='Archive DeepSeek Chat history (update by default).')
+        description='Save DeepSeek chats to the database (update by default).')
     ap.add_argument('title', nargs='?',
                     help='fetch chats whose title contains this '
                          '(case-insensitive)')

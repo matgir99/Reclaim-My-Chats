@@ -1,4 +1,4 @@
-"""Flet desktop frontend for native archive updates."""
+"""Flet desktop frontend for native database updates."""
 
 from __future__ import annotations
 
@@ -46,7 +46,7 @@ def configured_providers(root: Path) -> list[str]:
 
 def open_directory(path: Path) -> None:
     if not path.is_dir():
-        raise FileNotFoundError(f'Archive directory does not exist yet: {path}')
+        raise FileNotFoundError(f'Database folder does not exist yet: {path}')
     if os.name == 'nt':
         os.startfile(str(path))
     elif sys.platform == 'darwin':
@@ -56,9 +56,11 @@ def open_directory(path: Path) -> None:
 
 
 def status_text(info: status.ProviderStatus) -> str:
-    if not info.archived:
-        return 'No archive yet'
-    summary = f'{info.chat_folders} chats archived'
+    if not info.present:
+        return 'No chats saved yet'
+    summary = f'{info.chats} chats in database'
+    if info.chat_folders > info.chats:
+        summary += f' ({info.chat_folders - info.chats} older copies)'
     if info.last_sync:
         summary += f' · last sync {info.last_sync}'
     if info.last_run:
@@ -95,7 +97,7 @@ class ReclaimWindow:
 
         self.archive_path = ft.Text(str(config.archive_root(self.root)),
                                     selectable=True, key='archive-path')
-        self.archive_total = ft.Text('Loading archive status', key='archive-total')
+        self.archive_total = ft.Text('Loading database status', key='archive-total')
         self.current = ft.Text('Ready', key='current-operation')
         self.summary = ft.Text('', key='completion-summary')
         self.progress = ft.ProgressBar(value=0, key='run-progress')
@@ -126,7 +128,7 @@ class ReclaimWindow:
         self.rebuild = ft.OutlinedButton('Rebuild selected',
                                          on_click=self._confirm_rebuild,
                                          key='rebuild')
-        self.open_archive = ft.Button('Open archive', on_click=self._open_archive,
+        self.open_archive = ft.Button('Open database folder', on_click=self._open_archive,
                                       key='open-archive')
         self.settings_button = ft.Button('Settings', on_click=self._settings,
                                          key='settings')
@@ -138,7 +140,7 @@ class ReclaimWindow:
                     ft.Text('Reclaim My Chats', size=28, weight=ft.FontWeight.BOLD),
                     self.settings_button,
                 ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, wrap=True),
-                ft.Text('Archive and synchronize your AI conversations'),
+                ft.Text('Save and synchronize your AI conversations in a local database'),
                 ft.Divider(),
                 ft.Text('Providers', size=20, weight=ft.FontWeight.BOLD),
                 *rows,
@@ -150,7 +152,7 @@ class ReclaimWindow:
                 self.current,
                 self.summary,
                 ft.Divider(),
-                ft.Text('Archive', size=20, weight=ft.FontWeight.BOLD),
+                ft.Text('Database', size=20, weight=ft.FontWeight.BOLD),
                 self.archive_total,
                 self.archive_path,
                 self.open_archive,
@@ -166,9 +168,9 @@ class ReclaimWindow:
         try:
             infos = await asyncio.to_thread(status.scan, archive)
         except Exception as exc:
-            self._error(f'Could not read archive status: {exc}')
+            self._error(f'Could not read database status: {exc}')
             return
-        self.archive_total.value = f'{sum(i.chat_folders for i in infos):,} chats archived'
+        self.archive_total.value = f'{sum(i.chats for i in infos):,} chats in the database'
         for info in infos:
             if info.provider in self.enabled:
                 self.provider_status[info.provider].value = status_text(info)
@@ -239,7 +241,7 @@ class ReclaimWindow:
             self._error('Select at least one enabled provider.')
             return
         if self._running or self.controller.busy:
-            self._error('Another archive operation is already running.')
+            self._error('Another operation is already running.')
             return
         self._set_running(True)
         self.summary.value = ''
@@ -303,8 +305,8 @@ class ReclaimWindow:
 
         dialog = ft.AlertDialog(
             modal=True,
-            title='Rebuild selected archives?',
-            content=ft.Text(f'This fetches every conversation again and overwrites local copies for: {names}.'),
+            title='Rebuild selected providers?',
+            content=ft.Text(f'This fetches every conversation again and overwrites its copy in the database for: {names}.'),
             actions=[ft.OutlinedButton('Cancel', on_click=lambda _: self.page.pop_dialog(),
                                        key='cancel-rebuild'),
                      ft.FilledButton('Rebuild', on_click=confirm, key='confirm-rebuild')],
@@ -323,7 +325,7 @@ class ReclaimWindow:
                                              value=name in self.enabled,
                                              key=f'settings-{name}')
                           for name in ALL_PROVIDERS}
-        archive_field = ft.TextField(label='Archive directory',
+        archive_field = ft.TextField(label='Database folder',
                                      value=str(config.archive_root(self.root)),
                                      key='settings-archive', expand=True)
         profile_field = ft.TextField(
@@ -335,7 +337,7 @@ class ReclaimWindow:
         async def choose_archive(_=None) -> None:
             try:
                 picked = await ft.FilePicker().get_directory_path(
-                    dialog_title='Choose archive directory')
+                    dialog_title='Choose database folder')
                 if picked:
                     archive_field.value = picked
                     self.page.update()
@@ -356,7 +358,7 @@ class ReclaimWindow:
             enabled = [name for name in ALL_PROVIDERS if enabled_checks[name].value]
             archive = archive_field.value.strip()
             if not enabled or not archive:
-                self._error('Choose at least one provider and an archive directory.')
+                self._error('Choose at least one provider and a database folder.')
                 return
             try:
                 config.save(self.root, providers=enabled, archive=archive,

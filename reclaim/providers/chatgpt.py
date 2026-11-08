@@ -277,7 +277,7 @@ def list_all_conversations(page, token: str) -> list[dict]:
         except Exception as e:
             raise RuntimeError(
                 f"Could not list ChatGPT project '{p['name']}': {e}. "
-                'The archive may be incomplete; retry the update.'
+                'The database may be incomplete; retry the update.'
             ) from e
     add(list_conversations(page, token), None)
     return out
@@ -459,7 +459,7 @@ def run(page, token: str, items: list[dict], out_dir: Path,
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog='reclaim chatgpt',
-        description='Archive ChatGPT conversations incl. Projects '
+        description='Save ChatGPT conversations incl. Projects to the database '
                     '(update by default).')
     ap.add_argument('title', nargs='?',
                     help='fetch chats whose title contains this '

@@ -8,7 +8,7 @@ Usage:
   reclaim <provider> --list [TITLE]        print chat titles, no download
   reclaim <provider> --log [options]       verbose progress + timings
   reclaim <provider> --dry-run [options]   preview what would be fetched
-  reclaim status [-o DIR]                  offline archive overview
+  reclaim status [-o DIR]                  offline database overview
   reclaim gui                              launch the desktop application
   reclaim all [options]                    update all six providers, in order
   reclaim all --rebuild                    rebuild all providers
@@ -17,7 +17,7 @@ Usage:
   reclaim import chatgpt CONVERSATIONS.json [-o DIR]
   reclaim import scrapemychats EXPORT_DIR [-o DIR]
   reclaim parse  googleaistudio --from-folder DIR [--titles MAP.json] [-o DIR]
-  reclaim export haevn-md . archive.zip
+  reclaim export haevn-md . chats.zip
 
 Providers: googleaistudio, deepseek, kimi, chatgpt, claude, googlegemini
 (all = every provider). Common options: --skip N, --limit N, --dry-run,
@@ -27,13 +27,13 @@ Output has exactly two levels: default = essential info + summary only;
 
 Examples:
   reclaim googleaistudio                  # update AI Studio (new + changed)
-  reclaim all --rebuild                   # re-archive everything, all providers
+  reclaim all --rebuild                   # fetch everything again, all providers
   reclaim deepseek "latex"                # re-fetch chats with "latex" in title
   reclaim kimi --list                     # print chat titles, no download
   reclaim chatgpt --dry-run               # preview, nothing downloaded
   reclaim claude --dry-run                # preview Claude, nothing downloaded
   reclaim googlegemini --list             # list Gemini chat titles
-  reclaim status                          # offline archive overview
+  reclaim status                          # offline database overview
 """
 
 from __future__ import annotations

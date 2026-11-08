@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "reclaimmychats"
 dynamic = ["version"]
-description = "Archive AI chat history from six providers into clean local Markdown"
+description = "Save AI chat history from six providers to a local Markdown database"
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"

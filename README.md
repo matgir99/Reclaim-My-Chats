@@ -3,11 +3,12 @@
 Reclaim My Chats saves conversations from ChatGPT, Claude, Google Gemini,
 Google AI Studio, DeepSeek, and Kimi as local Markdown, JSON, and downloaded
 media. It has a desktop synchronization manager and a full command line
-interface (CLI). Your archive stays on your computer or in a folder you choose.
+interface (CLI). Your chats are saved in a local database: a folder on your
+computer, or one you choose.
 
 ## Download the desktop application
 
-Download the archive for your operating system from [GitHub
+Download the package for your operating system from [GitHub
 Releases](https://github.com/matgir99/Reclaim-My-Chats/releases). Desktop
 downloads begin with `v3.3.0`; the earlier `v3.2.0` release has no executable
 assets. The application contains Python and Flet, so you do not need to
@@ -27,10 +28,10 @@ contain a browser or account credentials. Unsigned Windows and macOS builds
 may show their usual security prompts.
 
 The main window lets you select providers, update selected or all enabled
-providers, preview a dry run, rebuild selected archives, inspect progress and
-errors, and open or change the archive folder. Rebuild fetches every selected
-conversation again and overwrites its local copy. A dry run contacts the
-providers to list conversations, but does not write to the archive.
+providers, preview a dry run, rebuild selected providers, inspect progress and
+errors, and open or change the database folder. Rebuild fetches every selected
+conversation again and overwrites its copy in the database. A dry run contacts
+the providers to list conversations, but does not write to the database.
 
 See [GUI usage and testing](docs/GUI.md) for settings, profile migration,
 and development commands.
@@ -62,10 +63,10 @@ reclaim chatgpt                       # update new and changed chats
 reclaim claude --dry-run              # preview after contacting Claude
 reclaim googlegemini --rebuild        # fetch every Gemini chat again
 reclaim googleaistudio "latex"       # one title match
-reclaim deepseek --list               # list titles without archiving
+reclaim deepseek --list               # list titles without saving
 reclaim kimi --url CHAT_URL           # one exact chat
 reclaim all                           # update enabled providers in one browser session
-reclaim status                        # inspect the local archive offline
+reclaim status                        # inspect the local database offline
 ```
 
 The other modes remain available:
@@ -75,7 +76,7 @@ reclaim parse googleaistudio --from-folder DIRECTORY
 reclaim import chatgpt conversations.json
 reclaim import kept VAULT --providers kimi,claude
 reclaim import scrapemychats EXPORT_DIRECTORY
-reclaim export haevn-md . archive.zip
+reclaim export haevn-md . chats.zip
 ```
 
 Run `reclaim <provider> --help` for `--skip`, `--limit`, `--log`, `--no-raw`,
@@ -87,16 +88,21 @@ format support, upstream sources, and limits on older or very long histories.
 Planned work, including archived/deleted chat handling and update checks
 when the app starts, is in the [roadmap](docs/ROADMAP.md).
 
-## Archive and settings
+## Database and settings
 
-Each provider writes to `<archive>/<Provider>/<chat>/`. A chat folder contains
+The **database** is the folder where Reclaim My Chats saves every chat it
+downloads, whatever its state at the provider. **Archived** refers only to a
+provider's own archive feature, such as archiving a chat in ChatGPT; see the
+[roadmap](docs/ROADMAP.md) for how those chats will be kept apart.
+
+Each provider writes to `<database>/<Provider>/<chat>/`. A chat folder contains
 readable Markdown, `chat.json`, optional `raw.json`, and downloaded media.
 ChatGPT Projects become subfolders. A run manifest and sync record in each
 provider folder support incremental updates and the offline status view.
 See [the output contract](docs/OUTPUT.md) for details.
 
 The GUI and CLI use the same `.reclaim.json` settings. For a source checkout,
-the default archive is `<checkout>/chats` and the default browser profile is
+the default database is `<checkout>/chats` and the default browser profile is
 `<checkout>/.playwright-profile`. Installed Python packages and standalone
 desktop downloads use an operating system data folder instead:
 
@@ -106,17 +112,18 @@ desktop downloads use an operating system data folder instead:
 | macOS | `~/Library/Application Support/ReclaimMyChats` |
 | Windows | `%LOCALAPPDATA%\ReclaimMyChats` |
 
-The archive is `chats/` and the browser profile is `.playwright-profile/`
+The database is `chats/` and the browser profile is `.playwright-profile/`
 inside that data folder by default. Set `RECLAIM_HOME` to use an existing
-checkout or another data folder. In the GUI, **Settings** can choose an
-archive and an existing browser profile. This lets a standalone download
+checkout or another data folder. In the GUI, **Settings** can choose a
+database folder and an existing browser profile. This lets a standalone download
 reuse the login sessions from a checkout without copying cookies. Do not open
 two Reclaim processes with the same profile simultaneously.
 
 Kimi accounts outside mainland China use kimi.ai, which is the default. For
 a mainland China account, set `RECLAIM_KIMI_URL=https://www.kimi.com`.
 
-For manual configuration:
+For manual configuration (the `archive` key names the database folder; its
+name is kept for compatibility):
 
 ```json
 {
@@ -127,7 +134,7 @@ For manual configuration:
 ```
 
 Relative paths are resolved from the data folder. `"archive": "."` puts
-provider directories directly in that folder. `.reclaim.json`, the archive,
+provider directories directly in that folder. `.reclaim.json`, the database,
 and the profile are ignored by Git when they live in a checkout. The profile
 holds live login sessions; treat it like a browser profile. No account
 passwords are stored in the settings file.
@@ -166,7 +173,7 @@ PyInstaller and does not need that Flutter toolchain. A packaged executable
 must also be launched outside the development environment as a separate
 smoke test.
 
-The six native provider modules share browser, manifest, and archive code in
+The six native provider modules share browser, manifest, and writer code in
 `reclaim/core`. The CLI and Flet GUI use the same `ArchiveController`; the GUI
 runs its blocking provider work in a worker thread. See [architecture](docs/ARCHITECTURE.md).
 
