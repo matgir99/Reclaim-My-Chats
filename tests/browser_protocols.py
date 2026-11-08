@@ -89,6 +89,26 @@ class TestBrowserProtocols(unittest.TestCase):
         self.assertEqual(len(checks), 1)
         self.assertNotIn('chatgpt-account-id', checks[0]['headers'])
 
+    def test_personal_workspace_cookie_resolves_by_account_structure(self):
+        # Current shape: cookie "personal", accounts keyed by account id and "default".
+        personal = {'account': {'account_id': 'synthetic-personal-id', 'structure': 'personal'}}
+        self.responses['/backend-api/accounts/check/v4-2023-04-27'] = {
+            'accounts': {'synthetic-personal-id': personal, 'default': personal,
+                         'synthetic-team-id': {'account': {'account_id': 'synthetic-team-id',
+                                                           'structure': 'workspace'}}},
+            'account_ordering': ['synthetic-personal-id', 'synthetic-team-id']}
+        self.responses['/backend-api/conversations'] = {'items': []}
+        self.context.add_cookies([{'name': '_account', 'value': 'personal',
+                                  'domain': 'chatgpt.com', 'path': '/'}])
+        self.page.goto('https://chatgpt.com/')
+        chatgpt._get(self.page, 'synthetic-token', 'https://chatgpt.com/backend-api/conversations')
+        self.assertEqual(self.requests[-1]['headers']['chatgpt-account-id'], 'synthetic-personal-id')
+        self.page.evaluate('delete window.__reclaimAccount')
+        self.context.add_cookies([{'name': '_account', 'value': 'synthetic-team-id',
+                                  'domain': 'chatgpt.com', 'path': '/'}])
+        chatgpt._get(self.page, 'synthetic-token', 'https://chatgpt.com/backend-api/conversations')
+        self.assertEqual(self.requests[-1]['headers']['chatgpt-account-id'], 'synthetic-team-id')
+
     def test_unresolved_workspace_stops_before_fetching_another_accounts_chats(self):
         self.responses['/backend-api/accounts/check/v4-2023-04-27'] = {'accounts': {}}
         self.context.add_cookies([{'name': '_account', 'value': 'synthetic-missing',

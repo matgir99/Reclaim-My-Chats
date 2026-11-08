@@ -167,6 +167,73 @@ class TestChatGPTCompatibility(unittest.TestCase):
         self.assertEqual(chatgpt._node_to_turn(node), (None, []))
         self.assertIsNone(chatgpt_import._node_to_turn(node))
 
+    def test_tool_calls_are_skipped_but_missing_recipient_is_kept(self):
+        search = message('{"search_query": [{"q": "synthetic"}]}')
+        search['message']['recipient'] = 'web.run'
+        search['message']['content'] = {'content_type': 'code', 'language': 'unknown',
+                                        'text': '{"search_query": [{"q": "synthetic"}]}'}
+        memory = message('Remember the synthetic preference.')
+        memory['message']['recipient'] = 'bio'
+        for node in (search, memory):
+            self.assertEqual(chatgpt._node_to_turn(node), (None, []))
+            self.assertIsNone(chatgpt_import._node_to_turn(node))
+        answer = message('Visible answer')
+        answer['message']['recipient'] = 'all'
+        exported = message('Exported answer')  # official exports may omit recipient
+        native, _ = chatgpt._node_to_turn(answer)
+        imported = chatgpt_import._node_to_turn(exported)
+        assert native is not None and imported is not None
+        self.assertEqual(native.text, 'Visible answer')
+        self.assertEqual(imported.text, 'Exported answer')
+
+    def test_content_reference_markers_become_displayed_text(self):
+        cite = '\ue200cite\ue202turn0search3\ue201'
+        memory = '\ue200memcite\ue202turn0memory1\ue201'
+        files = ['\ue200filecite\ue202turn1file0\ue201', '\ue200filecite\ue202turn1file1\ue201']
+        link = '\ue200url\ue202Release notes\ue202turn0search0\ue201'
+        entity = '\ue200entity\ue202["turn0business0","Cafe [One]"]\ue201'
+        widget = '\ue200genui\ue202{"suggest_automation": {"label": "Remind me"}}\ue201'
+        text = (f'Rates rose – twice. {cite}{memory}\nSee rules {files[0]} {files[1]}.\n'
+                f'Read {link}. Visit {entity}.\n{widget}\nEnd \ue200unknown\ue202x\ue201.')
+        refs = [
+            {'type': 'grouped_webpages', 'matched_text': cite,
+             'items': [{'title': 'Rates', 'url': 'https://example.com/rates',
+                        'attribution': 'Example News'}]},
+            {'type': 'hidden', 'matched_text': memory, 'safe_urls': []},
+            *({'type': 'file', 'matched_text': m, 'name': 'rules.pdf'} for m in files),
+            {'type': 'url', 'matched_text': link, 'title': 'Release notes',
+             'safe_urls': ['https://example.com/release'],
+             'item': {'url': 'https://example.com/release?utm_source=chatgpt.com'}},
+            {'type': 'entity', 'matched_text': entity, 'name': 'Cafe [One]'},
+            {'type': 'dil', 'matched_text': widget, 'alt': None},
+            {'type': 'sources_footnote', 'matched_text': ' ',
+             'sources': [{'title': 'Rates', 'url': 'https://example.com/rates',
+                          'attribution': 'Example News'}]},
+        ]
+        node = message(text, content_references=refs)
+        expected = ('Rates rose – twice. ([Example News](<https://example.com/rates>))\n'
+                    'See rules (rules.pdf).\n'
+                    'Read [Release notes](<https://example.com/release>). Visit Cafe \\[One\\].\n'
+                    '\nEnd .\n\n'
+                    '**Sources:**\n\n- [Example News](<https://example.com/rates>)')
+        native, _ = chatgpt._node_to_turn(node)
+        imported = chatgpt_import._node_to_turn(node)
+        assert native is not None and imported is not None
+        self.assertEqual(native.text, expected)
+        self.assertEqual(imported.text, expected)
+
+    def test_unreferenced_markers_in_interactive_markdown(self):
+        fallback = ('Go to \ue200url\ue202Docs\ue202https://example.com/docs\ue201 or '
+                    '\ue200url\ue202Notes\ue202turn0search1\ue201 near '
+                    '\ue200entity\ue202["turn0place0","Old Town"]\ue201.\n'
+                    '\ue200image_group\ue202{"query": ["synthetic"]}\ue201'
+                    '\ue200cite\ue202turn0search9\ue201 Done.')
+        node = message('<box>widget</box>', model_dil_v2={'fallbackMarkdown': fallback})
+        native, _ = chatgpt._node_to_turn(node)
+        assert native is not None
+        self.assertEqual(native.text, 'Go to [Docs](<https://example.com/docs>) or Notes '
+                                      'near Old Town.\n Done.')
+
     def test_uploads_in_metadata_are_materialized_with_pdf_extension(self):
         node = message('Uploaded document', attachments=[{'id': 'file-synthetic', 'name': 'notes'}])
         conversation = {'mapping': {'one': node}, 'current_node': 'one'}

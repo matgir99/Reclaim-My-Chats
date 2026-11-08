@@ -1,7 +1,8 @@
 # Provider compatibility review
 
-Reviewed on 26 October 2026. This records source-backed compatibility work,
-not a claim that every feature of the live websites has been tested.
+Reviewed on 26 October 2026 and updated on 8 November 2026. This records
+source-backed compatibility work, not a claim that every feature of the live
+websites has been tested.
 
 ## What these projects provide
 
@@ -113,10 +114,50 @@ be added to a public commit or release asset.
   Optional `raw.json` retains the provider response except oversized media,
   and can contain reasoning. See [the output contract](OUTPUT.md).
 
+## November 2026 update
+
+Every source above was compared with its default branch on 8 November.
+Eight were unchanged. Two had new commits:
+
+| Project and inspected revision | Findings and decision |
+|---|---|
+| [chatgpt-exporter, 44affd4](https://github.com/pionxzh/chatgpt-exporter/tree/44affd4d68c88f73be59f8adda521da08ba95ba0) | Inline `url`, `entity` and `image_group` markers in interactive replies; residual private-use markers; official JSON messages without a recipient. Adopted, see below. Image, ZIP and userscript changes do not apply. |
+| [better-deepseek, df0c9a1](https://github.com/EdgeTypE/better-deepseek/tree/df0c9a1867f112069cc0d6ecd26509ba8e7a8a5d) | Prompt modules, skills, web search, MCP and UI work only. No history endpoint or cache change, so nothing to adopt. |
+
+**ChatGPT citation markers.** Replies contain private-use markers such as
+`\ue200cite\ue202turn0search3\ue201`, described in
+`metadata.content_references`. The parser did not resolve them, so saved
+Markdown showed text like `citeturn0search3`. They now become what ChatGPT
+displays: web citations become links, file citations the file name,
+entities their name, hidden and interactive-only markers nothing, and a
+source footnote a **Sources** list. Unlike upstream, ordinary reply text is
+not normalized, so dashes and non-breaking spaces are kept. A `url` marker
+that holds a search reference instead of an address takes its link from
+the matching reference. Unreferenced markers are removed whole rather
+than leaving their inner text.
+
+**ChatGPT tool calls.** The October change that renders `code` content also
+rendered messages addressed to tools: web searches, code runs, plan and
+memory updates. In a local test over 42 stored ChatGPT responses, 674 of
+1,476 produced turns were such calls. A message whose recipient is set and
+is not `all` is now skipped, matching upstream. A missing recipient, as in
+some official exports, remains visible. Tool calls stay in `raw.json`.
+
+**ChatGPT workspace cookie.** A live check on 8 November found the
+`_account` cookie set to `personal`, while the accounts check keys accounts
+by account id and `default`. The exact-key lookup failed, stopping every
+listing. The cookie now matches an accounts key, an account id, or, for
+`personal`, the account whose structure is `personal`. Exactly one account
+must match; an unknown workspace still stops before any chat is fetched.
+Upstream instead falls back to sending no workspace header.
+
+ChatGPT archives saved before this change need **one rebuild** to remove
+the markers: `reclaim chatgpt --rebuild`, or Rebuild in the GUI.
+
 ## Runtime and bot updates
 
-Playwright uses a version range rather than vendored provider code. Flet
-remains an optional pinned GUI dependency. Dependabot's existing Flet 1.0.5
-PR targets `develop`; its documented fix concerns web/FastAPI startup, not
-provider APIs. It and the separate Actions major-version PR remain
-independently reviewable. Neither was merged as part of this format review.
+Playwright uses a version range rather than vendored provider code. The
+November checks ran with Playwright 1.64.1 and Chrome 157. Flet remains an
+optional pinned GUI dependency. Dependabot's Flet 1.0.5 and Actions
+major-version updates were merged into `develop` after their checks passed.
+Flet 1.1 was released days before this review; it stays for a later update.

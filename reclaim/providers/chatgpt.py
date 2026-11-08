@@ -32,7 +32,8 @@ from ..core.manifest import SyncState, print_dry_run, write_manifest
 from ..core.model import Attachment, Chat, Turn
 from ..core.progress import progress
 from ..core.writer import write_chat, write_raw
-from .chatgpt_import import _SKIP_CONTENT_TYPES, _IMG_EXT, _content_parts, _linearize
+from .chatgpt_import import (_SKIP_CONTENT_TYPES, _IMG_EXT, _content_parts, _is_tool_call,
+                             _linearize)
 
 BASE_URL = 'https://chatgpt.com'
 PROVIDER = 'chatgpt'
@@ -51,8 +52,14 @@ _GET_JS = """async (args) => {
                 headers, credentials: 'include', signal: AbortSignal.timeout(60000),
             });
             if (!check.ok) return {status: check.status, text: 'workspace lookup failed'};
-            const accounts = await check.json();
-            const accountId = accounts.accounts?.[workspace]?.account?.account_id;
+            const accounts = (await check.json()).accounts || {};
+            // The cookie can be an accounts key, an account id, or "personal"
+            // while accounts are keyed by id and "default". Require one match.
+            const ids = new Set(Object.entries(accounts).filter(([key, entry]) =>
+                key === workspace || entry?.account?.account_id === workspace
+                || (workspace === 'personal' && entry?.account?.structure === 'personal'))
+                .map(([, entry]) => entry?.account?.account_id).filter(Boolean));
+            const accountId = ids.size === 1 ? [...ids][0] : null;
             if (!accountId) throw new Error('Selected ChatGPT workspace could not be resolved; reload ChatGPT and retry');
             window.__reclaimAccount = {workspace, accountId};
         }
@@ -269,6 +276,8 @@ def _node_to_turn(node: dict) -> tuple[Turn | None, list[str]]:
         return None, []
     meta = msg.get('metadata') or {}
     if meta.get('is_visually_hidden_from_conversation') or meta.get('is_thinking_preamble_message'):
+        return None, []
+    if _is_tool_call(msg):
         return None, []
     role = (msg.get('author') or {}).get('role', '')
     if role not in ('user', 'assistant'):
