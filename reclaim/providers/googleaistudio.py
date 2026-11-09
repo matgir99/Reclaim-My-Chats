@@ -20,7 +20,7 @@ from html.parser import HTMLParser
 from types import SimpleNamespace
 from urllib.parse import urlsplit
 
-from ..core import browser, engine
+from ..core import browser, engine, retry
 from ..core.events import EventSink
 from ..core.model import Attachment, Chat, Turn
 
@@ -59,7 +59,8 @@ window.__msRpc = async function(rpcName, payload) {
         headers, body: JSON.stringify(payload),
     });
     const text = await resp.text();
-    return {status: resp.status, len: text.length, text};
+    return {status: resp.status, len: text.length, text,
+            retryAfter: resp.headers.get('retry-after')};
 };
 'ready'
 """
@@ -85,21 +86,13 @@ def init_replay(page):
 
 
 def rpc_call(page, name: str, payload: list, retries: int = 3) -> tuple[int, str]:
-    last_err = None
-    for attempt in range(retries):
-        try:
-            r = page.evaluate("(a) => window.__msRpc(a.n, a.p)",
-                              {'n': name, 'p': payload})
-            if r['status'] == 200:
-                return r['status'], r['text']
-            if r['status'] in (401, 403) and attempt < retries - 1:
-                time.sleep(2)
-                continue
-            return r['status'], r['text']
-        except Exception as e:
-            last_err = e
-            time.sleep(2 + attempt * 2)
-    raise RuntimeError(f'RPC {name} failed after {retries} attempts: {last_err}')
+    # The page captures its API key from the app's own first requests, so a
+    # 401/403 right after loading is retried once after a short pause.
+    response = retry.send(lambda: page.evaluate("(a) => window.__msRpc(a.n, a.p)",
+                                                {'n': name, 'p': payload}),
+                          what=f'AI Studio RPC {name}', retries=retries,
+                          return_errors=True, auth_retries=1)
+    return response['status'], response['text']
 
 
 # ---------------------------------------------------------------------------
@@ -537,7 +530,7 @@ class GoogleAIStudio(engine.Provider):
     name = PROVIDER
     folder = 'Google AI Studio'
     description = 'Save Google AI Studio chats to the database (update by default).'
-    pace = 0
+    pace = 0.0
 
     def open(self, page):
         ensure_logged_in(page)

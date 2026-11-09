@@ -28,7 +28,7 @@ import re
 import time
 from types import SimpleNamespace
 
-from ..core import browser, engine
+from ..core import browser, engine, retry
 from ..core.events import EventSink
 from ..core.model import Chat, Turn
 
@@ -48,27 +48,16 @@ _FETCH_JS = """async (args) => {
         credentials: 'include',
     });
     const text = await resp.text();
-    return {status: resp.status, text};
+    return {status: resp.status, text, retryAfter: resp.headers.get('retry-after')};
 }"""
 
 
 def _api(page, token: str, path: str, body: dict, retries: int = 3) -> dict:
-    last = None
-    for attempt in range(retries):
-        try:
-            r = page.evaluate(_FETCH_JS, {'url': f'{API}/{path}',
-                                          'token': token, 'body': body})
-            if r['status'] == 200:
-                return json.loads(r['text'])
-            if r['status'] in (401, 403):
-                raise RuntimeError(f'auth failed ({r["status"]}) — token expired?')
-            last = f'HTTP {r["status"]}: {r["text"][:120]}'
-        except RuntimeError:
-            raise
-        except Exception as e:
-            last = e
-        time.sleep(1.5 + attempt)
-    raise RuntimeError(f'{path} failed: {last}')
+    """Page-side POST with the shared retry policy (see core/retry.py)."""
+    response = retry.send(lambda: page.evaluate(_FETCH_JS, {'url': f'{API}/{path}',
+                                                            'token': token, 'body': body}),
+                          what=f'Kimi {path}', retries=retries)
+    return json.loads(response['text'])
 
 
 def get_token(page) -> str:

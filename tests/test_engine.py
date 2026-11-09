@@ -21,7 +21,7 @@ class FakeProvider(engine.Provider):
     name = 'fake'
     folder = 'Fake'
     description = 'A provider for tests.'
-    pace = 0
+    pace = 0.0
 
     def __init__(self, chats: dict[str, tuple[str, str]], failing=()):
         self.chats = chats          # id -> (title, updated_at)

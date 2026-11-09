@@ -21,7 +21,7 @@ import re
 import time
 from types import SimpleNamespace
 
-from ..core import browser, engine
+from ..core import browser, engine, retry
 from ..core.events import EventSink
 from ..core.batchexecute import build_f_req, decode_response, error_message
 from ..core.model import Chat, Turn
@@ -48,7 +48,7 @@ RPC_JS = """window.__ggRpc = async function(a) {
         body: form.toString(),
     });
     const text = await resp.text();
-    return {status: resp.status, text};
+    return {status: resp.status, text, retryAfter: resp.headers.get('retry-after')};
 }; 'ready'"""
 
 
@@ -105,39 +105,23 @@ def rpc_call(page, tokens: dict, rpcid: str, payload, reqid: int,
              retries: int = 3) -> tuple[int, str]:
     """One batchexecute call. Retries 1013 (transient); raises on
     quota/rate-limit codes and HTTP auth failures."""
-    last_err = None
+    request = {'url': BATCH_URL, 'rpcid': rpcid, 'payload': payload,
+               'freq': build_f_req(rpcid, payload), 'at': tokens.get('SNlM0e', ''),
+               'bl': tokens.get('cfb2h', ''), 'sid': tokens.get('FdrFJe', ''), 'reqid': reqid}
     for attempt in range(retries):
+        response = retry.send(lambda: page.evaluate("(a) => window.__ggRpc(a)", request),
+                              what=f'Gemini RPC {rpcid}', retries=retries)
         try:
-            r = page.evaluate(
-                "(a) => window.__ggRpc(a)",
-                {'url': BATCH_URL, 'rpcid': rpcid,
-                 'payload': payload,
-                 'freq': build_f_req(rpcid, payload),
-                 'at': tokens.get('SNlM0e', ''),
-                 'bl': tokens.get('cfb2h', ''),
-                 'sid': tokens.get('FdrFJe', ''),
-                 'reqid': reqid})
-            if r['status'] != 200:
-                if r['status'] in (401, 403):
-                    raise RuntimeError(f'auth failed ({r["status"]}) — '
-                                       'session expired?')
-                last_err = f'HTTP {r["status"]}: {r["text"][:120]}'
-                time.sleep(2 + attempt * 2)
-                continue
-            decoded = decode_response(r['text'], rpcid)
-            err = error_message(decoded)
-            if err is None:
-                return 200, r['text']
-            if '1013' in err and attempt < retries - 1:
-                time.sleep(2 + attempt * 2)
-                continue
-            raise RuntimeError(f'RPC {rpcid} error: {err}')
-        except RuntimeError:
-            raise
-        except Exception as e:
-            last_err = e
+            err = error_message(decode_response(response['text'], rpcid))
+        except Exception as exc:
+            raise RuntimeError(f'Gemini RPC {rpcid}: unexpected response ({exc})') from exc
+        if err is None:
+            return 200, response['text']
+        if '1013' in err and attempt < retries - 1:  # batchexecute's "try again"
             time.sleep(2 + attempt * 2)
-    raise RuntimeError(f'RPC {rpcid} failed after {retries} attempts: {last_err}')
+            continue
+        raise RuntimeError(f'RPC {rpcid} error: {err}')
+    raise RuntimeError(f'Gemini RPC {rpcid} failed after {retries} attempts')
 
 
 # ---------------------------------------------------------------------------

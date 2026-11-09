@@ -20,7 +20,7 @@ import time
 from types import SimpleNamespace
 from urllib.parse import urlencode
 
-from ..core import browser, engine
+from ..core import browser, engine, retry
 from ..core.events import EventSink
 from ..core.model import Attachment, Chat, Turn
 
@@ -47,7 +47,8 @@ _GET_JS = """async (args) => {
         headers: {'accept': 'application/json', 'authorization': 'Bearer ' + token},
         signal: AbortSignal.timeout(60000),
     });
-    return {status: response.status, text: await response.text()};
+    return {status: response.status, text: await response.text(),
+            retryAfter: response.headers.get('retry-after')};
 }"""
 
 
@@ -72,26 +73,19 @@ def _api_get(page, path: str, params: dict | None = None) -> dict:
     url = BASE_URL + 'api/v0/' + path
     if params:
         url += '?' + urlencode(params)
-    for attempt in range(3):
-        response = page.evaluate(_GET_JS, {'url': url})
-        status = response['status']
-        if status in (429, 500, 502, 503, 504) and attempt < 2:
-            time.sleep(2 + attempt * 3)
-            continue
-        if status != 200:
-            raise RuntimeError(f'DeepSeek history API HTTP {status}; check your login and retry')
-        try:
-            envelope = json.loads(response['text'])
-            data = envelope['data']
-            if envelope.get('code') != 0 or data.get('biz_code') != 0:
-                raise RuntimeError('DeepSeek history API rejected the request; check your login and retry')
-            result = data['biz_data']
-        except (ValueError, KeyError, TypeError, AttributeError) as exc:
-            raise RuntimeError('unexpected DeepSeek history API response') from exc
-        if not isinstance(result, dict):
-            raise RuntimeError('unexpected DeepSeek history API payload')
-        return result
-    raise RuntimeError('DeepSeek history API retries exhausted')
+    response = retry.send(lambda: page.evaluate(_GET_JS, {'url': url}),
+                          what='DeepSeek history API')
+    try:
+        envelope = json.loads(response['text'])
+        data = envelope['data']
+        if envelope.get('code') != 0 or data.get('biz_code') != 0:
+            raise RuntimeError('DeepSeek history API rejected the request; check your login and retry')
+        result = data['biz_data']
+    except (ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise RuntimeError('unexpected DeepSeek history API response') from exc
+    if not isinstance(result, dict):
+        raise RuntimeError('unexpected DeepSeek history API payload')
+    return result
 
 
 def list_chats(page) -> list[dict]:
@@ -303,7 +297,7 @@ class DeepSeek(engine.Provider):
     name = PROVIDER
     folder = 'Deepseek Chat'
     description = 'Save DeepSeek chats to the database (update by default).'
-    pace = 0
+    pace = 0.0
 
     def open(self, page):
         ensure_logged_in(page)

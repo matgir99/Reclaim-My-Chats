@@ -25,7 +25,7 @@ import time
 from types import SimpleNamespace
 from urllib.parse import urlencode, urlsplit
 
-from ..core import browser, engine
+from ..core import browser, engine, retry
 from ..core.events import EventSink
 from ..core.model import Attachment, Chat, Turn
 
@@ -39,32 +39,18 @@ _GET_JS = """async (args) => {
         credentials: 'include',
     });
     const text = await resp.text();
-    return {status: resp.status, text};
+    return {status: resp.status, text, retryAfter: resp.headers.get('retry-after')};
 }"""
 
 
 def _get(page, url: str, retries: int = 3) -> dict:
-    """Page-side GET (cookies attach automatically); returns parsed JSON."""
-    last = None
-    for attempt in range(retries):
-        try:
-            r = page.evaluate(_GET_JS, {'url': url})
-            if r['status'] == 200:
-                return json.loads(r['text'])
-            if r['status'] == 404:
-                raise RuntimeError('HTTP 404 — chat deleted?')
-            if r['status'] in (401, 403):
-                raise RuntimeError(f'auth failed ({r["status"]}) — session expired?')
-            if r['status'] == 429:
-                time.sleep(5 + attempt * 5)
-                continue
-            last = f'HTTP {r["status"]}: {r["text"][:120]}'
-        except RuntimeError:
-            raise
-        except Exception as e:
-            last = e
-        time.sleep(2 + attempt * 2)
-    raise RuntimeError(f'GET {url[:80]} failed: {last}')
+    """Page-side GET (cookies attach automatically) with the shared retry
+    policy (see core/retry.py); returns parsed JSON."""
+    response = retry.send(lambda: page.evaluate(_GET_JS, {'url': url}),
+                          what=f'Claude GET {url[:80]}', retries=retries, give_back=(404,))
+    if response['status'] == 404:
+        raise RuntimeError('HTTP 404 — chat deleted?')
+    return json.loads(response['text'])
 
 
 def _cookies(page) -> dict:

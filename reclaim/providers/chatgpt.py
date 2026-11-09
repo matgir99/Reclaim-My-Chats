@@ -24,7 +24,7 @@ import time
 from types import SimpleNamespace
 from urllib.parse import urlencode
 
-from ..core import browser, engine
+from ..core import browser, engine, retry
 from ..core.events import EventSink
 from ..core.model import Attachment, Chat, Turn
 from .chatgpt_import import (_SKIP_CONTENT_TYPES, _IMG_EXT, _content_parts, _is_tool_call,
@@ -69,46 +69,15 @@ _GET_JS = """async (args) => {
     return {status: resp.status, text, retryAfter: resp.headers.get('retry-after')};
 }"""
 
-# Waits after successive HTTP 429 responses without a usable Retry-After.
-RATE_LIMIT_WAITS = (15, 30, 60, 120)
-MAX_RATE_LIMIT_WAIT = 300
-
-
-def _rate_limit_wait(retry_after, index: int) -> float:
-    try:
-        seconds = float(retry_after)
-    except (TypeError, ValueError):
-        return RATE_LIMIT_WAITS[index]
-    return min(max(seconds, 1.0), MAX_RATE_LIMIT_WAIT)
+# Kept for tests and callers that read the rate-limit schedule here.
+RATE_LIMIT_WAITS = retry.RATE_LIMIT_WAITS
 
 
 def _get(page, token: str, url: str, retries: int = 3) -> dict:
-    """GET with retries. Rate limiting (HTTP 429) waits separately and longer,
-    honoring Retry-After, so a busy period does not exhaust ordinary retries."""
-    last = None
-    attempt = limited = 0
-    while attempt < retries:
-        try:
-            r = page.evaluate(_GET_JS, {'url': url, 'token': token})
-            if r['status'] == 200:
-                return json.loads(r['text'])
-            if r['status'] in (401, 403):
-                raise RuntimeError(f'auth failed ({r["status"]}) — session expired?')
-            if r['status'] == 429:
-                last = 'HTTP 429: rate limited by ChatGPT; retry later'
-                if limited == len(RATE_LIMIT_WAITS):
-                    break
-                time.sleep(_rate_limit_wait(r.get('retryAfter'), limited))
-                limited += 1
-                continue
-            last = f'HTTP {r["status"]}: {r["text"][:120]}'
-        except RuntimeError:
-            raise
-        except Exception as e:
-            last = e
-        attempt += 1
-        time.sleep(2 + attempt * 2)
-    raise RuntimeError(f'GET {url[:80]} failed: {last}')
+    """Page-side GET with the shared retry policy (see core/retry.py)."""
+    response = retry.send(lambda: page.evaluate(_GET_JS, {'url': url, 'token': token}),
+                          what=f'ChatGPT GET {url[:80]}', retries=retries)
+    return json.loads(response['text'])
 
 
 def get_session_token(page) -> str:
