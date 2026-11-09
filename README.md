@@ -190,7 +190,8 @@ Use [private reporting](SECURITY.md) for security problems. This is a hobby
 project with no guaranteed response time.
 
 ```bash
-python -m pip install -e '.[gui-test]' build ruff pyright
+uv sync --extra gui-test      # the versions pinned in uv.lock, plus build, ruff, pyright
+# or: python -m pip install -e '.[gui-test]' build ruff pyright   (newest versions)
 python -m unittest discover -s tests -q
 ruff check reclaim tests scripts flet_integration
 pyright reclaim tests scripts flet_integration
@@ -198,6 +199,10 @@ python -m build
 flet test linux flet_integration --tests-dir tests --yes
 python scripts/pack_desktop.py --version 0.0.0
 ```
+
+`uv.lock` pins every dependency that CI and the release builds install.
+After changing dependencies in `pyproject.toml`, run `uv lock` and commit
+both files; Dependabot keeps the lock up to date monthly.
 
 The Flet device tests require the Flutter Linux build prerequisites listed in
 [Flet's Linux guide](https://flet.dev/docs/publish/linux/). `flet pack` uses

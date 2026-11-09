@@ -98,10 +98,10 @@ caught before users see them.
       and `reclaim doctor --live`.
 - [x] Release checklist: the live check runs before merging into `main`
       ([releasing](RELEASING.md)).
-- [ ] CI on Python 3.12 and 3.14, a lock file for builds, ruff's bugbear
-      and pyupgrade rules, and a weekly workflow that reports new commits
-      in the reference projects listed in the
-      [provider review](UPSTREAM_REVIEW.md).
+- [x] CI on Python 3.12 and 3.14, a lock file for builds (`uv.lock`,
+      installed with hash checks), ruff's bugbear and pyupgrade rules, and
+      a weekly workflow that reports new commits in the reference projects
+      listed in the [provider review](UPSTREAM_REVIEW.md).
 
 ## Phase 3. A clearer app
 
