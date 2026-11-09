@@ -24,10 +24,9 @@ from urllib.parse import urlencode
 
 from ..core import browser, config
 from ..core.events import EventSink, emit
-from ..core.manifest import SyncState, print_dry_run, write_manifest
+from ..core.manifest import SyncState, print_dry_run, save_chat, write_manifest
 from ..core.model import Attachment, Chat, Turn
 from ..core.progress import progress
-from ..core.writer import write_chat, write_raw
 
 BASE_URL = 'https://chat.deepseek.com/'
 PROVIDER = 'deepseek'
@@ -341,13 +340,8 @@ def run(page, records: list[dict], out_dir: Path,
                 if not chat.visible_turns():
                     raise RuntimeError('DeepSeek returned no readable messages; refusing to save an empty chat')
             n_files = materialize_attachments(page, chat)
-            stats = write_chat(chat, out_dir)
-            if save_raw:
-                try:
-                    write_raw(stats['dir'], rec)
-                except Exception:
-                    pass
-            sync.mark(chat.id, updated_map.get(chat.id), str(stats['md']))
+            stats = save_chat(chat, out_dir, sync, chat.id, updated_map.get(chat.id),
+                              rec if save_raw else None, sink=sink, provider=PROVIDER)
             results.append({'id': chat.id, 'title': chat.title, 'ok': True,
                             'duration_s': round(time.time() - t0, 1),
                             **{k: stats[k] for k in ('turns', 'chars', 'images', 'docs')}})

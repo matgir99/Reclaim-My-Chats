@@ -1,4 +1,4 @@
-"""`reclaim status` — offline archive overview.
+"""`reclaim status` — offline database overview.
 
 Reads only local files: each provider directory's latest run manifest
 (.reclaim_manifest.json) and sync state (.last_sync_<provider>.json).
@@ -12,20 +12,12 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import database
 from .config import archive_root
 from .manifest import SyncState
 
-REPO_ROOT = archive_root()
-
 # (provider name, output dir name) in display order
-PROVIDER_DIRS = [
-    ('googleaistudio', 'Google AI Studio'),
-    ('deepseek', 'Deepseek Chat'),
-    ('kimi', 'Kimi Chat'),
-    ('chatgpt', 'ChatGPT'),
-    ('claude', 'Claude'),
-    ('googlegemini', 'Google Gemini'),
-]
+PROVIDER_DIRS = list(database.PROVIDER_DIRS.items())
 
 
 @dataclass
@@ -167,10 +159,14 @@ def format_status(info: ProviderStatus) -> str:
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog='reclaim status')
-    ap.add_argument('-o', '--output-dir', default=str(REPO_ROOT),
-                    help='Scan root (default: repo/chats)')
+    ap.add_argument('-o', '--output-dir', default=None,
+                    help='database folder (default: the configured one)')
     args = ap.parse_args(argv)
-    root = Path(args.output_dir)
+    root = Path(args.output_dir) if args.output_dir else archive_root()
+    state = database.inspect(root)
+    if state.kind in ('missing', 'file', 'foreign'):
+        print(f'error: {state.message()}')
+        return 2
     print(f'ReclaimMyChats database status — scan root: {root}\n')
     for info in scan(root):
         print(format_status(info))

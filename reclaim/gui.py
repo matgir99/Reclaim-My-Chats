@@ -17,7 +17,7 @@ else:
     except ImportError:  # The CLI intentionally has no GUI dependency.
         ft = None
 
-from .core import config, status
+from .core import config, database, locks, logs, status
 from .core.events import EventSink, ProgressEvent
 from .core.service import ALL_PROVIDERS, ArchiveController, BusyOperationError, RunSummary
 
@@ -79,7 +79,14 @@ class ReclaimWindow:
         self.page = page
         self.root = Path(root) if root is not None else config.default_root()
         self.controller = controller or ArchiveController(self.root)
-        self.enabled = configured_providers(self.root)
+        self.settings_error: config.SettingsError | None = None
+        try:
+            self.enabled = configured_providers(self.root)
+        except config.SettingsError as exc:
+            self.settings_error = exc
+            self.enabled = []
+        self.blocked = False  # a settings or database problem stops runs
+        self._warnings = 0
         self._running = False
         self._log_lines: list[str] = []
         self._provider_index = 0
@@ -95,7 +102,7 @@ class ReclaimWindow:
         page.window.min_height = 550
         page.scroll = ft.ScrollMode.AUTO
 
-        self.archive_path = ft.Text(str(config.archive_root(self.root)),
+        self.archive_path = ft.Text(str(self._database_path() or ''),
                                     selectable=True, key='archive-path')
         self.archive_total = ft.Text('Loading database status', key='archive-total')
         self.current = ft.Text('Ready', key='current-operation')
@@ -130,6 +137,15 @@ class ReclaimWindow:
                                          key='rebuild')
         self.open_archive = ft.Button('Open database folder', on_click=self._open_archive,
                                       key='open-archive')
+        self.open_logs = ft.Button('Open log folder', on_click=self._open_logs,
+                                   key='open-logs')
+        self.notice_text = ft.Text('', selectable=True, key='notice-text',
+                                   color=ft.Colors.ON_ERROR_CONTAINER)
+        self.notice_actions = ft.Row([], wrap=True, key='notice-actions')
+        self.notice = ft.Container(
+            content=ft.Column([self.notice_text, self.notice_actions], spacing=10),
+            bgcolor=ft.Colors.ERROR_CONTAINER, padding=14, border_radius=8,
+            visible=False, key='notice')
         self.settings_button = ft.Button('Settings', on_click=self._settings,
                                          key='settings')
 
@@ -141,6 +157,7 @@ class ReclaimWindow:
                     self.settings_button,
                 ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, wrap=True),
                 ft.Text('Save and synchronize your AI conversations in a local database'),
+                self.notice,
                 ft.Divider(),
                 ft.Text('Providers', size=20, weight=ft.FontWeight.BOLD),
                 *rows,
@@ -155,21 +172,41 @@ class ReclaimWindow:
                 ft.Text('Database', size=20, weight=ft.FontWeight.BOLD),
                 self.archive_total,
                 self.archive_path,
-                self.open_archive,
+                ft.Row([self.open_archive, self.open_logs], wrap=True),
                 ft.ExpansionTile(title='Details', controls=[self.log],
                                  key='details'),
             ], spacing=12),
         ))
         self._selection_changed()
 
+    def _database_path(self) -> Path | None:
+        """The database folder, or None while the settings file is invalid."""
+        try:
+            return config.archive_root(self.root)
+        except config.SettingsError as exc:
+            self.settings_error = exc
+            return None
+
     async def refresh_archive(self) -> None:
-        archive = config.archive_root(self.root)
+        """Re-read settings and database state, then the saved chat counts."""
+        archive = self._database_path()
+        if archive is None or self.settings_error is not None:
+            assert self.settings_error is not None
+            self._show_settings_problem(self.settings_error)
+            self.page.update()
+            return
         self.archive_path.value = str(archive)
         try:
+            state = await asyncio.to_thread(database.inspect, archive)
             infos = await asyncio.to_thread(status.scan, archive)
         except Exception as exc:
             self._error(f'Could not read database status: {exc}')
             return
+        first_use = state.kind in ('missing', 'empty') and config.uses_default_database(self.root)
+        if state.usable or first_use:
+            self._hide_notice()
+        else:
+            self._show_database_problem(state)
         self.archive_total.value = f'{sum(i.chats for i in infos):,} chats in the database'
         for info in infos:
             if info.provider in self.enabled:
@@ -178,17 +215,125 @@ class ReclaimWindow:
                 self.provider_status[info.provider].value = 'Disabled in settings'
         self.page.update()
 
+    # Problems that stop runs, shown in the banner under the title
+
+    def _show_notice(self, text: str, actions: list) -> None:
+        self.blocked = True
+        self.notice_text.value = text
+        self.notice_actions.controls = actions
+        self.notice.visible = True
+        self._selection_changed()
+
+    def _hide_notice(self) -> None:
+        self.blocked = False
+        self.notice.visible = False
+        self.notice_actions.controls = []
+        self._selection_changed()
+
+    def _show_settings_problem(self, exc: config.SettingsError) -> None:
+        self._show_notice(str(exc), [
+            ft.Button('Open settings folder', key='notice-open-settings',
+                      on_click=lambda _: self._open(exc.path.parent)),
+            ft.FilledButton('Reset settings', key='notice-reset-settings',
+                            on_click=self._reset_settings),
+        ])
+
+    def _show_database_problem(self, state: database.DatabaseState) -> None:
+        actions = []
+        if state.kind == 'missing':
+            actions.append(ft.FilledButton('Retry', key='notice-retry',
+                                           on_click=self._retry))
+        if state.kind in ('missing', 'empty', 'foreign', 'file'):
+            actions.append(ft.Button('Choose folder', key='notice-choose-folder',
+                                     on_click=self._settings))
+        if state.kind in ('missing', 'empty'):
+            actions.append(ft.Button('Create database here', key='notice-create-database',
+                                     on_click=lambda _: self._confirm_create(state.path)))
+        self._show_notice(state.message(), actions)
+
+    async def _retry(self, _=None) -> None:
+        await self.refresh_archive()
+
+    async def _reset_settings(self, _=None) -> None:
+        try:
+            backup = config.reset(self.root)
+        except OSError as exc:
+            self._error(f'Could not reset the settings: {exc}')
+            return
+        self.settings_error = None
+        self._reload_providers()
+        await self.refresh_archive()
+        if backup is not None:
+            self.summary.value = (f'Settings reset to the defaults. The old file was kept as '
+                                  f'{backup.name}.')
+            self.page.update()
+
+    def _reload_providers(self) -> None:
+        try:
+            self.enabled = configured_providers(self.root)
+        except config.SettingsError as exc:
+            self.settings_error = exc
+            self.enabled = []
+        for name in ALL_PROVIDERS:
+            self.checks[name].disabled = name not in self.enabled
+            self.checks[name].value = name in self.enabled
+        self._selection_changed()
+
+    def _confirm_create(self, path: Path, then=None) -> None:
+        """Ask before creating a database, then run `then` (async) if given."""
+        async def create(_=None) -> None:
+            self.page.pop_dialog()
+            try:
+                await asyncio.to_thread(database.init, path)
+            except (database.DatabaseError, OSError) as exc:
+                self._error(str(exc))
+                return
+            if then is not None:
+                await then()
+            await self.refresh_archive()
+
+        self.page.show_dialog(ft.AlertDialog(
+            modal=True,
+            title='Create a new database?',
+            content=ft.Text(f'This creates an empty Reclaim My Chats database in {path}. '
+                            'If your existing database is on a drive or in a synced folder '
+                            'that is not connected, cancel, connect it, and press Retry.'),
+            actions=[ft.OutlinedButton('Cancel', on_click=lambda _: self.page.pop_dialog(),
+                                       key='cancel-create-database'),
+                     ft.FilledButton('Create database', on_click=create,
+                                     key='confirm-create-database')]))
+
+    def _lock_dialog(self, exc: locks.LockedError) -> None:
+        def remove(_=None) -> None:
+            self.page.pop_dialog()
+            try:
+                locks.remove(exc.path)
+            except OSError as error:
+                self._error(f'Could not remove the lock: {error}')
+                return
+            self.summary.value = 'Lock removed. Start the update again.'
+            self.page.update()
+
+        actions: list[ft.Control] = [
+            ft.OutlinedButton('Close', on_click=lambda _: self.page.pop_dialog(), key='close-lock')]
+        if exc.removable:
+            actions.append(ft.FilledButton('Remove lock', on_click=remove, key='remove-lock'))
+        self.page.show_dialog(ft.AlertDialog(modal=True, title='Another run is using it',
+                                             content=ft.Text(str(exc)), actions=actions))
+
     def _selected(self) -> list[str]:
         return [name for name in ALL_PROVIDERS
                 if name in self.enabled and self.checks[name].value]
 
     def _selection_changed(self, _=None) -> None:
         selected = bool(self._selected())
-        self.update_selected.disabled = self._running or not selected
-        self.dry_run.disabled = self._running or not selected
-        self.rebuild.disabled = self._running or not selected
-        self.update_all.disabled = self._running or not self.enabled
-        self.settings_button.disabled = self._running
+        busy = self._running or self.blocked
+        self.update_selected.disabled = busy or not selected
+        self.dry_run.disabled = busy or not selected
+        self.rebuild.disabled = busy or not selected
+        self.update_all.disabled = busy or not self.enabled
+        # Settings cannot be edited while the settings file itself is broken.
+        self.settings_button.disabled = self._running or self.settings_error is not None
         self.page.update()
 
     def _set_running(self, running: bool) -> None:
@@ -231,6 +376,9 @@ class ReclaimWindow:
             elif not str(self.provider_status[event.provider].value).startswith('Error:'):
                 self.provider_status[event.provider].value = f'Failed ({event.message})'
             self._append_log(f'{name}: {event.message}')
+        elif event.kind == 'warning':
+            self._warnings += 1
+            self._append_log(f'{name}: warning: {event.title} — {event.message}')
         elif event.kind == 'run_completed':
             self.progress.value = 1
             self._append_log(f'Run completed: {event.message}')
@@ -243,8 +391,12 @@ class ReclaimWindow:
         if self._running or self.controller.busy:
             self._error('Another operation is already running.')
             return
+        if self.blocked:
+            self._error('Fix the problem shown at the top of the window first.')
+            return
         self._set_running(True)
         self.summary.value = ''
+        self._warnings = 0
         self._log_lines.clear()
         self.log.value = ''
         self._provider_count = len(providers)
@@ -274,9 +426,22 @@ class ReclaimWindow:
             state = ('completed successfully' if result.exit_code == 0
                      else 'completed with errors')
             self.summary.value = f'{action} {state} · {labels}'
+            if self._warnings:
+                self.summary.value += (f' · {self._warnings} warning'
+                                       f'{"s" if self._warnings != 1 else ""} (see Details)')
             self.current.value = 'Ready'
         except BusyOperationError as exc:
             self._error(str(exc))
+        except locks.LockedError as exc:
+            self.current.value = 'Ready'
+            self._lock_dialog(exc)
+        except database.DatabaseError as exc:
+            self.current.value = 'Ready'
+            self._show_database_problem(database.inspect(exc.path))
+        except config.SettingsError as exc:
+            self.current.value = 'Ready'
+            self.settings_error = exc
+            self._show_settings_problem(exc)
         except Exception as exc:
             self.summary.value = f'Failed: {exc}'
             self._append_log(f'Run failed: {exc}')
@@ -313,20 +478,40 @@ class ReclaimWindow:
         )
         self.page.show_dialog(dialog)
 
-    def _open_archive(self, _=None) -> None:
+    def _open(self, path: Path) -> None:
         try:
-            open_directory(config.archive_root(self.root))
+            open_directory(path)
         except Exception as exc:
             self._error(str(exc))
 
+    def _open_archive(self, _=None) -> None:
+        path = self._database_path()
+        if path is not None:
+            self._open(path)
+
+    def _open_logs(self, _=None) -> None:
+        folder = logs.log_dir(self.root)
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            self._error(f'Could not open the log folder: {exc}')
+            return
+        self._open(folder)
+
     def _settings(self, _=None) -> None:
-        raw = config.load(self.root)
+        try:
+            raw = config.load(self.root)
+        except config.SettingsError as exc:
+            self.settings_error = exc
+            self._show_settings_problem(exc)
+            return
         enabled_checks = {name: ft.Checkbox(label=DISPLAY_NAMES[name],
                                              value=name in self.enabled,
                                              key=f'settings-{name}')
                           for name in ALL_PROVIDERS}
         archive_field = ft.TextField(label='Database folder',
-                                     value=str(config.archive_root(self.root)),
+                                     value=str(self._database_path()
+                                               or config.default_archive(self.root)),
                                      key='settings-archive', expand=True)
         profile_field = ft.TextField(
             label='Existing browser profile (optional)',
@@ -360,19 +545,30 @@ class ReclaimWindow:
             if not enabled or not archive:
                 self._error('Choose at least one provider and a database folder.')
                 return
-            try:
-                config.save(self.root, providers=enabled, archive=archive,
-                            profile=profile_field.value.strip())
-            except (OSError, ValueError) as exc:
-                self._error(str(exc))
+            target = config.resolve_folder(self.root, archive)
+            # The default location stays "default", so it may be created on first use.
+            choice = None if target == config.default_archive(self.root) else archive
+            state = await asyncio.to_thread(database.inspect, target)
+            if state.kind in ('foreign', 'newer', 'file'):
+                self._error(state.message())
                 return
-            self.enabled = enabled
-            for name in ALL_PROVIDERS:
-                self.checks[name].disabled = name not in enabled
-                self.checks[name].value = name in enabled
+
+            async def commit() -> None:
+                try:
+                    config.save(self.root, providers=enabled, archive=choice,
+                                profile=profile_field.value.strip())
+                except (OSError, ValueError) as exc:
+                    self._error(str(exc))
+                    return
+                self.settings_error = None
+                self._reload_providers()
+                await self.refresh_archive()
+
             self.page.pop_dialog()
-            self._selection_changed()
-            await self.refresh_archive()
+            if state.kind in ('missing', 'empty') and choice is not None:
+                self._confirm_create(target, then=commit)
+                return
+            await commit()
 
         dialog = ft.AlertDialog(
             modal=True,

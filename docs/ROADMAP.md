@@ -42,34 +42,34 @@ command line offers (**CLI**) where the task is visible to users.
 Goal: no interruption, crash, settings mistake or missing folder can lose
 progress records or silently start a new, empty database.
 
-- [ ] Save sync records after every chat, and write every file atomically
+- [x] Save sync records after every chat, and write every file atomically
       (a temporary file, then a rename). An interrupted run keeps the
       records of every chat it saved, which also makes a Stop button safe.
-- [ ] Validate the settings file at start. An invalid file stops with a
+- [x] Validate the settings file at start. An invalid file stops with a
       clear message instead of falling back to defaults. **Window:** a
       banner with *Open settings folder* and *Reset settings*. **CLI:** the
       message and exit code 2.
-- [ ] Mark each database with `.reclaim-database.json`, which records its
+- [x] Mark each database with `.reclaim-database.json`, which records its
       format version. A missing database folder is never created on the
       fly, except the default location on first use. Existing databases
       are recognised and marked automatically. **Window:** a banner with
       *Retry*, *Choose folder* and *Create database here*; choosing an
       empty folder in Settings creates the database. **CLI:** `reclaim
       init`.
-- [ ] Lock files in the database and the login data folder, naming the
+- [x] Lock files in the database and the login data folder, naming the
       computer and process. A lock left by a process that no longer runs
       on this computer is cleared automatically. **Window:** a dialog that
       names the holder and offers *Remove lock*. **CLI:** `reclaim
       unlock`.
-- [ ] Run every command through the shared controller, so these checks
+- [x] Run every command through the shared controller, so these checks
       apply however a run starts. (Moved forward from Phase 2.)
-- [ ] A rotating log file in the data folder that records every run,
+- [x] A rotating log file in the data folder that records every run,
       including provider output and errors. Failed `raw.json` writes are
       reported. **Window:** *Open log folder*.
-- [ ] Safe, unique folder and file names: no trailing dots or spaces and
+- [x] Safe, unique folder and file names: no trailing dots or spaces and
       no names Windows reserves (such as CON or AUX). Two different chats
       with the same title get separate folders instead of sharing one.
-- [ ] `chat.json` records the provider's timestamp, the save time, the
+- [x] `chat.json` records the provider's timestamp, the save time, the
       chat's state and a format version. Missing or damaged sync records
       are rebuilt from the chat files, keeping the damaged file as a
       backup. Chats saved earlier get their timestamps when the database
@@ -212,7 +212,7 @@ one at a time with synthetic tests of each response shape.
 - [ ] ChatGPT archived listing and deletion confirmation, then the other
       providers one at a time, including Claude, Kimi and Gemini grouping.
 - [ ] Moves into and out of `_Archived` and `_Deleted`, with the event
-      log; reserve both names in the writer.
+      log. (The writer already reserves both names.)
 - [ ] Check without writing, and merge of an approved subset.
 - [ ] Tidy: find chats saved in more than one folder and retire stale
       copies after a preview. Covers the duplicates created before

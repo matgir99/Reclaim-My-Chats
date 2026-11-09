@@ -32,10 +32,9 @@ from pathlib import Path
 
 from ..core import browser, config
 from ..core.events import EventSink, emit
-from ..core.manifest import SyncState, print_dry_run, write_manifest
+from ..core.manifest import SyncState, print_dry_run, save_chat, write_manifest
 from ..core.model import Chat, Turn
 from ..core.progress import progress
-from ..core.writer import write_chat, write_raw
 
 BASE_URL = os.environ.get('RECLAIM_KIMI_URL', '').strip().rstrip('/') or 'https://www.kimi.ai'
 API = f'{BASE_URL}/apiv2'
@@ -300,13 +299,9 @@ def run(page, token: str, chats: list[dict], out_dir: Path,
             if not chat.visible_turns():
                 raise RuntimeError('Kimi returned no readable messages; response shape may have changed')
             n_imgs = _materialize_images(page, chat, image_map)
-            stats = write_chat(chat, out_dir)
-            if save_raw:
-                try:
-                    write_raw(stats['dir'], {'meta': meta, 'messages': messages})
-                except Exception:
-                    pass
-            sync.mark(chat_id, updated, str(stats['md']))
+            stats = save_chat(chat, out_dir, sync, chat_id, updated,
+                              {'meta': meta, 'messages': messages} if save_raw else None,
+                              sink=sink, provider=PROVIDER)
             results.append({'id': chat_id, 'title': chat.title, 'ok': True,
                             'duration_s': round(time.time() - t0, 1),
                             **{k: stats[k] for k in ('turns', 'chars', 'images', 'docs')}})

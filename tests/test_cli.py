@@ -17,8 +17,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from reclaim.core import config, status
 from reclaim.core.manifest import (SyncState, plan_fetch, print_dry_run)
-from reclaim.core.model import Chat, Turn
-from reclaim.core.writer import write_chat
+from reclaim.core.model import Attachment, Chat, Turn
+from reclaim.core.writer import sanitize_filename, slugify, write_chat
 from reclaim.providers import (chatgpt, deepseek, googleaistudio, kimi)
 
 ALL_PROVIDERS = [googleaistudio, deepseek, kimi, chatgpt]
@@ -117,7 +117,7 @@ class TestWriterOverwrite(unittest.TestCase):
         d = self.tmp / 'Foo'
         d.mkdir(parents=True)
         (d / 'Foo.md').write_text('old')
-        (d / 'Foo_1.md').write_text('stale')
+        (d / 'Foo_1.md').write_text('# Foo\n\n**Source:** https://x\n\nstale copy of this chat')
         (d / 'chat.json').write_text(json.dumps({'id': 'x1', 'title': 'Foo'}))
         write_chat(Chat(id='x1', title='Foo', source_url='https://x',
                         turns=[Turn('user', 'fresh')], provider='test'),
@@ -125,18 +125,70 @@ class TestWriterOverwrite(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in d.glob('*.md')), ['Foo.md'])
         self.assertIn('fresh', (d / 'Foo.md').read_text())
 
-    def test_different_id_keeps_dedup(self):
-        write_chat(Chat(id='x1', title='Foo', source_url='https://x',
-                        turns=[Turn('user', 'one')], provider='test'),
-                   self.tmp)
-        write_chat(Chat(id='x2', title='Foo', source_url='https://x',
-                        turns=[Turn('user', 'two')], provider='test'),
-                   self.tmp)
-        d = self.tmp / 'Foo'
-        self.assertTrue((d / 'Foo.md').exists())
-        self.assertTrue((d / 'Foo_1.md').exists())
-        self.assertIn('one', (d / 'Foo.md').read_text())
-        self.assertIn('two', (d / 'Foo_1.md').read_text())
+    def test_different_chats_with_one_title_get_separate_folders(self):
+        # Older versions put both chats in one folder (Foo.md and Foo_1.md),
+        # and the second chat's chat.json replaced the first one's.
+        for cid, text in (('x1', 'one'), ('x2', 'two'), ('x1', 'one again')):
+            write_chat(Chat(id=cid, title='Foo', source_url=f'https://x/{cid}',
+                            turns=[Turn('user', text)], provider='test'), self.tmp)
+        first, second = self.tmp / 'Foo', self.tmp / 'Foo (2)'
+        self.assertEqual(json.loads((first / 'chat.json').read_text())['id'], 'x1')
+        self.assertEqual(json.loads((second / 'chat.json').read_text())['id'], 'x2')
+        self.assertEqual(sorted(p.name for p in first.glob('*.md')), ['Foo.md'])
+        self.assertIn('one again', (first / 'Foo.md').read_text())
+        self.assertEqual(sorted(p.name for p in second.glob('*.md')), ['Foo (2).md'])
+
+    def test_uploaded_markdown_and_reserved_names_are_kept(self):
+        chat = Chat(id='x1', title='Plan', source_url='https://x/1', provider='test', turns=[
+            Turn('user', 'files', attachments=[
+                Attachment('PLAN.md', data=b'# uploaded plan'),
+                Attachment('chat.json', data=b'{"uploaded": true}'),
+                Attachment('Plan.md', data=b'# same name as the chat'),
+                Attachment('notes.txt.', data=b'trailing dot'),
+                Attachment('CON.txt', data=b'reserved on Windows')])])
+        write_chat(chat, self.tmp)
+        d = self.tmp / 'Plan'
+        names = sorted(p.name for p in d.iterdir())
+        self.assertEqual(names, ['PLAN_1.md', 'Plan.md', 'Plan_2.md', '_CON.txt', 'chat.json',
+                                 'chat_1.json', 'notes.txt'])
+        self.assertEqual(json.loads((d / 'chat.json').read_text())['id'], 'x1')
+        # A re-download whose attachment fails must not delete the saved copy.
+        # Two failed re-downloads in a row: the saved copies stay.
+        chat.turns[0].attachments = [Attachment('PLAN.md', data=None, source_url='https://x/f')]
+        write_chat(chat, self.tmp)
+        write_chat(chat, self.tmp)
+        self.assertEqual((d / 'PLAN_1.md').read_bytes(), b'# uploaded plan')
+        self.assertEqual((d / 'Plan_2.md').read_bytes(), b'# same name as the chat')
+        self.assertTrue((d / 'notes.txt').exists())
+
+    def test_failed_download_keeps_its_name_so_a_namesake_cannot_overwrite_it(self):
+        chat = Chat(id='x1', title='Notes', source_url='https://x/1', provider='test', turns=[
+            Turn('user', 'two uploads', attachments=[Attachment('notes.txt', data=b'first'),
+                                                     Attachment('notes.txt', data=b'second')])])
+        d = write_chat(chat, self.tmp)['dir']
+        self.assertEqual(((d / 'notes.txt').read_bytes(), (d / 'notes_1.txt').read_bytes()),
+                         (b'first', b'second'))
+        chat.turns[0].attachments[0] = Attachment('notes.txt', data=None, source_url='https://x/f')
+        write_chat(chat, self.tmp)
+        self.assertEqual((d / 'notes.txt').read_bytes(), b'first')
+        self.assertEqual((d / 'notes_1.txt').read_bytes(), b'second')
+
+    def test_names_valid_on_every_system(self):
+        self.assertEqual(slugify('CON'), 'CON_')
+        self.assertEqual(slugify('_Archived'), '_Archived_')
+        self.assertEqual(slugify('Plan v2. '), 'Plan v2')
+        self.assertEqual(sanitize_filename('report.pdf. '), 'report.pdf')
+        self.assertEqual(sanitize_filename('aux.log'), '_aux.log')
+
+    def test_chat_json_records_provider_timestamp_and_format(self):
+        stats = write_chat(Chat(id='x1', title='Foo', source_url='https://x/1', provider='test',
+                                turns=[Turn('user', 'hi')]), self.tmp, updated_at='2026-11-09T10:00:00Z')
+        payload = json.loads((stats['dir'] / 'chat.json').read_text())
+        self.assertEqual(payload['format'], 1)
+        self.assertEqual(payload['provider_updated_at'], '2026-11-09T10:00:00Z')
+        self.assertEqual(payload['state'], 'active')
+        self.assertEqual(payload['markdown'], 'Foo.md')
+        self.assertRegex(payload['saved_at'], r'^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$')
 
 
 class TestMovedChats(unittest.TestCase):
@@ -272,10 +324,11 @@ class TestSyncState(unittest.TestCase):
         (self.tmp / '.reclaim.json').write_text(
             json.dumps({'archive': '/abs/archive'}), encoding='utf-8')
         self.assertEqual(config.archive_root(self.tmp), Path('/abs/archive'))
-        # invalid/missing key -> default
+        # a value that is not a path stops instead of silently using the default
         (self.tmp / '.reclaim.json').write_text(
             json.dumps({'archive': 42}), encoding='utf-8')
-        self.assertEqual(config.archive_root(self.tmp), self.tmp / 'chats')
+        with self.assertRaisesRegex(config.SettingsError, '"archive"'):
+            config.archive_root(self.tmp)
 
     def test_classify_and_is_unchanged(self):
         s = SyncState(self.tmp, 'kimi')
@@ -306,7 +359,7 @@ class TestDryRun(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_update_mode_counts(self):
-        s = SyncState(self.tmp, 'kimi')
+        s = SyncState(self.tmp, 'kimi', migrate=False)
         s.mark('a', 1, 'md')   # unchanged
         s.mark('b', 1, 'md')   # changed
         plan = plan_fetch(self.chats, self.updated_map, s, skip_unchanged=True)
@@ -318,7 +371,7 @@ class TestDryRun(unittest.TestCase):
         self.assertEqual(plan['titles'], ['Beta', 'Gamma', 'Delta'])
 
     def test_fresh_mode_fetches_all(self):
-        s = SyncState(self.tmp, 'kimi')
+        s = SyncState(self.tmp, 'kimi', migrate=False)
         s.mark('a', 1, 'md')
         s.mark('b', 1, 'md')
         s.mark('c', 3, 'md')
@@ -329,7 +382,7 @@ class TestDryRun(unittest.TestCase):
                          ['Alpha', 'Beta', 'Gamma', 'Delta'])
 
     def test_print_dry_run_default_counts_and_titles(self):
-        s = SyncState(self.tmp, 'kimi')
+        s = SyncState(self.tmp, 'kimi', migrate=False)
         s.mark('a', 1, 'md')   # unchanged
         s.mark('b', 1, 'md')   # changed
         buf = io.StringIO()
@@ -350,7 +403,7 @@ class TestDryRun(unittest.TestCase):
         self.assertEqual(list(self.tmp.iterdir()), [])
 
     def test_print_dry_run_default_nothing_to_fetch(self):
-        s = SyncState(self.tmp, 'kimi')
+        s = SyncState(self.tmp, 'kimi', migrate=False)
         for c in self.chats:
             s.mark(c['id'], c['updated_at'], 'md')
         buf = io.StringIO()
@@ -362,7 +415,7 @@ class TestDryRun(unittest.TestCase):
         self.assertIn('(nothing to fetch)', buf.getvalue())
 
     def test_print_dry_run_fresh(self):
-        s = SyncState(self.tmp, 'kimi')
+        s = SyncState(self.tmp, 'kimi', migrate=False)
         buf = io.StringIO()
         with redirect_stdout(buf):
             print_dry_run(self.chats, self.updated_map, s,
@@ -372,7 +425,7 @@ class TestDryRun(unittest.TestCase):
         self.assertIn('  - Alpha', out)
 
     def test_print_dry_run_log_full_lines(self):
-        s = SyncState(self.tmp, 'kimi')
+        s = SyncState(self.tmp, 'kimi', migrate=False)
         s.mark('a', 1, 'md')   # unchanged
         s.mark('b', 1, 'md')   # changed
         buf = io.StringIO()
@@ -535,12 +588,30 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(chosen, ['chatgpt'])
         self.assertEqual(unknown, ['gemini'])
 
-    def test_invalid_json_runs_everything(self):
+    def test_invalid_json_stops_instead_of_running_everything(self):
+        # Falling back to defaults would silently enable every provider and
+        # use the default database instead of the configured one.
         from reclaim.core import config
         self._write('{not json')
-        chosen, skipped, _ = config.selected_providers(self.root, self.ALL)
+        with self.assertRaisesRegex(config.SettingsError, 'not valid JSON .*line 1'):
+            config.selected_providers(self.root, self.ALL)
+        with self.assertRaises(config.SettingsError):
+            config.archive_root(self.root)
+        backup = config.reset(self.root)
+        assert backup is not None
+        self.assertEqual(backup.read_text(), '{not json')
+        chosen, _, _ = config.selected_providers(self.root, self.ALL)
         self.assertEqual(chosen, self.ALL)
-        self.assertEqual(skipped, [])
+
+    def test_invalid_values_and_newer_settings_stop(self):
+        from reclaim.core import config
+        for text, reason in (('{"providers": "chatgpt"}', 'providers'),
+                             ('{"profile": 7}', 'profile'),
+                             ('["chatgpt"]', 'JSON object'),
+                             ('{"version": 99}', 'newer version')):
+            self._write(text)
+            with self.assertRaisesRegex(config.SettingsError, reason):
+                config.load(self.root)
 
     def test_empty_list_runs_everything(self):
         from reclaim.core import config

@@ -24,10 +24,9 @@ from urllib.parse import urlsplit
 
 from ..core import browser, config
 from ..core.events import EventSink, emit
-from ..core.manifest import SyncState, print_dry_run, write_manifest
+from ..core.manifest import SyncState, print_dry_run, save_chat, write_manifest
 from ..core.model import Attachment, Chat, Turn
 from ..core.progress import progress
-from ..core.writer import write_chat, write_raw
 
 LIBRARY_URL = 'https://aistudio.google.com/library'
 PROVIDER = 'googleaistudio'
@@ -587,14 +586,14 @@ def run(page, chats: list[dict], out_dir: Path, skip_unchanged: bool = False,
             chat['title'] = parsed.get('title') or chat.get('title', '')
             canonical = entries_to_chat(parsed, chat['id'], chat['url'],
                                         drive=drive)
-            stats = write_chat(canonical, out_dir)
+            raw = None
             if save_raw and path == 'rpc':
                 try:
-                    write_raw(stats['dir'], json.loads(text))
-                except Exception as e:
-                    if log:
-                        print(f'      raw save error: {e}')
-            sync.mark(chat['id'], updated_map.get(chat['id']), str(stats['md']))
+                    raw = json.loads(text)
+                except ValueError as e:
+                    print(f'  warning: {label}: raw.json was not saved: {e}')
+            stats = save_chat(canonical, out_dir, sync, chat['id'], updated_map.get(chat['id']),
+                              raw, sink=sink, provider=PROVIDER)
             results.append({'id': chat['id'], 'title': chat['title'], 'ok': True,
                             'path': path, 'duration_s': round(time.time() - t0, 1),
                             **{k: stats[k] for k in ('turns', 'chars', 'images', 'docs')}})

@@ -24,6 +24,7 @@ import zipfile
 from pathlib import Path
 
 from ..core import config
+from ..core.service import offline_session
 from ..core.manifest import write_manifest
 from ..core.model import Attachment, Chat, Turn
 from ..core.writer import write_chat
@@ -138,12 +139,13 @@ def main(argv=None):
                     default=str(config.archive_root() / 'Google AI Studio'))
     args = ap.parse_args(argv)
     out_dir = Path(args.output_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
     titles = json.loads(Path(args.titles).read_text()) if args.titles else {}
 
     started = time.time()
-    results = run(Path(args.from_folder), out_dir, titles=titles)
-    manifest = write_manifest(out_dir, PROVIDER + '-offline', results, started)
+    with offline_session(out_dir.parent, 'parse googleaistudio'):
+        out_dir.mkdir(parents=True, exist_ok=True)
+        results = run(Path(args.from_folder), out_dir, titles=titles)
+        manifest = write_manifest(out_dir, PROVIDER + '-offline', results, started)
     ok = sum(1 for r in results if r.get('ok'))
     print(f"\nDone: {ok}/{len(results)} ok. Manifest: {manifest}")
     return 0 if ok == len(results) else 2

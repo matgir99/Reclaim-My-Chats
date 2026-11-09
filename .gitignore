@@ -9,8 +9,14 @@
 # Python build metadata
 *.egg-info/
 
-# User config (which providers `reclaim all` runs)
+# User config (which providers `reclaim all` runs) and backups of an
+# invalid settings file made by "Reset settings"
 .reclaim.json
+.reclaim.json.invalid-*
+# Run logs (logs/reclaim.log and its rotated copies reclaim.log.1 …)
+logs/
+# Test coverage data
+.coverage
 
 # Playwright browser profile (cookies, cache, sessions)
 .playwright-profile/
