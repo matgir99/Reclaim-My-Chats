@@ -3,11 +3,14 @@
 Every run, from the window or any command, passes the same checks before a
 browser opens: the settings are valid, the database folder is usable (see
 database.prepare), the login data folder and the database are locked
-against other runs, and everything printed goes to the log file.
+against other runs, and the run's events go to the log file as well as to
+the terminal or the window (see events.py and render.py). Anything else
+printed, such as a library's warning, is logged too.
 """
 
 from __future__ import annotations
 
+import sys
 import threading
 import traceback
 import time
@@ -17,7 +20,8 @@ from pathlib import Path
 
 from . import browser, config, database, locks, logs
 from .database import PROVIDER_DIRS
-from .events import EventSink, emit
+from .events import EventSink, emit, routed
+from .render import LogRenderer, TerminalRenderer, fanout
 from .manifest import write_attempt
 
 ALL_PROVIDERS = list(PROVIDER_DIRS)
@@ -60,12 +64,21 @@ def _may_create(root: Path, db: Path) -> bool:
 
 
 @contextmanager
+def _reporting(root: Path, label: str, sink: EventSink | None):
+    """The run's log file, with its events sent to `sink` and to the log."""
+    with logs.capture(root, label) as log, \
+            routed(fanout(sink, LogRenderer(log) if log is not None else None)) as route:
+        yield route
+
+
+@contextmanager
 def offline_session(db: Path, label: str, root: Path | None = None):
     """Checks for commands that write without a browser (imports, parsers):
-    a usable database folder `db`, its lock, and the log file."""
+    a usable database folder `db`, its lock, and the log file. Events go to
+    the terminal, a line per chat, and to the log."""
     root = Path(root) if root is not None else config.default_root()
     db = Path(db)
-    with logs.capture(root, label):
+    with _reporting(root, label, TerminalRenderer(sys.stdout, verbose=True)):
         database.prepare(db, create=_may_create(root, db), adopt_legacy=False)
         with locks.hold(db, 'update'):
             database.prepare(db)  # marks an older database only under its lock
@@ -84,7 +97,7 @@ class ArchiveController:
     def run(self, providers: list[str], mode: str = 'update',
             sink: EventSink | None = None, *, log: bool = False) -> RunSummary:
         """Run a selected set in one Playwright session, off the GUI loop."""
-        if mode not in ('update', 'rebuild', 'dry-run'):
+        if mode not in ('update', 'rebuild', 'dry-run', 'check'):
             raise ValueError(f'unknown mode: {mode}')
         chosen = list(dict.fromkeys(providers))
         if not chosen or any(p not in PROVIDER_DIRS for p in chosen):
@@ -93,7 +106,7 @@ class ArchiveController:
             raise BusyOperationError('another operation is running')
         try:
             flags = {'update': [], 'rebuild': ['--rebuild'],
-                     'dry-run': ['--dry-run']}[mode]
+                     'dry-run': ['--dry-run'], 'check': ['--dry-run']}[mode]
             archive = config.archive_root(self.root)
             parsed = {}
             for name in chosen:
@@ -101,7 +114,7 @@ class ArchiveController:
                 parsed[name] = provider_module(name).parse_args(
                     [*flags, '-o', str(out_dir), *(['--log'] if log else [])])
             return self._execute(chosen, parsed, mode, sink, {archive},
-                                 readonly=mode == 'dry-run')
+                                 readonly=mode in ('dry-run', 'check'))
         finally:
             self._lock.release()
 
@@ -115,16 +128,23 @@ class ArchiveController:
                       for name in providers}
             roots = {Path(args.output_dir).parent for args in parsed.values()}
             readonly = all(_readonly(args) for args in parsed.values())
-            return self._execute(providers, parsed, 'cli' if headers else 'cli-single', None,
-                                 roots, readonly=readonly)
+            # Bound to the terminal now: the log file only gets the events once.
+            terminal = TerminalRenderer(sys.stdout, headers=headers,
+                                        verbose=any(args.log for args in parsed.values()))
+            return self._execute(providers, parsed, 'cli' if headers else 'cli-single',
+                                 terminal, roots, readonly=readonly)
         finally:
             self._lock.release()
 
     def _execute(self, chosen: list[str], parsed: dict, mode: str,
                  sink: EventSink | None, roots: set[Path], *, readonly: bool) -> RunSummary:
+        """The checks every run passes, in this order: open the log and route
+        the events; check each database folder; lock the login data folder
+        (one browser per profile); for runs that write, lock each database
+        and only then mark one made by an earlier version. Then run."""
         label = f'{mode} {", ".join(chosen)}'
         with ExitStack() as stack:
-            stack.enter_context(logs.capture(self.root, label))
+            sink = stack.enter_context(_reporting(self.root, label, sink))
             # Validate first (creating the default location on first use): the
             # lock file lives inside the database folder.
             for db in sorted(roots):
@@ -140,8 +160,9 @@ class ArchiveController:
         raise AssertionError('unreachable')  # ExitStack never suppresses here
 
     def _run_providers(self, chosen: list[str], parsed: dict, mode: str,
-                       sink: EventSink | None, profile: Path) -> RunSummary:
-        from playwright.sync_api import sync_playwright
+                       sink: EventSink, profile: Path) -> RunSummary:
+        """All chosen providers in one browser window, one after another."""
+        from playwright.sync_api import sync_playwright  # imported only when a run starts
 
         emit(sink, 'run_started', total=len(chosen), message=mode)
         codes: list[tuple[str, int]] = []
@@ -158,20 +179,24 @@ class ArchiveController:
              message=f'exit {summary.exit_code}')
         return summary
 
-    def _run_one(self, name: str, args, mode: str, sink: EventSink | None,
+    def _run_one(self, name: str, args, mode: str, sink: EventSink,
                  page, index: int, total: int) -> int:
+        """One provider. Its failure is reported and becomes its exit code (2),
+        so the next provider still runs; a run that may write also records
+        this attempt for the status view (`.reclaim_last_attempt.json`)."""
         started = time.time()
-        if mode == 'cli':
-            print(f'\n========== {name} ==========')
         emit(sink, 'provider_started', name, current=index, total=total)
         error = None
         try:
-            code = provider_module(name).run_session(page, args, sink=sink)
+            if mode == 'check':  # diagnostics: log in and list, nothing else
+                from . import engine
+                code = engine.check(provider_module(name).SPEC, page, sink)
+            else:
+                code = provider_module(name).run_session(page, args, sink=sink)
         except Exception as exc:
-            traceback.print_exc()
             code = 2
             error = str(exc)
-            emit(sink, 'error', name, message=str(exc))
+            emit(sink, 'error', name, message=str(exc), detail=traceback.format_exc())
         if mode != 'dry-run' and not _readonly(args):
             out = Path(getattr(args, 'output_dir',
                                config.archive_root(self.root) / PROVIDER_DIRS[name]))

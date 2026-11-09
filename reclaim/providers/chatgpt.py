@@ -18,21 +18,17 @@ are excluded per project policy.
 
 from __future__ import annotations
 
-import argparse
+import contextlib
 import json
 import re
 import time
-import traceback
-from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import urlencode
 
-from ..core import browser, config
-from ..core.events import EventSink, emit
-from ..core.manifest import SyncState, print_dry_run, save_chat, write_manifest
+from ..core import browser, engine, retry
+from ..core.events import EventSink
 from ..core.model import Attachment, Chat, Turn
-from ..core.progress import progress
-from .chatgpt_import import (_SKIP_CONTENT_TYPES, _IMG_EXT, _content_parts, _is_tool_call,
-                             _linearize)
+from .chatgpt_import import _IMG_EXT, _content_parts, _linearize, _visible_message
 
 BASE_URL = 'https://chatgpt.com'
 PROVIDER = 'chatgpt'
@@ -73,49 +69,20 @@ _GET_JS = """async (args) => {
     return {status: resp.status, text, retryAfter: resp.headers.get('retry-after')};
 }"""
 
-# Waits after successive HTTP 429 responses without a usable Retry-After.
-RATE_LIMIT_WAITS = (15, 30, 60, 120)
-MAX_RATE_LIMIT_WAIT = 300
-
-
-def _rate_limit_wait(retry_after, index: int) -> float:
-    try:
-        seconds = float(retry_after)
-    except (TypeError, ValueError):
-        return RATE_LIMIT_WAITS[index]
-    return min(max(seconds, 1.0), MAX_RATE_LIMIT_WAIT)
+# Kept for tests and callers that read the rate-limit schedule here.
+RATE_LIMIT_WAITS = retry.RATE_LIMIT_WAITS
 
 
 def _get(page, token: str, url: str, retries: int = 3) -> dict:
-    """GET with retries. Rate limiting (HTTP 429) waits separately and longer,
-    honoring Retry-After, so a busy period does not exhaust ordinary retries."""
-    last = None
-    attempt = limited = 0
-    while attempt < retries:
-        try:
-            r = page.evaluate(_GET_JS, {'url': url, 'token': token})
-            if r['status'] == 200:
-                return json.loads(r['text'])
-            if r['status'] in (401, 403):
-                raise RuntimeError(f'auth failed ({r["status"]}) — session expired?')
-            if r['status'] == 429:
-                last = 'HTTP 429: rate limited by ChatGPT; retry later'
-                if limited == len(RATE_LIMIT_WAITS):
-                    break
-                time.sleep(_rate_limit_wait(r.get('retryAfter'), limited))
-                limited += 1
-                continue
-            last = f'HTTP {r["status"]}: {r["text"][:120]}'
-        except RuntimeError:
-            raise
-        except Exception as e:
-            last = e
-        attempt += 1
-        time.sleep(2 + attempt * 2)
-    raise RuntimeError(f'GET {url[:80]} failed: {last}')
+    """Page-side GET with the shared retry policy (see core/retry.py)."""
+    response = retry.send(lambda: page.evaluate(_GET_JS, {'url': url, 'token': token}),
+                          what=f'ChatGPT GET {url[:80]}', retries=retries)
+    return json.loads(response['text'])
 
 
 def get_session_token(page) -> str:
+    """The API access token of the logged-in browser session (from the page's
+    own /api/auth/session). Raises when there is no logged-in session."""
     data = page.evaluate("""async () => {
         try {
             const r = await fetch('/api/auth/session', {credentials: 'include'});
@@ -126,19 +93,19 @@ def get_session_token(page) -> str:
         raise RuntimeError(f'session fetch HTTP {data["status"]}')
     try:
         token = json.loads(data['text']).get('accessToken')
-    except Exception:
+    except Exception as exc:
         raise RuntimeError(
-            f'session not JSON (head: {data["text"][:80]!r}) — not logged in?')
+            f'session not JSON (head: {data["text"][:80]!r}) — not logged in?') from exc
     if not token:
         raise RuntimeError('no accessToken in session — not logged in?')
     return token
 
 
 def ensure_logged_in(page):
-    try:
+    """Return an access token, asking the user to log in in the browser
+    window first when the session has none."""
+    with contextlib.suppress(Exception):  # navigation quirks are fine; the token probe decides
         page.goto(BASE_URL, wait_until='domcontentloaded', timeout=60000)
-    except Exception:
-        pass  # navigation quirks are fine; token probe decides
     time.sleep(4)
     try:
         return get_session_token(page)
@@ -146,20 +113,13 @@ def ensure_logged_in(page):
         pass
     # Login may be an SPA flow (no reliable URL marker): show the window
     # and poll until a session token is available.
-    page.bring_to_front()
-    browser.set_window_bounds(page, state='normal', left=100, top=100)
-    print('\n' + '=' * 50)
-    print('  LOG IN to ChatGPT in the browser window.')
-    print('  Waiting (up to 15 minutes)...')
-    print('=' * 50 + '\n')
-    import os
-    deadline = time.time() + int(os.environ.get('RECLAIM_LOGIN_TIMEOUT', '900'))
+    timeout = browser.login_timeout()
+    browser.ask_for_login(page, PROVIDER, 'ChatGPT', timeout)
+    deadline = time.time() + timeout
     while time.time() < deadline:
         try:
             token = get_session_token(page)
-            print('Logged in! Hiding window...\n')
-            browser.set_window_bounds(page, state='minimized')
-            time.sleep(2)
+            browser.login_done(page, PROVIDER)
             return token
         except Exception:
             time.sleep(3)
@@ -167,6 +127,8 @@ def ensure_logged_in(page):
 
 
 def list_conversations(page, token: str) -> list[dict]:
+    """Every conversation outside projects, most recently updated first,
+    paged by offset until an empty page."""
     items, offset = [], 0
     seen = set()
     while True:
@@ -288,24 +250,19 @@ def list_all_conversations(page, token: str) -> list[dict]:
 _ASSET_RE = re.compile(r'(?:file-service|sediment)://(file[-_][A-Za-z0-9-]+)')
 
 
+def _uploaded_ids(meta: dict) -> list[str]:
+    """Files the user attached to the message (metadata.attachments)."""
+    return [a['id'] for a in meta.get('attachments') or []
+            if isinstance(a, dict) and isinstance(a.get('id'), str)
+            and re.fullmatch(r'file[-_][A-Za-z0-9-]+', a['id'])]
+
+
 def _node_to_turn(node: dict) -> tuple[Turn | None, list[str]]:
     """Convert one mapping node. Returns (turn, [asset file ids])."""
-    msg = node.get('message')
-    if not msg:
+    visible = _visible_message(node)
+    if visible is None:
         return None, []
-    meta = msg.get('metadata') or {}
-    if meta.get('is_visually_hidden_from_conversation') or meta.get('is_thinking_preamble_message'):
-        return None, []
-    if _is_tool_call(msg):
-        return None, []
-    role = (msg.get('author') or {}).get('role', '')
-    if role not in ('user', 'assistant'):
-        return None, []
-    content = msg.get('content') or {}
-    ctype = content.get('content_type', '')
-    if ctype in _SKIP_CONTENT_TYPES:
-        return None, []
-
+    msg, role = visible
     texts, asset_ids = [], []
     for part in _content_parts(msg):
         if isinstance(part, str):
@@ -318,17 +275,11 @@ def _node_to_turn(node: dict) -> tuple[Turn | None, list[str]]:
             elif part.get('text'):
                 texts.append(part['text'])
 
-    for attachment in meta.get('attachments') or []:
-        if isinstance(attachment, dict):
-            fid = attachment.get('id')
-            if isinstance(fid, str) and re.fullmatch(r'file[-_][A-Za-z0-9-]+', fid):
-                asset_ids.append(fid)
-    asset_ids = list(dict.fromkeys(asset_ids))
+    asset_ids = list(dict.fromkeys(asset_ids + _uploaded_ids(msg.get('metadata') or {})))
     text = '\n\n'.join(t for t in texts if t and t.strip())
     if not text.strip() and not asset_ids:
         return None, []
-    turn = Turn(role='user' if role == 'user' else 'model', text=text.strip())
-    return turn, asset_ids
+    return Turn(role=role, text=text.strip()), asset_ids
 
 
 def _download_asset(page, token: str, file_id: str) -> tuple[bytes | None, dict]:
@@ -353,33 +304,38 @@ def _download_asset(page, token: str, file_id: str) -> tuple[bytes | None, dict]
     return None, meta
 
 
+def _add_files(page, token: str, turn: Turn, node: dict, asset_ids: list[str]) -> None:
+    """Download the turn's files: images into turn.images, others as
+    attachments. A file that cannot be downloaded leaves a note in the text."""
+    meta = (node.get('message') or {}).get('metadata') or {}
+    uploads = {a['id']: a for a in meta.get('attachments') or []
+               if isinstance(a, dict) and a.get('id')}
+    for fid in asset_ids:
+        blob, info = _download_asset(page, token, fid)
+        if blob is None:
+            turn.text += '\n\n*[attachment could not be downloaded]*'
+            continue
+        mime = (info.get('mime_type') or '').split(';', 1)[0]
+        if mime.startswith('image/'):
+            turn.images.append(blob)
+            continue
+        # the download's name, else the name the user uploaded it with
+        name = info.get('file_name') or uploads.get(fid, {}).get('name') or f'file_{fid[:12]}'
+        if '.' not in name:
+            name += {'application/pdf': '.pdf'}.get(mime, '')
+        turn.attachments.append(Attachment(
+            filename=name, kind='image' if _IMG_EXT.search(name) else 'document',
+            data=blob, description=name))
+
+
 def fetch_conversation(page, token: str, conv_id: str, title: str = '') -> tuple[Chat, dict]:
     data = _get(page, token, f'{BASE_URL}/backend-api/conversation/{conv_id}')
-    nodes = _linearize(data.get('mapping') or {}, data.get('current_node'))
     turns = []
-    for node in nodes:
+    for node in _linearize(data.get('mapping') or {}, data.get('current_node')):
         turn, asset_ids = _node_to_turn(node)
-        if turn is None:
-            continue
-        uploads = {a['id']: a for a in (((node.get('message') or {}).get('metadata') or {}).get('attachments') or [])
-                   if isinstance(a, dict) and a.get('id')}
-        for fid in asset_ids:
-            blob, meta = _download_asset(page, token, fid)
-            if blob is None:
-                turn.text += '\n\n*[attachment could not be downloaded]*'
-                continue
-            mime = (meta.get('mime_type') or '').split(';')[0]
-            name = meta.get('file_name') or uploads.get(fid, {}).get('name') or f'file_{fid[:12]}'
-            if mime.startswith('image/'):
-                turn.images.append(blob)
-            else:
-                if '.' not in name:
-                    name += {'application/pdf': '.pdf'}.get(mime, '')
-                turn.attachments.append(Attachment(
-                    filename=name,
-                    kind='image' if _IMG_EXT.search(name) else 'document',
-                    data=blob, description=name))
-        turns.append(turn)
+        if turn is not None:
+            _add_files(page, token, turn, node, asset_ids)
+            turns.append(turn)
     chat = Chat(id=conv_id, title=title or data.get('title', '') or '(untitled)',
                 source_url=f'{BASE_URL}/c/{conv_id}', turns=turns, provider=PROVIDER)
     if not chat.visible_turns():
@@ -399,157 +355,62 @@ def _project_name(item: dict, data: dict, project_names: dict[str, str] | None) 
     return project_names.get(data.get('gizmo_id') or '')
 
 
-def run(page, token: str, items: list[dict], out_dir: Path,
-        skip_unchanged: bool = False, save_raw: bool = True,
-        log: bool = False, sink: EventSink | None = None,
-        project_names: dict[str, str] | None = None) -> list[dict]:
-    """Fetch the given conversations. Returns per-chat results for the manifest.
+class ChatGPT(engine.Provider):
+    """What only ChatGPT does; the engine does the rest."""
 
-    Per-chat lines print only with log=True (default output is
-    summary-level; failures always print)."""
-    out_dir = Path(out_dir)
-    sync = SyncState(out_dir, PROVIDER)
-    results = []
-    t_run = time.time()
-    for i, item in enumerate(items):
-        cid = item.get('id', '')
-        label = (item.get('title') or cid)[:55]
-        updated = item.get('update_time')
-        emit(sink, 'chat_started', PROVIDER, label, i + 1, len(items))
-        if log:
-            print(progress(i + 1, len(items), t_run))
-        if skip_unchanged and sync.is_unchanged(cid, updated):
-            if log:
-                print(f'[{i + 1}/{len(items)}] {label} -> skip (unchanged)')
-            emit(sink, 'chat_skipped', PROVIDER, label, i + 1, len(items))
-            continue
-        t0 = time.time()
-        try:
-            chat, raw = fetch_conversation(page, token, cid, item.get('title', ''))
-            chat.project = _project_name(item, raw, project_names)
-            stats = save_chat(chat, out_dir, sync, cid, updated, raw if save_raw else None,
-                              sink=sink, provider=PROVIDER)
-            results.append({'id': cid, 'title': chat.title, 'ok': True,
-                            'duration_s': round(time.time() - t0, 1),
-                            **{k: stats[k] for k in ('turns', 'chars', 'images', 'docs')}})
-            emit(sink, 'chat_completed', PROVIDER, chat.title, i + 1, len(items))
-            if log:
-                extra = f", {stats['images']} img" if stats['images'] else ''
-                extra += f", {stats['docs']} doc" if stats['docs'] else ''
-                print(f'[{i + 1}/{len(items)}] {label} -> {stats["turns"]}t, '
-                      f'{stats["chars"]:,} chars{extra}')
-                print(f'    assets: {stats["images"] + stats["docs"]} · '
-                      f'{time.time() - t0:.1f}s')
-        except Exception as e:
-            print(f'[{i + 1}/{len(items)}] {label} -> FAILED: {e}')
-            traceback.print_exc()
-            results.append({'id': cid, 'title': label, 'ok': False, 'error': str(e)})
-            emit(sink, 'error', PROVIDER, label, i + 1, len(items), str(e))
-        time.sleep(0.4)
-    sync.save()
-    return results
+    name = PROVIDER
+    folder = 'ChatGPT'
+    description = ('Save ChatGPT conversations incl. Projects to the database '
+                   '(update by default).')
+    noun = 'conversations'
+    pace = 0.4
+
+    def open(self, page):
+        return SimpleNamespace(page=page, token=ensure_logged_in(page), project_names=None)
+
+    def listing_text(self) -> str:
+        return 'Listing conversations (main list + projects)...'
+
+    def found_text(self, refs) -> str:
+        in_projects = sum(1 for r in refs if (r.data or {}).get('_project'))
+        return f'Found {len(refs)} conversations ({in_projects} in projects)'
+
+    def listing(self, s) -> list[engine.ChatRef]:
+        return [engine.ChatRef(id=item.get('id', ''), title=item.get('title') or '',
+                               updated_at=item.get('update_time'), data=item)
+                for item in list_all_conversations(s.page, s.token)]
+
+    def from_url(self, s, url: str) -> engine.ChatRef:
+        return engine.ChatRef(id=url.rstrip('/').split('/')[-1].split('?')[0], data={})
+
+    def fetch(self, s, ref: engine.ChatRef) -> engine.Fetched:
+        item = ref.data or {}
+        chat, raw = fetch_conversation(s.page, s.token, ref.id, item.get('title') or ref.title)
+        if '_project' not in item and s.project_names is None:
+            # Fetched by URL: find its project from the conversation itself.
+            s.project_names = {p['id']: p['name'] for p in list_projects(s.page, s.token)}
+        chat.project = _project_name(item, raw, s.project_names)
+        return engine.Fetched(chat, raw=raw)
 
 
-def build_parser() -> argparse.ArgumentParser:
-    ap = argparse.ArgumentParser(
-        prog='reclaim chatgpt',
-        description='Save ChatGPT conversations incl. Projects to the database '
-                    '(update by default).')
-    ap.add_argument('title', nargs='?',
-                    help='fetch chats whose title contains this '
-                         '(case-insensitive)')
-    ap.add_argument('--rebuild', action='store_true',
-                    help='fetch everything, overwriting local copies')
-    ap.add_argument('--url', help='fetch one exact chat URL')
-    ap.add_argument('--list', action='store_true',
-                    help='print chat titles, no download')
-    ap.add_argument('--log', action='store_true',
-                    help='full per-chat log + verbose progress and timings')
-    ap.add_argument('--dry-run', action='store_true',
-                    help='preview what would be fetched; nothing downloaded')
-    ap.add_argument('--skip', type=int, default=0,
-                    help='skip the first N chats in the listing')
-    ap.add_argument('--limit', type=int, default=0,
-                    help='fetch at most N chats')
-    ap.add_argument('--no-raw', action='store_true',
-                    help='do not save media-stripped raw.json per chat')
-    ap.add_argument('-o', '--output-dir',
-                    default=str(config.archive_root() / 'ChatGPT'))
-    return ap
+SPEC = ChatGPT()
+
+
+def build_parser():
+    return engine.build_parser(SPEC)
 
 
 def parse_args(argv=None):
-    """Parse + validate CLI args (shared by main() and `reclaim all`)."""
-    ap = build_parser()
-    args = ap.parse_args(argv)
-    if args.title and args.url:
-        ap.error('pass a title or --url, not both')
-    return args
-
-
-def main(argv=None):
-    args = parse_args(argv)
-    from playwright.sync_api import sync_playwright
-    with sync_playwright() as p:
-        ctx, page = browser.launch(p)
-        try:
-            return run_session(page, args)
-        finally:
-            ctx.close()
+    return engine.parse_args(SPEC, argv)
 
 
 def run_session(page, args, sink: EventSink | None = None) -> int:
-    """Provider session on an already-launched page; shared by main()
-    (own browser) and `reclaim all` (one browser for all providers)."""
-    out_dir = Path(args.output_dir)
-    started = time.time()
-    token = ensure_logged_in(page)
-    project_names = None
-    if args.url:
-        cid = args.url.rstrip('/').split('/')[-1].split('?')[0]
-        items = [{'id': cid, 'title': ''}]
-        project_names = {p['id']: p['name'] for p in list_projects(page, token)}
-    else:
-        print('Listing conversations (main list + projects)...')
-        items = list_all_conversations(page, token)
-        n_proj = sum(1 for c in items if c.get('_project'))
-        print(f'Found {len(items)} conversations ({n_proj} in projects)')
-    if args.title:
-        items = [c for c in items
-                 if args.title.lower() in (c.get('title') or '').lower()]
-    if args.skip:
-        items = items[args.skip:]
-    if args.limit:
-        items = items[:args.limit]
-    if not items:
-        print('No chats matched.')
-        return 1
-    if args.list:
-        for n, c in enumerate(items, 1):
-            print(f'{n}. {c.get("title") or c["id"]}')
-        print(f'-- {len(items)} chat(s)')
-        return 0
-    skip_unchanged = not args.rebuild and not args.title
-    if args.dry_run:
-        sync = SyncState(out_dir, PROVIDER, migrate=False)
-        updated_map = {c.get('id', ''): c.get('update_time')
-                       for c in items}
-        return print_dry_run(items, updated_map, sync, skip_unchanged,
-                             log=args.log, sink=sink, provider=PROVIDER)
+    """This provider on an already opened page (window and command line)."""
+    return engine.run_session(SPEC, page, args, sink)
 
-    out_dir.mkdir(parents=True, exist_ok=True)
-    print(f"\n{'=' * 50}\n  {len(items)} conversations\n{'=' * 50}\n")
-    results = run(page, token, items, out_dir,
-                  skip_unchanged=skip_unchanged,
-                  save_raw=not args.no_raw, log=args.log, sink=sink,
-                  project_names=project_names)
-    manifest = write_manifest(out_dir, PROVIDER, results, started)
-    ok = sum(1 for r in results if r.get('ok'))
-    print(f"\n{'=' * 50}")
-    print(f'  Done: {ok} ok, {len(results) - ok} failed')
-    print(f'  Manifest: {manifest}')
-    print(f"{'=' * 50}")
-    return 0 if ok == len(results) else 2
+
+def main(argv=None):
+    return engine.main(SPEC, argv)
 
 
 if __name__ == '__main__':

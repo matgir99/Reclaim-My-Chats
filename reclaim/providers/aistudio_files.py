@@ -20,18 +20,60 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import time
+import traceback
 import zipfile
 from pathlib import Path
 
 from ..core import config
+from ..core.events import emit
 from ..core.service import offline_session
-from ..core.manifest import write_manifest
+from ..core.manifest import finish_run, stats_text
 from ..core.model import Attachment, Chat, Turn
 from ..core.writer import write_chat
-import time
 
 PROVIDER = 'aistudio'
 _IMG_MIMES = ('image/png', 'image/jpeg', 'image/gif', 'image/webp')
+
+
+def _inline_image(part: dict) -> bytes | None:
+    """An image embedded in the prompt as base64 (inlineData)."""
+    inline = part.get('inlineData') or part.get('inline_data') or {}
+    if isinstance(inline, dict) and inline.get('data'):
+        try:
+            return base64.b64decode(inline['data'])
+        except Exception:
+            return None
+    return None
+
+
+def _drive_file(part: dict) -> Attachment | None:
+    """A Drive file attached to the prompt (fileData), linked, not downloaded."""
+    fdata = part.get('fileData') or part.get('file_data') or {}
+    if not isinstance(fdata, dict):
+        return None
+    fid = fdata.get('fileId') or fdata.get('file_id') or ''
+    uri = fdata.get('fileUri') or fdata.get('file_uri') or ''
+    if not fid and not uri:
+        return None
+    name = fdata.get('displayName') or fdata.get('name') or f'drive_file_{fid[:12]}'
+    return Attachment(filename=name, kind='document', data=None,
+                      source_url=uri or f'https://drive.google.com/file/d/{fid}/view',
+                      description=name)
+
+
+def _chunk_turn(chunk) -> Turn | None:
+    """One prompt chunk as a turn; None for other roles and empty chunks."""
+    if not isinstance(chunk, dict) or chunk.get('role', '') not in ('user', 'model'):
+        return None
+    parts = [p for p in chunk.get('parts', []) or [] if isinstance(p, dict)]
+    images = [image for image in map(_inline_image, parts) if image is not None]
+    attachments = [file for file in map(_drive_file, parts) if file is not None]
+    text = chunk.get('text', '') or ''
+    if not text.strip() and not images and not attachments:
+        return None
+    return Turn(role=chunk['role'], text=text, thought=bool(chunk.get('isThought')),
+                images=images, attachments=attachments)
 
 
 def parse_prompt_file(data: dict, chat_id: str = '', title: str = '') -> Chat | None:
@@ -39,45 +81,7 @@ def parse_prompt_file(data: dict, chat_id: str = '', title: str = '') -> Chat | 
     if not isinstance(data, dict) or 'chunkedPrompt' not in data:
         return None
     chunks = data.get('chunkedPrompt', {}).get('chunks', [])
-    turns = []
-    for ch in chunks:
-        if not isinstance(ch, dict):
-            continue
-        role = ch.get('role', '')
-        if role not in ('user', 'model'):
-            continue
-        text = ch.get('text', '') or ''
-        thought = bool(ch.get('isThought'))
-        images, atts = [], []
-
-        for part in ch.get('parts', []) or []:
-            if not isinstance(part, dict):
-                continue
-            inline = part.get('inlineData') or part.get('inline_data') or {}
-            if isinstance(inline, dict) and inline.get('data'):
-                try:
-                    images.append(base64.b64decode(inline['data']))
-                except Exception:
-                    pass
-            fdata = part.get('fileData') or part.get('file_data') or {}
-            if isinstance(fdata, dict):
-                fid = fdata.get('fileId') or fdata.get('file_id') or ''
-                uri = fdata.get('fileUri') or fdata.get('file_uri') or ''
-                name = fdata.get('displayName') or fdata.get('name') or f'drive_file_{fid[:12]}'
-                if fid or uri:
-                    atts.append(Attachment(
-                        filename=name,
-                        kind='document',
-                        data=None,
-                        source_url=uri or f'https://drive.google.com/file/d/{fid}/view',
-                        description=name,
-                    ))
-
-        if not text.strip() and not images and not atts:
-            continue
-        turns.append(Turn(role=role, text=text, thought=thought,
-                          images=images, attachments=atts))
-
+    turns = [turn for turn in map(_chunk_turn, chunks) if turn is not None]
     if not turns:
         return None
     return Chat(id=chat_id, title=title or chat_id, source_url='', turns=turns,
@@ -122,11 +126,11 @@ def run(folder: Path, out_dir: Path, titles: dict | None = None,
             stats = write_chat(chat, out_dir)
             results.append({'id': stem, 'title': chat.title, 'ok': True,
                             **{k: stats[k] for k in ('turns', 'chars', 'images', 'docs')}})
-            print(f'[ok] {chat.title[:60]} -> {stats["turns"]}t, '
-                  f'{stats["chars"]:,} chars, {stats["images"]} img, {stats["docs"]} doc')
+            emit(None, 'chat_completed', PROVIDER, chat.title, message=stats_text(stats))
         except Exception as e:
             results.append({'id': stem, 'title': chat.title, 'ok': False, 'error': str(e)})
-            print(f'[FAIL] {chat.title[:60]}: {e}')
+            emit(None, 'error', PROVIDER, chat.title, message=str(e),
+                 detail=traceback.format_exc())
     return results
 
 
@@ -145,10 +149,7 @@ def main(argv=None):
     with offline_session(out_dir.parent, 'parse googleaistudio'):
         out_dir.mkdir(parents=True, exist_ok=True)
         results = run(Path(args.from_folder), out_dir, titles=titles)
-        manifest = write_manifest(out_dir, PROVIDER + '-offline', results, started)
-    ok = sum(1 for r in results if r.get('ok'))
-    print(f"\nDone: {ok}/{len(results)} ok. Manifest: {manifest}")
-    return 0 if ok == len(results) else 2
+        return finish_run(out_dir, PROVIDER + '-offline', results, started)
 
 
 if __name__ == '__main__':

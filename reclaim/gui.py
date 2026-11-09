@@ -17,7 +17,7 @@ else:
     except ImportError:  # The CLI intentionally has no GUI dependency.
         ft = None
 
-from .core import config, database, locks, logs, status
+from .core import config, database, doctor, locks, logs, render, status
 from .core.events import EventSink, ProgressEvent
 from .core.service import ALL_PROVIDERS, ArchiveController, BusyOperationError, RunSummary
 
@@ -29,6 +29,9 @@ DISPLAY_NAMES = {
     'claude': 'Claude',
     'googlegemini': 'Google Gemini',
 }
+# Events about one chat: they move the progress bar and the status line.
+CHAT_PROGRESS = frozenset({'chat_started', 'chat_skipped', 'chat_completed',
+                           'chat_planned', 'error'})
 
 
 class Controller(Protocol):
@@ -87,6 +90,8 @@ class ReclaimWindow:
             self.enabled = []
         self.blocked = False  # a settings or database problem stops runs
         self._warnings = 0
+        self._run_events: list[ProgressEvent] = []
+        self._live_results: list[doctor.Check] = []
         self._running = False
         self._log_lines: list[str] = []
         self._provider_index = 0
@@ -94,6 +99,10 @@ class ReclaimWindow:
         self._build()
 
     def _build(self) -> None:
+        """The main window, top to bottom: title with Diagnostics and Settings,
+        the problem banner, one row per provider with the run buttons, the
+        progress section, and the database section with Details (the run's
+        messages). Controls that tests or code look up carry a `key`."""
         page = self.page
         page.title = 'Reclaim My Chats'
         page.window.width = 820
@@ -148,13 +157,15 @@ class ReclaimWindow:
             visible=False, key='notice')
         self.settings_button = ft.Button('Settings', on_click=self._settings,
                                          key='settings')
+        self.diagnostics_button = ft.Button('Diagnostics', on_click=self._diagnostics,
+                                            key='diagnostics')
 
         page.add(ft.Container(
             padding=20,
             content=ft.Column([
                 ft.Row([
                     ft.Text('Reclaim My Chats', size=28, weight=ft.FontWeight.BOLD),
-                    self.settings_button,
+                    ft.Row([self.diagnostics_button, self.settings_button], wrap=True),
                 ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, wrap=True),
                 ft.Text('Save and synchronize your AI conversations in a local database'),
                 self.notice,
@@ -345,91 +356,100 @@ class ReclaimWindow:
         self._log_lines = self._log_lines[-200:]
         self.log.value = '\n'.join(self._log_lines)
 
+    def _set_status(self, provider: str, text: str) -> None:
+        control = self.provider_status.get(provider)
+        if control is not None:
+            control.value = text
+
     def _event(self, event: ProgressEvent) -> None:
+        """The window's rendering of a run's events: the progress bar, the
+        status line, each provider's row, and Details (in the same words as
+        the log file, from render.describe)."""
         name = DISPLAY_NAMES.get(event.provider, event.provider)
-        if event.kind == 'run_started':
-            self.current.value = f'Starting {event.message}'
-            self.progress.value = 0
-            self._append_log(f'Run started: {event.message}')
-        elif event.kind == 'provider_started':
-            self._provider_index = event.current
-            self._provider_count = event.total
-            self.current.value = f'{name}: listing conversations or waiting for login'
-            self.provider_status[event.provider].value = 'Running'
-            self._append_log(f'{name}: started')
-        elif event.kind in ('chat_started', 'chat_skipped', 'chat_completed',
-                            'chat_planned', 'error'):
-            if event.title:
-                self.current.value = f'{name}: {event.title}'
-            if event.total:
-                completed = event.current - (1 if event.kind == 'chat_started' else 0)
-                self.progress.value = min(1, ((self._provider_index - 1) +
-                                          completed / event.total) / self._provider_count)
-            detail = event.message or event.kind.replace('_', ' ')
-            self._append_log(f'{name}: {event.title} — {detail}')
-            if event.kind == 'error':
-                self.provider_status[event.provider].value = f'Error: {event.message}'
-        elif event.kind == 'provider_completed':
-            self.progress.value = event.current / event.total
-            if event.message == 'exit 0':
-                self.provider_status[event.provider].value = 'Completed'
-            elif not str(self.provider_status[event.provider].value).startswith('Error:'):
-                self.provider_status[event.provider].value = f'Failed ({event.message})'
-            self._append_log(f'{name}: {event.message}')
-        elif event.kind == 'warning':
+        self._show_progress(event)
+        self._show_status_line(event, name)
+        row = self._row_status(event)
+        if row is not None:
+            self._set_status(event.provider, row)
+        if event.kind == 'warning':
             self._warnings += 1
-            self._append_log(f'{name}: warning: {event.title} — {event.message}')
-        elif event.kind == 'run_completed':
-            self.progress.value = 1
-            self._append_log(f'Run completed: {event.message}')
+        line = render.describe(event)
+        if line:
+            self._append_log(f'{name}: {line}' if event.provider else line)
         self.page.update()
 
-    async def _run(self, providers: list[str], mode: str) -> None:
+    def _show_progress(self, event: ProgressEvent) -> None:
+        """The progress bar: each provider is an equal share of the run."""
+        kind = event.kind
+        if kind == 'run_started':
+            self.progress.value = 0
+        elif kind == 'provider_started':
+            self._provider_index, self._provider_count = event.current, event.total
+        elif kind in CHAT_PROGRESS and event.total:
+            done = event.current - (1 if kind == 'chat_started' else 0)
+            self.progress.value = min(1, ((self._provider_index - 1) + done / event.total)
+                                      / self._provider_count)
+        elif kind == 'provider_completed':
+            self.progress.value = event.current / event.total
+        elif kind == 'run_completed':
+            self.progress.value = 1
+
+    def _show_status_line(self, event: ProgressEvent, name: str) -> None:
+        """The line under the buttons: what the run is doing now."""
+        kind = event.kind
+        if kind == 'run_started':
+            self.current.value = f'Starting {event.message}'
+        elif kind == 'provider_started':
+            self.current.value = f'{name}: starting'
+        elif kind in ('login_needed', 'listing', 'listed'):
+            self.current.value = f'{name}: {event.message}'
+        elif kind in CHAT_PROGRESS and event.title:
+            self.current.value = f'{name}: {event.title}'
+
+    def _row_status(self, event: ProgressEvent) -> str | None:
+        """The new text of the provider's row, or None to leave it."""
+        kind = event.kind
+        if kind in ('provider_started', 'logged_in'):
+            return 'Running'
+        if kind == 'login_needed':
+            return 'Waiting for login in the browser window'
+        if kind == 'error':
+            return f'Error: {event.message}'
+        if kind == 'checked':
+            return f'Live check: {event.message}'
+        if kind != 'provider_completed':
+            return None
+        if event.message == 'exit 0':
+            return 'Completed'
+        row = self.provider_status.get(event.provider)
+        if row is not None and str(row.value).startswith('Error:'):
+            return None  # keep the error, which says more than the exit code
+        return f'Failed ({event.message})'
+
+    def _cannot_start(self, providers: list[str]) -> str | None:
+        """Why a run cannot start now, or None when it can."""
         if not providers:
-            self._error('Select at least one enabled provider.')
-            return
+            return 'Select at least one enabled provider.'
         if self._running or self.controller.busy:
-            self._error('Another operation is already running.')
-            return
+            return 'Another operation is already running.'
         if self.blocked:
-            self._error('Fix the problem shown at the top of the window first.')
+            return 'Fix the problem shown at the top of the window first.'
+        return None
+
+    async def _run(self, providers: list[str], mode: str) -> None:
+        problem = self._cannot_start(providers)
+        if problem:
+            self._error(problem)
             return
         self._set_running(True)
         self.summary.value = ''
         self._warnings = 0
+        self._run_events = []
         self._log_lines.clear()
         self.log.value = ''
         self._provider_count = len(providers)
-        queue: asyncio.Queue[ProgressEvent | None] = asyncio.Queue()
-        loop = asyncio.get_running_loop()
-
-        def receive(event: ProgressEvent) -> None:
-            loop.call_soon_threadsafe(queue.put_nowait, event)
-
-        def execute() -> RunSummary:
-            try:
-                return self.controller.run(providers, mode, receive)
-            finally:
-                # Use the same thread-safe channel as events so completion
-                # cannot overtake progress/error messages still in transit.
-                loop.call_soon_threadsafe(queue.put_nowait, None)
-
         try:
-            task = asyncio.create_task(asyncio.to_thread(execute))
-            while (event := await queue.get()) is not None:
-                self._event(event)
-            result = await task
-            labels = ', '.join(f'{DISPLAY_NAMES[name]}: {"ok" if code == 0 else "failed"}'
-                               for name, code in result.codes)
-            action = {'update': 'Update', 'rebuild': 'Rebuild',
-                      'dry-run': 'Dry run'}[mode]
-            state = ('completed successfully' if result.exit_code == 0
-                     else 'completed with errors')
-            self.summary.value = f'{action} {state} · {labels}'
-            if self._warnings:
-                self.summary.value += (f' · {self._warnings} warning'
-                                       f'{"s" if self._warnings != 1 else ""} (see Details)')
-            self.current.value = 'Ready'
+            self._show_result(await self._execute(providers, mode), mode)
         except BusyOperationError as exc:
             self._error(str(exc))
         except locks.LockedError as exc:
@@ -448,9 +468,46 @@ class ReclaimWindow:
             self._error(str(exc))
         finally:
             self._set_running(False)
-            if mode != 'dry-run':
+            if mode not in ('dry-run', 'check'):  # these write nothing
                 await self.refresh_archive()
             self.page.update()
+
+    async def _execute(self, providers: list[str], mode: str) -> RunSummary:
+        """Run in a worker thread, showing its events as they arrive."""
+        queue: asyncio.Queue[ProgressEvent | None] = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+
+        def receive(event: ProgressEvent) -> None:
+            loop.call_soon_threadsafe(queue.put_nowait, event)
+
+        def execute() -> RunSummary:
+            try:
+                return self.controller.run(providers, mode, receive)
+            finally:
+                # Use the same thread-safe channel as events so completion
+                # cannot overtake progress/error messages still in transit.
+                loop.call_soon_threadsafe(queue.put_nowait, None)
+
+        task = asyncio.create_task(asyncio.to_thread(execute))
+        while (event := await queue.get()) is not None:
+            self._run_events.append(event)
+            self._event(event)
+        return await task
+
+    def _show_result(self, result: RunSummary, mode: str) -> None:
+        labels = ', '.join(f'{DISPLAY_NAMES[name]}: {"ok" if code == 0 else "failed"}'
+                           for name, code in result.codes)
+        action = {'update': 'Update', 'rebuild': 'Rebuild',
+                  'dry-run': 'Dry run', 'check': 'Live check'}[mode]
+        if mode == 'check':
+            self._live_results = doctor.checks_from_events(self._run_events)
+        state = 'completed successfully' if result.exit_code == 0 else 'completed with errors'
+        summary = f'{action} {state} · {labels}'
+        if self._warnings:
+            plural = 's' if self._warnings != 1 else ''
+            summary += f' · {self._warnings} warning{plural} (see Details)'
+        self.summary.value = summary
+        self.current.value = 'Ready'
 
     async def _update_selected(self, _=None) -> None:
         await self._run(self._selected(), 'update')
@@ -477,6 +534,57 @@ class ReclaimWindow:
                      ft.FilledButton('Rebuild', on_click=confirm, key='confirm-rebuild')],
         )
         self.page.show_dialog(dialog)
+
+    # Diagnostics: the same checks as `reclaim doctor [--live]`
+
+    async def _diagnostics(self, _=None) -> None:
+        try:
+            checks = await asyncio.to_thread(doctor.run_checks, self.root)
+        except Exception as exc:
+            self._error(f'Could not run the diagnostics: {exc}')
+            return
+        colors = {doctor.OK: ft.Colors.PRIMARY, doctor.PROBLEM: ft.Colors.ERROR,
+                  doctor.WARNING: ft.Colors.TERTIARY, doctor.INFO: ft.Colors.ON_SURFACE_VARIANT}
+        rows: list[ft.Control] = []
+        for check in [*checks, *self._live_results]:
+            area = DISPLAY_NAMES.get(check.area, check.area)
+            lines: list[ft.Control] = [ft.Text(f'{area}: {check.detail}', selectable=True)]
+            if check.advice:
+                lines.append(ft.Text(check.advice, italic=True, selectable=True))
+            rows.append(ft.Row([
+                ft.Text(check.status.upper(), width=78, weight=ft.FontWeight.BOLD,
+                        color=colors[check.status]),
+                ft.Column(lines, spacing=2, expand=True)],
+                vertical_alignment=ft.CrossAxisAlignment.START))
+
+        async def live(_=None) -> None:
+            self.page.pop_dialog()
+            await self._run(list(self.enabled), 'check')
+            if self._live_results:
+                await self._diagnostics()
+
+        async def copy(_=None) -> None:
+            try:
+                await ft.Clipboard().set(doctor.report(checks, self._live_results))
+            except Exception as exc:
+                self._error(f'Could not copy to the clipboard: {exc}')
+                return
+            self.summary.value = 'Diagnostics copied. They contain folder paths but no chats.'
+            self.page.update()
+
+        self.page.show_dialog(ft.AlertDialog(
+            modal=True,
+            title='Diagnostics',
+            content=ft.Container(width=660, content=ft.Column(
+                [ft.Text('Run live check logs in to each enabled provider and lists its '
+                         'chats; it saves nothing.'), *rows],
+                spacing=10, scroll=ft.ScrollMode.AUTO, height=440)),
+            actions=[ft.Button('Run live check', on_click=live, key='diagnostics-live',
+                               disabled=self._running or self.blocked or not self.enabled),
+                     ft.Button('Copy diagnostics', on_click=copy, key='diagnostics-copy'),
+                     ft.Button('Open log folder', on_click=self._open_logs),
+                     ft.FilledButton('Close', on_click=lambda _: self.page.pop_dialog(),
+                                     key='diagnostics-close')]))
 
     def _open(self, path: Path) -> None:
         try:
@@ -520,55 +628,15 @@ class ReclaimWindow:
             key='settings-profile')
 
         async def choose_archive(_=None) -> None:
-            try:
-                picked = await ft.FilePicker().get_directory_path(
-                    dialog_title='Choose database folder')
-                if picked:
-                    archive_field.value = picked
-                    self.page.update()
-            except Exception as exc:
-                self._error(f'Directory picker unavailable: {exc}. Enter the path above.')
+            await self._pick_folder(archive_field, 'Choose database folder')
 
         async def choose_profile(_=None) -> None:
-            try:
-                picked = await ft.FilePicker().get_directory_path(
-                    dialog_title='Choose existing Playwright profile')
-                if picked:
-                    profile_field.value = picked
-                    self.page.update()
-            except Exception as exc:
-                self._error(f'Directory picker unavailable: {exc}. Enter the path above.')
+            await self._pick_folder(profile_field, 'Choose existing Playwright profile')
 
         async def save_settings(_=None) -> None:
-            enabled = [name for name in ALL_PROVIDERS if enabled_checks[name].value]
-            archive = archive_field.value.strip()
-            if not enabled or not archive:
-                self._error('Choose at least one provider and a database folder.')
-                return
-            target = config.resolve_folder(self.root, archive)
-            # The default location stays "default", so it may be created on first use.
-            choice = None if target == config.default_archive(self.root) else archive
-            state = await asyncio.to_thread(database.inspect, target)
-            if state.kind in ('foreign', 'newer', 'file'):
-                self._error(state.message())
-                return
-
-            async def commit() -> None:
-                try:
-                    config.save(self.root, providers=enabled, archive=choice,
-                                profile=profile_field.value.strip())
-                except (OSError, ValueError) as exc:
-                    self._error(str(exc))
-                    return
-                self.settings_error = None
-                self._reload_providers()
-                await self.refresh_archive()
-
-            self.page.pop_dialog()
-            if state.kind in ('missing', 'empty') and choice is not None:
-                self._confirm_create(target, then=commit)
-                return
-            await commit()
+            await self._save_settings(
+                [name for name in ALL_PROVIDERS if enabled_checks[name].value],
+                archive_field.value.strip(), profile_field.value.strip())
 
         dialog = ft.AlertDialog(
             modal=True,
@@ -592,6 +660,47 @@ class ReclaimWindow:
                                      key='save-settings')],
         )
         self.page.show_dialog(dialog)
+
+    async def _pick_folder(self, field, title: str) -> None:
+        """Fill `field` with a folder chosen in the system dialog."""
+        try:
+            picked = await ft.FilePicker().get_directory_path(dialog_title=title)
+        except Exception as exc:
+            self._error(f'Directory picker unavailable: {exc}. Enter the path above.')
+            return
+        if picked:
+            field.value = picked
+            self.page.update()
+
+    async def _save_settings(self, enabled: list[str], archive: str, profile: str) -> None:
+        """Check the chosen database folder, then save. A new or empty folder
+        becomes a database only after the user confirms."""
+        if not enabled or not archive:
+            self._error('Choose at least one provider and a database folder.')
+            return
+        target = config.resolve_folder(self.root, archive)
+        # The default location stays "default", so it may be created on first use.
+        choice = None if target == config.default_archive(self.root) else archive
+        state = await asyncio.to_thread(database.inspect, target)
+        if state.kind in ('foreign', 'newer', 'file'):
+            self._error(state.message())
+            return
+
+        async def commit() -> None:
+            try:
+                config.save(self.root, providers=enabled, archive=choice, profile=profile)
+            except (OSError, ValueError) as exc:
+                self._error(str(exc))
+                return
+            self.settings_error = None
+            self._reload_providers()
+            await self.refresh_archive()
+
+        self.page.pop_dialog()
+        if state.kind in ('missing', 'empty') and choice is not None:
+            self._confirm_create(target, then=commit)
+            return
+        await commit()
 
     def _error(self, message: str) -> None:
         self.page.show_dialog(ft.AlertDialog(title='Error', content=ft.Text(message),

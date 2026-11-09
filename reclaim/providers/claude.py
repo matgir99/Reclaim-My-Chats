@@ -20,18 +20,15 @@ skipped in v1 (known gap — artifacts/research reports live there).
 
 from __future__ import annotations
 
-import argparse
+import contextlib
 import json
 import time
-import traceback
-from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import urlencode, urlsplit
 
-from ..core import browser, config
-from ..core.events import EventSink, emit
-from ..core.manifest import SyncState, print_dry_run, save_chat, write_manifest
+from ..core import browser, engine, retry
+from ..core.events import EventSink
 from ..core.model import Attachment, Chat, Turn
-from ..core.progress import progress
 
 BASE_URL = 'https://claude.ai'
 PROVIDER = 'claude'
@@ -43,32 +40,18 @@ _GET_JS = """async (args) => {
         credentials: 'include',
     });
     const text = await resp.text();
-    return {status: resp.status, text};
+    return {status: resp.status, text, retryAfter: resp.headers.get('retry-after')};
 }"""
 
 
 def _get(page, url: str, retries: int = 3) -> dict:
-    """Page-side GET (cookies attach automatically); returns parsed JSON."""
-    last = None
-    for attempt in range(retries):
-        try:
-            r = page.evaluate(_GET_JS, {'url': url})
-            if r['status'] == 200:
-                return json.loads(r['text'])
-            if r['status'] == 404:
-                raise RuntimeError('HTTP 404 — chat deleted?')
-            if r['status'] in (401, 403):
-                raise RuntimeError(f'auth failed ({r["status"]}) — session expired?')
-            if r['status'] == 429:
-                time.sleep(5 + attempt * 5)
-                continue
-            last = f'HTTP {r["status"]}: {r["text"][:120]}'
-        except RuntimeError:
-            raise
-        except Exception as e:
-            last = e
-        time.sleep(2 + attempt * 2)
-    raise RuntimeError(f'GET {url[:80]} failed: {last}')
+    """Page-side GET (cookies attach automatically) with the shared retry
+    policy (see core/retry.py); returns parsed JSON."""
+    response = retry.send(lambda: page.evaluate(_GET_JS, {'url': url}),
+                          what=f'Claude GET {url[:80]}', retries=retries, give_back=(404,))
+    if response['status'] == 404:
+        raise RuntimeError('HTTP 404 — chat deleted?')
+    return json.loads(response['text'])
 
 
 def _cookies(page) -> dict:
@@ -86,25 +69,16 @@ def ensure_logged_in(page) -> str:
     # already exists: from about:blank or another provider's page in
     # `reclaim all`, every request fails with "Failed to fetch".
     if urlsplit(page.url).hostname != urlsplit(BASE_URL).hostname:
-        try:
+        with contextlib.suppress(Exception):
             page.goto(BASE_URL, wait_until='domcontentloaded', timeout=60000)
-        except Exception:
-            pass
         time.sleep(4)
     if not _cookies(page).get('sessionKey'):
-        page.bring_to_front()
-        browser.set_window_bounds(page, state='normal', left=100, top=100)
-        print('\n' + '=' * 50)
-        print('  LOG IN to Claude in the browser window.')
-        print('  Waiting (up to 15 minutes)...')
-        print('=' * 50 + '\n')
-        import os
-        deadline = time.time() + int(os.environ.get('RECLAIM_LOGIN_TIMEOUT', '900'))
+        timeout = browser.login_timeout()
+        browser.ask_for_login(page, PROVIDER, 'Claude', timeout)
+        deadline = time.time() + timeout
         while time.time() < deadline:
             if _cookies(page).get('sessionKey'):
-                print('Logged in! Hiding window...\n')
-                browser.set_window_bounds(page, state='minimized')
-                time.sleep(2)
+                browser.login_done(page, PROVIDER)
                 break
             time.sleep(3)
         else:
@@ -122,49 +96,59 @@ def ensure_logged_in(page) -> str:
     return org
 
 
+def _page_rows(data) -> list:
+    """The conversations of one list page: the response itself (offset
+    paging) or its conversations/items/data field (cursor paging)."""
+    rows = data
+    if isinstance(data, dict):
+        rows = next((data[key] for key in ('conversations', 'items', 'data') if key in data), None)
+    if not isinstance(rows, list):
+        raise RuntimeError('unexpected Claude conversation list shape')
+    return rows
+
+
+def _next_cursor(data, seen: set[str]) -> str | None:
+    """The cursor of the next page, None after the last one."""
+    cursor = data.get('nextCursor') or data.get('cursor')
+    if not cursor:
+        return None
+    if not isinstance(cursor, str) or cursor in seen:
+        raise RuntimeError('Claude returned an invalid or repeated conversation cursor')
+    seen.add(cursor)
+    return cursor
+
+
 def list_chats(page, org: str) -> list[dict]:
-    """GET .../chat_conversations, offset-paginated. Normalized items:
-    {'id': uuid, 'title': name, 'updated_at': <ISO string>}."""
-    items, offset, cursor = [], 0, None
-    seen_ids, seen_cursors = set(), set()
+    """GET .../chat_conversations, offset- or cursor-paginated. Normalized
+    items: {'id': uuid, 'title': name, 'updated_at': <ISO string>}.
+
+    Stops with an error rather than looping when a page adds nothing new or
+    a cursor repeats."""
+    items: dict[str, dict] = {}  # by uuid, in listing order
+    offset, cursor, seen_cursors = 0, None, set()
     while True:
         query: dict[str, str | int] = {'limit': LIST_LIMIT}
         query['cursor' if cursor is not None else 'offset'] = cursor if cursor is not None else offset
         data = _get(page, f'{BASE_URL}/api/organizations/{org}'
                           f'/chat_conversations?{urlencode(query)}')
+        rows = _page_rows(data)
+        before = len(items)
+        for row in rows:
+            if not isinstance(row, dict) or not row.get('uuid'):
+                raise RuntimeError('unexpected Claude conversation row')
+            items.setdefault(row['uuid'], {'id': row['uuid'], 'title': row.get('name') or '',
+                                           'updated_at': row.get('updated_at')})
+        if rows and len(items) == before:
+            raise RuntimeError('Claude conversation pagination made no progress')
         cursor_mode = isinstance(data, dict) and any(
             key in data for key in ('conversations', 'items', 'cursor', 'nextCursor'))
-        if isinstance(data, list):
-            batch = data
-        elif isinstance(data, dict):
-            batch = next((data[key] for key in ('conversations', 'items', 'data')
-                          if key in data), None)
-        else:
-            batch = None
-        if not isinstance(batch, list):
-            raise RuntimeError('unexpected Claude conversation list shape')
-        added = 0
-        for it in batch:
-            if not isinstance(it, dict) or not it.get('uuid'):
-                raise RuntimeError('unexpected Claude conversation row')
-            if it['uuid'] in seen_ids:
-                continue
-            seen_ids.add(it['uuid'])
-            items.append({'id': it['uuid'], 'title': it.get('name') or '',
-                          'updated_at': it.get('updated_at')})
-            added += 1
-        if batch and not added:
-            raise RuntimeError('Claude conversation pagination made no progress')
         if cursor_mode:
-            cursor = data.get('nextCursor') or data.get('cursor')
-            if not cursor:
-                return items
-            if not isinstance(cursor, str) or cursor in seen_cursors:
-                raise RuntimeError('Claude returned an invalid or repeated conversation cursor')
-            seen_cursors.add(cursor)
-        elif not batch:
-            return items
-        offset += len(batch)
+            cursor = _next_cursor(data, seen_cursors)
+            if cursor is None:
+                return list(items.values())
+        elif not rows:
+            return list(items.values())
+        offset += len(rows)
 
 
 # ---------------------------------------------------------------------------
@@ -193,44 +177,37 @@ def active_lineage(messages: list[dict], leaf_uuid) -> list[dict]:
     return list(messages)
 
 
+def _uploads(m: dict) -> list[Attachment]:
+    """Pasted or uploaded files (their extracted text is kept) and uploaded
+    images (downloaded later from their preview URL)."""
+    attachments = []
+    for a in m.get('attachments') or []:
+        if isinstance(a, dict):
+            name = a.get('file_name') or 'file'
+            text = a.get('extracted_content') or ''
+            attachments.append(Attachment(filename=name, kind='document',
+                                          data=text.encode('utf-8') if text else None,
+                                          description=name, source_url=a.get('file_url') or ''))
+    for f in m.get('files') or []:
+        if isinstance(f, dict):
+            url = (f.get('preview_asset') or {}).get('url') or f.get('preview_url') or ''
+            name = f.get('file_name') or 'image'
+            attachments.append(Attachment(filename=name, kind='image', data=None,
+                                          source_url=url, description=name))
+    return attachments
+
+
 def _block_turn(m: dict) -> tuple[str, bool, list[Attachment]]:
     """One message -> (text, had_thinking, attachments)."""
-    sender = m.get('sender')
-    if sender not in ('human', 'assistant'):
+    if m.get('sender') not in ('human', 'assistant'):
         return '', False, []
-    texts, thought = [], False
-    for block in m.get('content') or []:
-        if not isinstance(block, dict):
-            continue
-        btype = block.get('type')
-        if btype == 'text':
-            t = block.get('text') or ''
-            if t:
-                texts.append(t)
-        elif btype == 'thinking':
-            thought = True
-        # tool_use / tool_result / image blocks: skipped in v1 (documented gap)
+    blocks = [b for b in m.get('content') or [] if isinstance(b, dict)]
+    # tool_use / tool_result / image blocks: skipped in v1 (documented gap)
+    texts: list[str] = [b['text'] for b in blocks if b.get('type') == 'text' and b.get('text')]
+    thought = any(b.get('type') == 'thinking' for b in blocks)
     if not texts and isinstance(m.get('text'), str):
-        texts.append(m['text'])
-    atts: list[Attachment] = []
-    for a in m.get('attachments') or []:  # pasted/uploaded files
-        if not isinstance(a, dict):
-            continue
-        fname = a.get('file_name') or 'file'
-        text = a.get('extracted_content') or ''
-        atts.append(Attachment(filename=fname, kind='document',
-                               data=text.encode('utf-8') if text else None,
-                               description=fname,
-                               source_url=a.get('file_url') or ''))
-    for f in m.get('files') or []:  # image uploads (downloaded later)
-        if not isinstance(f, dict):
-            continue
-        url = ((f.get('preview_asset') or {}).get('url')
-               or f.get('preview_url') or '')
-        fname = f.get('file_name') or 'image'
-        atts.append(Attachment(filename=fname, kind='image', data=None,
-                               source_url=url, description=fname))
-    return '\n\n'.join(texts).strip(), thought, atts
+        texts.append(m['text'])  # older messages without content blocks
+    return '\n\n'.join(texts).strip(), thought, _uploads(m)
 
 
 def parse_chat(data: dict, chat_id: str, source_url: str,
@@ -271,148 +248,49 @@ def fetch_conversation(page, org: str, conv_id: str, title: str = '') -> tuple[C
     return chat, data
 
 
-def run(page, org: str, items: list[dict], out_dir: Path,
-        skip_unchanged: bool = False, save_raw: bool = True,
-        log: bool = False, sink: EventSink | None = None) -> list[dict]:
-    """Fetch the given conversations. Returns per-chat results for the manifest.
+class Claude(engine.Provider):
+    """What only Claude does; the engine does the rest."""
 
-    Per-chat lines print only with log=True (default output is
-    summary-level; failures always print)."""
-    out_dir = Path(out_dir)
-    sync = SyncState(out_dir, PROVIDER)
-    results = []
-    t_run = time.time()
-    for i, item in enumerate(items):
-        cid = item.get('id', '')
-        label = (item.get('title') or cid)[:55]
-        updated = item.get('updated_at')
-        emit(sink, 'chat_started', PROVIDER, label, i + 1, len(items))
-        if log:
-            print(progress(i + 1, len(items), t_run))
-        if skip_unchanged and sync.is_unchanged(cid, updated):
-            if log:
-                print(f'[{i + 1}/{len(items)}] {label} -> skip (unchanged)')
-            emit(sink, 'chat_skipped', PROVIDER, label, i + 1, len(items))
-            continue
-        t0 = time.time()
-        try:
-            chat, raw = fetch_conversation(page, org, cid, item.get('title', ''))
-            stats = save_chat(chat, out_dir, sync, cid, updated, raw if save_raw else None,
-                              sink=sink, provider=PROVIDER)
-            results.append({'id': cid, 'title': chat.title, 'ok': True,
-                            'duration_s': round(time.time() - t0, 1),
-                            **{k: stats[k] for k in ('turns', 'chars', 'images', 'docs')}})
-            emit(sink, 'chat_completed', PROVIDER, chat.title, i + 1, len(items))
-            if log:
-                extra = f", {stats['images']} img" if stats['images'] else ''
-                extra += f", {stats['docs']} doc" if stats['docs'] else ''
-                print(f'[{i + 1}/{len(items)}] {label} -> {stats["turns"]}t, '
-                      f'{stats["chars"]:,} chars{extra}')
-                print(f'    assets: {stats["images"] + stats["docs"]} · '
-                      f'{time.time() - t0:.1f}s')
-        except Exception as e:
-            print(f'[{i + 1}/{len(items)}] {label} -> FAILED: {e}')
-            traceback.print_exc()
-            results.append({'id': cid, 'title': label, 'ok': False, 'error': str(e)})
-            emit(sink, 'error', PROVIDER, label, i + 1, len(items), str(e))
-        time.sleep(0.4)
-    sync.save()
-    return results
+    name = PROVIDER
+    folder = 'Claude'
+    description = 'Save Claude.ai conversations to the database (update by default).'
+    noun = 'conversations'
+    pace = 0.4
+
+    def open(self, page):
+        return SimpleNamespace(page=page, org=ensure_logged_in(page))
+
+    def listing(self, s) -> list[engine.ChatRef]:
+        return [engine.ChatRef(id=item.get('id', ''), title=item.get('title', ''),
+                               updated_at=item.get('updated_at'), data=item)
+                for item in list_chats(s.page, s.org)]
+
+    def from_url(self, s, url: str) -> engine.ChatRef:
+        return engine.ChatRef(id=url.rstrip('/').split('/')[-1].split('?')[0])
+
+    def fetch(self, s, ref: engine.ChatRef) -> engine.Fetched:
+        chat, raw = fetch_conversation(s.page, s.org, ref.id, ref.title)
+        return engine.Fetched(chat, raw=raw)
 
 
-def build_parser() -> argparse.ArgumentParser:
-    ap = argparse.ArgumentParser(
-        prog='reclaim claude',
-        description='Save Claude.ai conversations to the database (update by default).')
-    ap.add_argument('title', nargs='?',
-                    help='fetch chats whose title contains this '
-                         '(case-insensitive)')
-    ap.add_argument('--rebuild', action='store_true',
-                    help='fetch everything, overwriting local copies')
-    ap.add_argument('--url', help='fetch one exact chat URL')
-    ap.add_argument('--list', action='store_true',
-                    help='print chat titles, no download')
-    ap.add_argument('--log', action='store_true',
-                    help='full per-chat log + verbose progress and timings')
-    ap.add_argument('--dry-run', action='store_true',
-                    help='preview what would be fetched; nothing downloaded')
-    ap.add_argument('--skip', type=int, default=0,
-                    help='skip the first N chats in the listing')
-    ap.add_argument('--limit', type=int, default=0,
-                    help='fetch at most N chats')
-    ap.add_argument('--no-raw', action='store_true',
-                    help='do not save media-stripped raw.json per chat')
-    ap.add_argument('-o', '--output-dir',
-                    default=str(config.archive_root() / 'Claude'))
-    return ap
+SPEC = Claude()
+
+
+def build_parser():
+    return engine.build_parser(SPEC)
 
 
 def parse_args(argv=None):
-    """Parse + validate CLI args (shared by main() and `reclaim all`)."""
-    ap = build_parser()
-    args = ap.parse_args(argv)
-    if args.title and args.url:
-        ap.error('pass a title or --url, not both')
-    return args
-
-
-def main(argv=None):
-    args = parse_args(argv)
-    from playwright.sync_api import sync_playwright
-    with sync_playwright() as p:
-        ctx, page = browser.launch(p)
-        try:
-            return run_session(page, args)
-        finally:
-            ctx.close()
+    return engine.parse_args(SPEC, argv)
 
 
 def run_session(page, args, sink: EventSink | None = None) -> int:
-    """Provider session on an already-launched page; shared by main()
-    (own browser) and `reclaim all` (one browser for all providers)."""
-    out_dir = Path(args.output_dir)
-    started = time.time()
-    org = ensure_logged_in(page)
-    if args.url:
-        cid = args.url.rstrip('/').split('/')[-1].split('?')[0]
-        items = [{'id': cid, 'title': '', 'updated_at': None}]
-    else:
-        print('Listing conversations...')
-        items = list_chats(page, org)
-        print(f'Found {len(items)} conversations')
-    if args.title:
-        items = [c for c in items
-                 if args.title.lower() in (c.get('title') or '').lower()]
-    if args.skip:
-        items = items[args.skip:]
-    if args.limit:
-        items = items[:args.limit]
-    if not items:
-        print('No chats matched.')
-        return 1
-    if args.list:
-        for n, c in enumerate(items, 1):
-            print(f'{n}. {c.get("title") or c["id"]}')
-        print(f'-- {len(items)} chat(s)')
-        return 0
-    skip_unchanged = not args.rebuild and not args.title
-    if args.dry_run:
-        sync = SyncState(out_dir, PROVIDER, migrate=False)
-        updated_map = {c.get('id', ''): c.get('updated_at') for c in items}
-        return print_dry_run(items, updated_map, sync, skip_unchanged,
-                             log=args.log, sink=sink, provider=PROVIDER)
+    """This provider on an already opened page (window and command line)."""
+    return engine.run_session(SPEC, page, args, sink)
 
-    out_dir.mkdir(parents=True, exist_ok=True)
-    print(f"\n{'=' * 50}\n  {len(items)} conversations\n{'=' * 50}\n")
-    results = run(page, org, items, out_dir, skip_unchanged=skip_unchanged,
-                  save_raw=not args.no_raw, log=args.log, sink=sink)
-    manifest = write_manifest(out_dir, PROVIDER, results, started)
-    ok = sum(1 for r in results if r.get('ok'))
-    print(f"\n{'=' * 50}")
-    print(f'  Done: {ok} ok, {len(results) - ok} failed')
-    print(f'  Manifest: {manifest}')
-    print(f"{'=' * 50}")
-    return 0 if ok == len(results) else 2
+
+def main(argv=None):
+    return engine.main(SPEC, argv)
 
 
 if __name__ == '__main__':

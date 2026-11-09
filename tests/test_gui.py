@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from io import StringIO
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 from unittest.mock import patch
 
 from reclaim.core.events import ProgressEvent
@@ -234,6 +234,88 @@ class TestGuiSafeguards(unittest.IsolatedAsyncioTestCase):
         self.assertTrue((new_folder / gui.database.MARKER).exists())
         self.assertEqual(gui.config.load(self.root)['archive'], str(new_folder))
         self.assertEqual(window.archive_path.value, str(new_folder))
+
+
+class _CheckController(_Controller):
+    def run(self, providers, mode='update', sink=None, *, log=False):
+        self.calls.append((list(providers), mode))
+        assert sink is not None
+        for name in providers:
+            sink(ProgressEvent('checked', name, message='logged in · 3 chats listed'))
+        return RunSummary(tuple((name, 0) for name in providers))
+
+
+class _Clipboard:
+    copied: ClassVar[list[str]] = []  # what the fake clipboard received
+
+    async def set(self, value):
+        _Clipboard.copied.append(value)
+
+
+@unittest.skipUnless(gui.ft is not None, 'Flet GUI extra is not installed')
+class TestGuiDiagnostics(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.page = _Page()
+        self.controller = _CheckController()
+        self.window = gui.ReclaimWindow(self.page, self.root, self.controller)
+        await self.window.refresh_archive()
+
+    async def asyncTearDown(self):
+        self.temp.cleanup()
+
+    def dialog_actions(self):
+        dialog = self.page.dialog
+        assert dialog is not None
+        return {a.key: a for a in dialog.actions}
+
+    def dialog_text(self):
+        dialog = self.page.dialog
+        assert dialog is not None
+        texts = []
+        for row in dialog.content.content.controls[1:]:
+            texts.extend(c.value for c in row.controls[1].controls)
+        return ' '.join(texts)
+
+    async def test_panel_shows_checks_and_runs_the_live_check(self):
+        await self.window._diagnostics()
+        self.assertIn('Settings: defaults (no settings file)', self.dialog_text())
+        actions = self.dialog_actions()
+        await actions['diagnostics-live'].on_click(None)
+        self.assertEqual(self.controller.calls[0][1], 'check')
+        self.assertIn('Live check completed successfully', self.window.summary.value)
+        self.assertIn('ChatGPT: logged in · 3 chats listed', self.dialog_text())
+        self.assertEqual(self.window.provider_status['kimi'].value,
+                         'Live check: logged in · 3 chats listed')
+
+    async def test_copy_diagnostics(self):
+        await self.window._diagnostics()
+        actions = self.dialog_actions()
+        with patch.object(gui.ft, 'Clipboard', _Clipboard):
+            await actions['diagnostics-copy'].on_click(None)
+        self.assertIn('Reclaim My Chats diagnostics', _Clipboard.copied[-1])
+        self.assertIn('Diagnostics copied', self.window.summary.value)
+
+
+@unittest.skipUnless(gui.ft is not None, 'Flet GUI extra is not installed')
+class TestGuiLoginRequest(unittest.IsolatedAsyncioTestCase):
+    async def test_login_request_shows_in_the_status_and_the_provider_row(self):
+        with tempfile.TemporaryDirectory() as temp:
+            page = _Page()
+            window = gui.ReclaimWindow(page, Path(temp), _Controller())
+            await window.refresh_archive()
+            request = 'Log in to Kimi in the browser window. Waiting up to 15 minutes...'
+            window._event(ProgressEvent('provider_started', 'kimi', current=1, total=1))
+            window._event(ProgressEvent('login_needed', 'kimi', message=request))
+            self.assertEqual(window.current.value, f'Kimi: {request}')
+            self.assertEqual(window.provider_status['kimi'].value,
+                             'Waiting for login in the browser window')
+            self.assertIn(f'Kimi: {request}', window.log.value)
+            window._event(ProgressEvent('logged_in', 'kimi', message='Logged in.'))
+            self.assertEqual(window.provider_status['kimi'].value, 'Running')
+            window._event(ProgressEvent('chat_started', 'kimi', 'Example', 1, 2))
+            self.assertNotIn('Example', window.log.value)  # progress, not Details
 
 
 class TestOptionalGui(unittest.TestCase):

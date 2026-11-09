@@ -17,18 +17,15 @@ images and citations are v1 gaps (documented below).
 
 from __future__ import annotations
 
-import argparse
+import contextlib
 import re
 import time
-import traceback
-from pathlib import Path
+from types import SimpleNamespace
 
-from ..core import browser, config
-from ..core.events import EventSink, emit
+from ..core import browser, engine, retry
+from ..core.events import EventSink
 from ..core.batchexecute import build_f_req, decode_response, error_message
-from ..core.manifest import SyncState, print_dry_run, save_chat, write_manifest
 from ..core.model import Chat, Turn
-from ..core.progress import progress
 
 APP_URL = 'https://gemini.google.com/app'
 BATCH_URL = 'https://gemini.google.com/_/BardChatUi/data/batchexecute'
@@ -52,7 +49,7 @@ RPC_JS = """window.__ggRpc = async function(a) {
         body: form.toString(),
     });
     const text = await resp.text();
-    return {status: resp.status, text};
+    return {status: resp.status, text, retryAfter: resp.headers.get('retry-after')};
 }; 'ready'"""
 
 
@@ -77,13 +74,12 @@ def extract_tokens(html: str) -> dict:
 
 
 def ensure_logged_in(page):
-    try:
+    with contextlib.suppress(Exception):
         page.goto(APP_URL, wait_until='domcontentloaded', timeout=60000)
-    except Exception:
-        pass
     time.sleep(3)
     browser.interactive_login(page, 'accounts.google.com',
-                              browser.on_host('gemini.google.com'), 'Google')
+                              browser.on_host('gemini.google.com'), 'Google',
+                              provider=PROVIDER)
 
 
 def init_session(page) -> dict:
@@ -92,10 +88,8 @@ def init_session(page) -> dict:
     time.sleep(2)
     tokens = extract_tokens(page.content())
     if 'SNlM0e' not in tokens:
-        try:
+        with contextlib.suppress(Exception):
             page.reload(wait_until='domcontentloaded', timeout=60000)
-        except Exception:
-            pass
         time.sleep(3)
         tokens = extract_tokens(page.content())
     if 'SNlM0e' not in tokens:
@@ -109,96 +103,74 @@ def rpc_call(page, tokens: dict, rpcid: str, payload, reqid: int,
              retries: int = 3) -> tuple[int, str]:
     """One batchexecute call. Retries 1013 (transient); raises on
     quota/rate-limit codes and HTTP auth failures."""
-    last_err = None
+    request = {'url': BATCH_URL, 'rpcid': rpcid, 'payload': payload,
+               'freq': build_f_req(rpcid, payload), 'at': tokens.get('SNlM0e', ''),
+               'bl': tokens.get('cfb2h', ''), 'sid': tokens.get('FdrFJe', ''), 'reqid': reqid}
     for attempt in range(retries):
+        response = retry.send(lambda: page.evaluate("(a) => window.__ggRpc(a)", request),
+                              what=f'Gemini RPC {rpcid}', retries=retries)
         try:
-            r = page.evaluate(
-                "(a) => window.__ggRpc(a)",
-                {'url': BATCH_URL, 'rpcid': rpcid,
-                 'payload': payload,
-                 'freq': build_f_req(rpcid, payload),
-                 'at': tokens.get('SNlM0e', ''),
-                 'bl': tokens.get('cfb2h', ''),
-                 'sid': tokens.get('FdrFJe', ''),
-                 'reqid': reqid})
-            if r['status'] != 200:
-                if r['status'] in (401, 403):
-                    raise RuntimeError(f'auth failed ({r["status"]}) — '
-                                       'session expired?')
-                last_err = f'HTTP {r["status"]}: {r["text"][:120]}'
-                time.sleep(2 + attempt * 2)
-                continue
-            decoded = decode_response(r['text'], rpcid)
-            err = error_message(decoded)
-            if err is None:
-                return 200, r['text']
-            if '1013' in err and attempt < retries - 1:
-                time.sleep(2 + attempt * 2)
-                continue
-            raise RuntimeError(f'RPC {rpcid} error: {err}')
-        except RuntimeError:
-            raise
-        except Exception as e:
-            last_err = e
+            err = error_message(decode_response(response['text'], rpcid))
+        except Exception as exc:
+            raise RuntimeError(f'Gemini RPC {rpcid}: unexpected response ({exc})') from exc
+        if err is None:
+            return 200, response['text']
+        if '1013' in err and attempt < retries - 1:  # batchexecute's "try again"
             time.sleep(2 + attempt * 2)
-    raise RuntimeError(f'RPC {rpcid} failed after {retries} attempts: {last_err}')
+            continue
+        raise RuntimeError(f'RPC {rpcid} error: {err}')
+    raise RuntimeError(f'Gemini RPC {rpcid} failed after {retries} attempts')
 
 
 # ---------------------------------------------------------------------------
 # Parsing (pure, fixture-tested; defensive against field drift)
 # ---------------------------------------------------------------------------
+def _is_list_row(row: list) -> bool:
+    """A chat in the chat list: [chatId, title, ...]."""
+    return len(row) > 1 and isinstance(row[0], str) and bool(row[0]) and isinstance(row[1], str)
+
+
+def _is_turn_row(row: list) -> bool:
+    """A turn of a chat: [ids, ?, user prompt section, answer candidates, ...]."""
+    return (isinstance(row[0], (str, list)) and len(row) > 3
+            and isinstance(row[2], list) and isinstance(row[3], list))
+
+
+def _known_places(data) -> list:
+    """Where the rows usually are: data[2], data[0], then data[0][1] and
+    data[0][0] (older nested layouts)."""
+    if not isinstance(data, list) or not data:
+        return []
+    places = [data[2]] if len(data) > 2 else []
+    places.append(data[0])
+    if isinstance(data[0], list):
+        places += [data[0][i] for i in (1, 0) if len(data[0]) > i]
+    return places
+
+
+def _lists_within(value):
+    """Every list inside `value`, depth first, the outer one first."""
+    if isinstance(value, list):
+        yield value
+        for item in value:
+            yield from _lists_within(item)
+
+
 def _find_rows(data, want_user: bool = False):
     """Locate the rows/turns array in a decoded batchexecute payload.
 
-    Documented candidate paths first (data[2], data[0], legacy nested rows),
-    then a recursive search for the deepest array whose elements look
-    like the expected rows. Returns the best candidate or [].
+    Looks in the known places first, then everywhere, and returns the array
+    with the most elements shaped like the wanted rows (the first one found
+    on a tie), or [] when none is.
     """
-    candidates = []
-    if isinstance(data, list):
-        if len(data) > 2:
-            candidates.append(data[2])
-        if data:
-            candidates.append(data[0])
-    if isinstance(data, list) and data and isinstance(data[0], list):
-        for i in (1, 0):
-            if len(data[0]) > i:
-                candidates.append(data[0][i])
-
-    def score(cand):
-        if not isinstance(cand, list) or not cand:
-            return -1
-        n_ok = 0
-        for el in cand:
-            if not isinstance(el, list) or not el:
-                continue
-            if want_user:
-                # read rows: turn[2] user prompt array + turn[3] candidates
-                if (isinstance(el[0], (str, list)) and len(el) > 3
-                        and isinstance(el[2], list)
-                        and isinstance(el[3], list)):
-                    n_ok += 1
-            else:
-                # list rows: [chatId, title, ...]
-                if (len(el) > 1 and isinstance(el[0], str) and el[0]
-                        and isinstance(el[1], str)):
-                    n_ok += 1
-        return n_ok
-
-    best, best_n = None, 0
-
-    def walk(o):
-        nonlocal best, best_n
-        if isinstance(o, list):
-            n = score(o)
-            if n > best_n:
-                best, best_n = o, n
-            for el in o:
-                walk(el)
-
-    for c in [*candidates, data]:
-        walk(c)
-    return best if best is not None else []
+    looks_like = _is_turn_row if want_user else _is_list_row
+    best, best_count = [], 0
+    for place in [*_known_places(data), data]:
+        for candidate in _lists_within(place):
+            count = sum(1 for row in candidate if isinstance(row, list) and row and looks_like(row))
+            if count > best_count:
+                best, best_count = candidate, count
+    return best
 
 
 def parse_list(data) -> list[dict]:
@@ -225,6 +197,57 @@ def parse_list(data) -> list[dict]:
     return out
 
 
+def _unwrap(value) -> str:
+    """The text inside list wrappers: ['...'] or [['...']]."""
+    while isinstance(value, list) and value:
+        value = value[0]
+    return value if isinstance(value, str) else ''
+
+
+def _turn_time(row):
+    """A turn's epoch seconds, when the row carries them (at [1] or [4])."""
+    for index in (1, 4):
+        if len(row) > index and isinstance(row[index], list) and row[index]:
+            value = row[index][0]
+            if isinstance(value, (int, float)) and value > 1e9:
+                return value
+    return None
+
+
+def _oldest_first(rows: list) -> list:
+    """Turns in reading order: by time when every turn has one; otherwise the
+    current API, whose ids are [conversation_id, reply_id], lists the newest
+    first."""
+    if rows and all(_turn_time(row) is not None for row in rows):
+        return sorted(rows, key=lambda row: _turn_time(row) or 0)
+    if rows and all(isinstance(row[0], list) for row in rows):
+        return list(reversed(rows))
+    return rows
+
+
+def _turn_entries(turn: list) -> list[dict]:
+    """A turn's user prompt and the model's answer (its first candidate)."""
+    user_text = _unwrap(turn[2][0]) if isinstance(turn[2], list) and turn[2] else ''
+    answers = turn[3]
+    candidate = (answers[0][0] if isinstance(answers, list) and answers
+                 and isinstance(answers[0], list) and answers[0] else None)
+    model_text, thought = '', False
+    if isinstance(candidate, list):
+        model_text = _unwrap(candidate[1]) if len(candidate) > 1 else ''
+        # the thoughts section: candidate[37], in some captures turn[37]
+        thought = bool(candidate[37]) if len(candidate) > 37 else (
+            len(turn) > 37 and bool(turn[37]))
+    entries = []
+    if user_text.strip():
+        entries.append({'role': 'user', 'text': user_text, 'thought': False})
+    if model_text.strip():
+        entries.append({'role': 'model', 'text': model_text,
+                        'thought': False, 'had_thoughts': thought})
+    elif thought:
+        entries.append({'role': 'model', 'text': '', 'thought': True})
+    return entries
+
+
 def parse_read(data) -> list[dict]:
     """hNvQHb result -> [{role, text, thought}] pairs.
 
@@ -234,49 +257,10 @@ def parse_read(data) -> list[dict]:
     list-wrapped (['...']); unwrapped defensively. Citations
     (candidate[2]) and generated/uploaded images are v1 gaps.
     """
-    def _unwrap(v) -> str:
-        while isinstance(v, list) and v:
-            v = v[0]
-        return v if isinstance(v, str) else ''
-
-    rows = _find_rows(data, want_user=True)
-    def timestamp(row):
-        for index in (1, 4):
-            if len(row) > index and isinstance(row[index], list) and row[index]:
-                value = row[index][0]
-                if isinstance(value, (int, float)) and value > 1e9:
-                    return value
-        return None
-
-    if rows and all(timestamp(row) is not None for row in rows):
-        rows = sorted(rows, key=lambda row: timestamp(row) or 0)
-    elif rows and all(isinstance(row[0], list) for row in rows):
-        rows = list(reversed(rows))  # current API metadata [conversation_id, reply_id]
     out = []
-    for t in rows:
-        if not isinstance(t, list) or len(t) < 4:
-            continue
-        user_text = _unwrap(t[2][0]) if isinstance(t[2], list) and t[2] else ''
-        cand = None
-        if isinstance(t[3], list) and t[3] and isinstance(t[3][0], list) \
-                and t[3][0]:
-            cand = t[3][0][0]
-        model_text = ''
-        thought = False
-        if isinstance(cand, list):
-            if len(cand) > 1:
-                model_text = _unwrap(cand[1])
-            if len(cand) > 37:
-                thought = bool(cand[37])
-            elif len(t) > 37:
-                thought = bool(t[37])
-        if user_text.strip():
-            out.append({'role': 'user', 'text': user_text, 'thought': False})
-        if model_text.strip():
-            out.append({'role': 'model', 'text': model_text,
-                        'thought': False, 'had_thoughts': thought})
-        elif thought:
-            out.append({'role': 'model', 'text': '', 'thought': True})
+    for turn in _oldest_first(_find_rows(data, want_user=True)):
+        if isinstance(turn, list) and len(turn) >= 4:
+            out += _turn_entries(turn)
     return out
 
 
@@ -293,6 +277,8 @@ def read_to_chat(parsed: list[dict], chat_id: str, source_url: str,
 # Listing + fetching
 # ---------------------------------------------------------------------------
 def list_chats(page, tokens: dict, reqid: int) -> tuple[list[dict], int]:
+    """Every chat through the list RPC, paged with its cursor. Returns the
+    chats and the next request id (Gemini expects increasing ids)."""
     chats, cursor = [], None
     seen_ids, seen_cursors = set(), set()
     while True:
@@ -320,6 +306,9 @@ def list_chats(page, tokens: dict, reqid: int) -> tuple[list[dict], int]:
 
 def fetch_chat(page, tokens: dict, chat_id: str, reqid: int,
                title: str = '') -> tuple[Chat, list, int]:
+    """One chat through the read RPC: (chat, raw payload, next request id).
+    A reply with MAX_TURNS turns may be cut short, so it is refused rather
+    than saved incomplete."""
     payload = [chat_id, MAX_TURNS]
     status, text = rpc_call(page, tokens, READ_RPC, payload, reqid)
     if status != 200:
@@ -335,156 +324,50 @@ def fetch_chat(page, tokens: dict, chat_id: str, reqid: int,
     return chat, raw, reqid + 1
 
 
-def run(page, tokens: dict, chats: list[dict], out_dir: Path,
-        skip_unchanged: bool = False, updated_map: dict | None = None,
-        save_raw: bool = True, log: bool = False,
-        sink: EventSink | None = None) -> list[dict]:
-    """Fetch the given chats. Returns per-chat result dicts for the manifest.
+class GoogleGemini(engine.Provider):
+    """What only Gemini does; the engine does the rest."""
 
-    skip_unchanged: skip chats whose server updated_at matches the local
-    sync record (the default update mode). title/--url/--rebuild
-    selections pass False so matches are always fetched freshly. Per-chat
-    lines print only with log=True (failures always print).
-    """
-    out_dir = Path(out_dir)
-    sync = SyncState(out_dir, PROVIDER)
-    updated_map = updated_map or {}
-    results = []
-    t_run = time.time()
-    reqid = 100000
-    for i, chat in enumerate(chats):
-        label = (chat.get('title') or chat['id'])[:55]
-        emit(sink, 'chat_started', PROVIDER, label, i + 1, len(chats))
-        if log:
-            print(progress(i + 1, len(chats), t_run))
-        if skip_unchanged and sync.is_unchanged(chat['id'],
-                                                updated_map.get(chat['id'])):
-            if log:
-                print(f'[{i + 1}/{len(chats)}] {label} -> skip (unchanged)')
-            emit(sink, 'chat_skipped', PROVIDER, label, i + 1, len(chats))
-            continue
-        t0 = time.time()
-        try:
-            canonical, raw, reqid = fetch_chat(page, tokens, chat['id'],
-                                               reqid, chat.get('title', ''))
-            stats = save_chat(canonical, out_dir, sync, chat['id'], updated_map.get(chat['id']),
-                              raw if save_raw else None, sink=sink, provider=PROVIDER)
-            results.append({'id': chat['id'], 'title': canonical.title,
-                            'ok': True,
-                            'duration_s': round(time.time() - t0, 1),
-                            **{k: stats[k] for k in ('turns', 'chars', 'images', 'docs')}})
-            emit(sink, 'chat_completed', PROVIDER, canonical.title,
-                 i + 1, len(chats))
-            if log:
-                print(f'[{i + 1}/{len(chats)}] {label} -> {stats["turns"]}t, '
-                      f'{stats["chars"]:,} chars · {time.time() - t0:.1f}s')
-        except Exception as e:
-            print(f'[{i + 1}/{len(chats)}] {label} -> FAILED: {e}')
-            traceback.print_exc()
-            results.append({'id': chat['id'], 'title': label, 'ok': False,
-                            'error': str(e)})
-            emit(sink, 'error', PROVIDER, label, i + 1, len(chats), str(e))
-        time.sleep(0.4)
-    sync.save()
-    return results
+    name = PROVIDER
+    folder = 'Google Gemini'
+    description = 'Save Google Gemini chats to the database (update by default).'
+    pace = 0.4
+
+    def open(self, page):
+        ensure_logged_in(page)
+        # Each request carries a counter that keeps increasing during a session.
+        return SimpleNamespace(page=page, tokens=init_session(page), reqid=100000)
+
+    def listing(self, s) -> list[engine.ChatRef]:
+        chats, s.reqid = list_chats(s.page, s.tokens, s.reqid)
+        return [engine.ChatRef(id=c['id'], title=c.get('title', ''),
+                               updated_at=c.get('updated_at'), data=c) for c in chats]
+
+    def from_url(self, s, url: str) -> engine.ChatRef:
+        return engine.ChatRef(id=url.rstrip('/').split('/')[-1].split('?')[0])
+
+    def fetch(self, s, ref: engine.ChatRef) -> engine.Fetched:
+        chat, raw, s.reqid = fetch_chat(s.page, s.tokens, ref.id, s.reqid, ref.title)
+        return engine.Fetched(chat, raw=raw)
 
 
-def build_parser() -> argparse.ArgumentParser:
-    ap = argparse.ArgumentParser(
-        prog='reclaim googlegemini',
-        description='Save Google Gemini chats to the database (update by default).')
-    ap.add_argument('title', nargs='?',
-                    help='fetch chats whose title contains this '
-                         '(case-insensitive)')
-    ap.add_argument('--rebuild', action='store_true',
-                    help='fetch everything, overwriting local copies')
-    ap.add_argument('--url', help='fetch one exact chat URL')
-    ap.add_argument('--list', action='store_true',
-                    help='print chat titles, no download')
-    ap.add_argument('--log', action='store_true',
-                    help='full per-chat log + verbose progress and timings')
-    ap.add_argument('--dry-run', action='store_true',
-                    help='preview what would be fetched; nothing downloaded')
-    ap.add_argument('--skip', type=int, default=0,
-                    help='skip the first N chats in the listing')
-    ap.add_argument('--limit', type=int, default=0,
-                    help='fetch at most N chats')
-    ap.add_argument('--no-raw', action='store_true',
-                    help='do not save media-stripped raw.json per chat')
-    ap.add_argument('-o', '--output-dir',
-                    default=str(config.archive_root() / 'Google Gemini'))
-    return ap
+SPEC = GoogleGemini()
+
+
+def build_parser():
+    return engine.build_parser(SPEC)
 
 
 def parse_args(argv=None):
-    """Parse + validate CLI args (shared by main() and `reclaim all`)."""
-    ap = build_parser()
-    args = ap.parse_args(argv)
-    if args.title and args.url:
-        ap.error('pass a title or --url, not both')
-    return args
-
-
-def main(argv=None):
-    args = parse_args(argv)
-    from playwright.sync_api import sync_playwright
-    with sync_playwright() as p:
-        ctx, page = browser.launch(p)
-        try:
-            return run_session(page, args)
-        finally:
-            ctx.close()
+    return engine.parse_args(SPEC, argv)
 
 
 def run_session(page, args, sink: EventSink | None = None) -> int:
-    """Provider session on an already-launched page; shared by main()
-    (own browser) and `reclaim all` (one browser for all providers)."""
-    out_dir = Path(args.output_dir)
-    started = time.time()
-    ensure_logged_in(page)
-    tokens = init_session(page)
-    if args.url:
-        cid = args.url.rstrip('/').split('/')[-1].split('?')[0]
-        chats = [{'id': cid, 'title': ''}]
-        updated_map = {}
-    else:
-        print('Listing chats...')
-        chats, _ = list_chats(page, tokens, 100000)
-        updated_map = {c['id']: c.get('updated_at') for c in chats}
-        print(f'Found {len(chats)} chats')
-    if args.title:
-        chats = [c for c in chats
-                 if args.title.lower() in (c.get('title') or '').lower()]
-    if args.skip:
-        chats = chats[args.skip:]
-    if args.limit:
-        chats = chats[:args.limit]
-    if not chats:
-        print('No chats matched.')
-        return 1
-    if args.list:
-        for n, c in enumerate(chats, 1):
-            print(f'{n}. {c.get("title") or c["id"]}')
-        print(f'-- {len(chats)} chat(s)')
-        return 0
-    skip_unchanged = not args.rebuild and not args.title
-    if args.dry_run:
-        sync = SyncState(out_dir, PROVIDER, migrate=False)
-        return print_dry_run(chats, updated_map, sync, skip_unchanged,
-                             log=args.log, sink=sink, provider=PROVIDER)
+    """This provider on an already opened page (window and command line)."""
+    return engine.run_session(SPEC, page, args, sink)
 
-    out_dir.mkdir(parents=True, exist_ok=True)
-    print(f"\n{'=' * 50}\n  {len(chats)} chats\n{'=' * 50}\n")
-    results = run(page, tokens, chats, out_dir, skip_unchanged=skip_unchanged,
-                  updated_map=updated_map, save_raw=not args.no_raw,
-                  log=args.log, sink=sink)
-    manifest = write_manifest(out_dir, PROVIDER, results, started)
-    ok = sum(1 for r in results if r.get('ok'))
-    print(f"\n{'=' * 50}")
-    print(f'  Done: {ok} ok, {len(results) - ok} failed')
-    print(f'  Manifest: {manifest}')
-    print(f"{'=' * 50}")
-    return 0 if ok == len(results) else 2
+
+def main(argv=None):
+    return engine.main(SPEC, argv)
 
 
 if __name__ == '__main__':

@@ -25,11 +25,14 @@ import argparse
 import json
 import re
 import time
+import traceback
+import zipfile
 from pathlib import Path
 
 from ..core import config
+from ..core.events import emit
 from ..core.service import offline_session
-from ..core.manifest import SyncState, write_manifest
+from ..core.manifest import SyncState, finish_run, stats_text
 from ..core.model import Attachment, Chat, Turn
 from ..core.writer import write_chat
 from . import chatgpt_references
@@ -37,7 +40,7 @@ from . import chatgpt_references
 PROVIDER = 'chatgpt'
 
 _SKIP_CONTENT_TYPES = {'thoughts', 'reasoning_recap', 'system_message'}
-_IMG_EXT = re.compile(r'\.(png|jpe?g|gif|webp)$', re.I)
+_IMG_EXT = re.compile(r'\.(png|jpe?g|gif|webp)$', re.IGNORECASE)
 
 
 def _linearize(mapping: dict, current_node: str | None) -> list[dict]:
@@ -100,26 +103,32 @@ def _content_parts(msg: dict) -> list:
     if not isinstance(parts, list):
         return []
     parts = [chatgpt_references.resolve(p, meta) if isinstance(p, str) else p for p in parts]
-    return parts + [sources] if sources and parts else parts
+    return [*parts, sources] if sources and parts else parts
 
 
-def _node_to_turn(node: dict) -> Turn | None:
+def _visible_message(node: dict) -> tuple[dict, str] | None:
+    """The node's message and its turn role ('user' or 'model') when ChatGPT
+    shows it: not hidden, not a reasoning step or a tool call, and written by
+    the user or the assistant. Shared by the live download and the export."""
     msg = node.get('message')
     if not msg:
         return None
     meta = msg.get('metadata') or {}
     if meta.get('is_visually_hidden_from_conversation') or meta.get('is_thinking_preamble_message'):
         return None
-    if _is_tool_call(msg):
-        return None
     role = (msg.get('author') or {}).get('role', '')
-    if role not in ('user', 'assistant'):
+    if _is_tool_call(msg) or role not in ('user', 'assistant'):
         return None
-    content = msg.get('content') or {}
-    ctype = content.get('content_type', '')
-    if ctype in _SKIP_CONTENT_TYPES:
+    if (msg.get('content') or {}).get('content_type', '') in _SKIP_CONTENT_TYPES:
         return None
+    return msg, 'user' if role == 'user' else 'model'
 
+
+def _node_to_turn(node: dict) -> Turn | None:
+    visible = _visible_message(node)
+    if visible is None:
+        return None
+    msg, role = visible
     texts, images_notes = [], []
     for part in _content_parts(msg):
         if isinstance(part, str):
@@ -138,13 +147,33 @@ def _node_to_turn(node: dict) -> Turn | None:
         text = (text + '\n\n' if text else '') + '\n\n'.join(images_notes)
     if not text.strip():
         return None
-    return Turn(role='user' if role == 'user' else 'model', text=text.strip())
+    return Turn(role=role, text=text.strip())
+
+
+def _export_preambles(nodes: list[dict]) -> set[int]:
+    """Positions of thinking preambles in an official data export.
+
+    The export drops `recipient` and `is_thinking_preamble_message` but keeps
+    the short progress notes a thinking model writes between reasoning
+    steps. A reply without a recipient that is directly followed by a
+    reasoning step is such a note (chatgpt-exporter 8e5bd2a). Live API
+    messages always carry a recipient, so they are never matched."""
+    found = set()
+    for index, node in enumerate(nodes[:-1]):
+        msg = node.get('message') or {}
+        following = ((nodes[index + 1].get('message') or {}).get('content') or {})
+        if (msg.get('recipient') is None and (msg.get('author') or {}).get('role') == 'assistant'
+                and (msg.get('content') or {}).get('content_type') == 'text'
+                and following.get('content_type') in ('thoughts', 'reasoning_recap')):
+            found.add(index)
+    return found
 
 
 def parse_conversation(conv: dict, attachments: list[Attachment] | None = None) -> Chat | None:
     mapping = conv.get('mapping') or {}
     nodes = _linearize(mapping, conv.get('current_node'))
-    turns = [t for t in (_node_to_turn(n) for n in nodes) if t]
+    preambles = _export_preambles(nodes)
+    turns = [t for i, t in enumerate(_node_to_turn(n) for n in nodes) if t and i not in preambles]
     if not turns:
         return None
     if attachments:
@@ -159,20 +188,21 @@ def _write_chats(chats: list[Chat], out_dir: Path) -> list[dict]:
     out_dir.mkdir(parents=True, exist_ok=True)
     sync = SyncState(out_dir, PROVIDER)
     results = []
-    for chat in chats:
-        label = (chat.title or chat.id)[:55]
+    for i, chat in enumerate(chats, 1):
+        label = chat.title or chat.id
         if sync.known(chat.id):
-            print(f'[skip] {label}')
+            emit(None, 'chat_skipped', PROVIDER, label, i, len(chats),
+                 'skip (already in the database)')
             continue
         try:
             stats = write_chat(chat, out_dir)
             sync.mark(chat.id, None, str(stats['md']))
             results.append({'id': chat.id, 'title': chat.title, 'ok': True,
                             **{k: stats[k] for k in ('turns', 'chars', 'images', 'docs')}})
-            print(f'[ok] {label} -> {stats["turns"]}t, {stats["chars"]:,} chars')
+            emit(None, 'chat_completed', PROVIDER, label, i, len(chats), stats_text(stats))
         except Exception as e:
             results.append({'id': chat.id, 'title': label, 'ok': False, 'error': str(e)})
-            print(f'[FAIL] {label}: {e}')
+            emit(None, 'error', PROVIDER, label, i, len(chats), str(e), traceback.format_exc())
     sync.save()
     return results
 
@@ -180,11 +210,47 @@ def _write_chats(chats: list[Chat], out_dir: Path) -> list[dict]:
 # ---------------------------------------------------------------------------
 # Source 1: official conversations.json
 # ---------------------------------------------------------------------------
+def _export_files(path: Path):
+    """The parsed JSON files of an official export: one file, the export
+    folder, or the export ZIP. A large export splits its conversations into
+    conversations-000.json, conversations-001.json and so on."""
+    path = Path(path)
+    if path.is_dir():
+        for file in sorted(path.glob('conversations*.json')):
+            yield json.loads(file.read_text(encoding='utf-8'))
+    elif zipfile.is_zipfile(path):
+        with zipfile.ZipFile(path) as bundle:
+            for name in sorted(bundle.namelist()):
+                if re.fullmatch(r'(?:.*/)?conversations[^/]*\.json', name):
+                    yield json.loads(bundle.read(name).decode('utf-8'))
+    else:
+        yield json.loads(path.read_text(encoding='utf-8'))
+
+
+def collect_conversations(path: Path) -> list[dict]:
+    """Every conversation in an official export. Items without a message
+    tree are skipped; a conversation found twice keeps its latest version
+    (chatgpt-exporter 023cf2b)."""
+    found: dict[str, dict] = {}
+    for data in _export_files(path):
+        # some exports wrap the list in {"conversations": [...]}
+        items = data.get('conversations', []) if isinstance(data, dict) else data
+        for item in items if isinstance(items, list) else []:
+            if not isinstance(item, dict) or not isinstance(item.get('mapping'), dict):
+                continue
+            cid = item.get('id') or item.get('conversation_id')
+            if not isinstance(cid, str):
+                continue
+            previous = found.get(cid)
+            if previous and (previous.get('update_time') or 0) >= (item.get('update_time') or 0):
+                continue
+            found[cid] = {**item, 'id': cid}
+    return list(found.values())
+
+
 def run_official(export_path: Path, out_dir: Path) -> list[dict]:
-    data = json.loads(Path(export_path).read_text(encoding='utf-8'))
-    if isinstance(data, dict):  # some exports wrap in {"conversations": [...]}
-        data = data.get('conversations', [])
-    chats = [c for c in (parse_conversation(conv) for conv in data) if c]
+    chats = [c for c in (parse_conversation(conv) for conv in collect_conversations(export_path))
+             if c]
     return _write_chats(chats, out_dir)
 
 
@@ -204,14 +270,10 @@ def run_scrapemychats(export_dir: Path, out_dir: Path) -> list[dict]:
         except Exception:
             continue
         files_dir = chat_dir / 'files'
-        atts = []
-        if files_dir.is_dir():
-            for f in sorted(files_dir.iterdir()):
-                if f.is_file():
-                    atts.append(Attachment(
-                        filename=f.name,
-                        kind='image' if _IMG_EXT.search(f.name) else 'document',
-                        data=f.read_bytes(), source_url='', description=f.name))
+        files = sorted(f for f in files_dir.iterdir() if f.is_file()) if files_dir.is_dir() else []
+        atts = [Attachment(filename=f.name, kind='image' if _IMG_EXT.search(f.name) else 'document',
+                           data=f.read_bytes(), source_url='', description=f.name)
+                for f in files]
         chat = parse_conversation(conv, attachments=atts)
         if chat:
             chats.append(chat)
@@ -221,7 +283,8 @@ def run_scrapemychats(export_dir: Path, out_dir: Path) -> list[dict]:
 def main(argv=None):
     ap = argparse.ArgumentParser(prog='reclaim import chatgpt|scrapemychats')
     ap.add_argument('source', choices=['chatgpt', 'scrapemychats'])
-    ap.add_argument('path', help='conversations.json (chatgpt) or export dir (scrapemychats)')
+    ap.add_argument('path', help='official export: conversations.json, the export folder or '
+                                 'its ZIP (chatgpt); export dir (scrapemychats)')
     ap.add_argument('-o', '--output-dir',
                     default=str(config.archive_root() / 'ChatGPT'))
     args = ap.parse_args(argv)
@@ -232,10 +295,7 @@ def main(argv=None):
             results = run_official(Path(args.path), Path(args.output_dir))
         else:
             results = run_scrapemychats(Path(args.path), Path(args.output_dir))
-        manifest = write_manifest(Path(args.output_dir), PROVIDER, results, started)
-    ok = sum(1 for r in results if r.get('ok'))
-    print(f"\nDone: {ok}/{len(results)} ok. Manifest: {manifest}")
-    return 0 if ok == len(results) else 2
+        return finish_run(Path(args.output_dir), PROVIDER, results, started)
 
 
 if __name__ == '__main__':

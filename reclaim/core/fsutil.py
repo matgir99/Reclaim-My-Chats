@@ -9,6 +9,7 @@ match `chat.json` or `*.md` scans.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import tempfile
 from pathlib import Path
@@ -27,10 +28,8 @@ def atomic_write_bytes(path: Path, data: bytes, *, mode: int | None = None) -> N
             os.chmod(tmp, mode)
         os.replace(tmp, path)
     except BaseException:
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(tmp)
-        except OSError:
-            pass
         raise
 
 

@@ -12,11 +12,12 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from typing import ClassVar
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from reclaim.core import config, status
-from reclaim.core.manifest import (SyncState, plan_fetch, print_dry_run)
+from reclaim.core.manifest import (SyncState, plan_fetch, report_dry_run)
 from reclaim.core.model import Attachment, Chat, Turn
 from reclaim.core.writer import sanitize_filename, slugify, write_chat
 from reclaim.providers import (chatgpt, deepseek, googleaistudio, kimi)
@@ -381,13 +382,13 @@ class TestDryRun(unittest.TestCase):
         self.assertEqual(plan['titles'],
                          ['Alpha', 'Beta', 'Gamma', 'Delta'])
 
-    def test_print_dry_run_default_counts_and_titles(self):
+    def test_report_dry_run_default_counts_and_titles(self):
         s = SyncState(self.tmp, 'kimi', migrate=False)
         s.mark('a', 1, 'md')   # unchanged
         s.mark('b', 1, 'md')   # changed
         buf = io.StringIO()
         with redirect_stdout(buf):
-            code = print_dry_run(self.chats, self.updated_map, s,
+            code = report_dry_run(self.chats, self.updated_map, s,
                                  skip_unchanged=True)
         self.assertEqual(code, 0)
         out = buf.getvalue()
@@ -402,35 +403,35 @@ class TestDryRun(unittest.TestCase):
         # nothing written to disk
         self.assertEqual(list(self.tmp.iterdir()), [])
 
-    def test_print_dry_run_default_nothing_to_fetch(self):
+    def test_report_dry_run_default_nothing_to_fetch(self):
         s = SyncState(self.tmp, 'kimi', migrate=False)
         for c in self.chats:
             s.mark(c['id'], c['updated_at'], 'md')
         buf = io.StringIO()
         with redirect_stdout(buf):
-            print_dry_run(self.chats, self.updated_map, s,
+            report_dry_run(self.chats, self.updated_map, s,
                           skip_unchanged=True)
         self.assertIn('would fetch: 0 (0 new, 0 changed) · '
                       'would skip: 4 unchanged', buf.getvalue())
         self.assertIn('(nothing to fetch)', buf.getvalue())
 
-    def test_print_dry_run_fresh(self):
+    def test_report_dry_run_fresh(self):
         s = SyncState(self.tmp, 'kimi', migrate=False)
         buf = io.StringIO()
         with redirect_stdout(buf):
-            print_dry_run(self.chats, self.updated_map, s,
+            report_dry_run(self.chats, self.updated_map, s,
                           skip_unchanged=False)
         out = buf.getvalue()
         self.assertIn('would fetch: 4 (fresh) · would skip: 0', out)
         self.assertIn('  - Alpha', out)
 
-    def test_print_dry_run_log_full_lines(self):
+    def test_report_dry_run_log_full_lines(self):
         s = SyncState(self.tmp, 'kimi', migrate=False)
         s.mark('a', 1, 'md')   # unchanged
         s.mark('b', 1, 'md')   # changed
         buf = io.StringIO()
         with redirect_stdout(buf):
-            code = print_dry_run(self.chats, self.updated_map, s,
+            code = report_dry_run(self.chats, self.updated_map, s,
                                  skip_unchanged=True, log=True)
         self.assertEqual(code, 0)
         out = buf.getvalue()
@@ -554,7 +555,7 @@ class TestStatus(unittest.TestCase):
 class TestConfig(unittest.TestCase):
     """core/config.py — .reclaim.json provider selection (offline)."""
 
-    ALL = ['googleaistudio', 'deepseek', 'kimi', 'chatgpt']
+    ALL: ClassVar[list[str]] = ['googleaistudio', 'deepseek', 'kimi', 'chatgpt']
 
     def setUp(self):
         self.root = Path(tempfile.mkdtemp())

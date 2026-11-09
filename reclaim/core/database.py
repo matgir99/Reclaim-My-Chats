@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from itertools import islice
 from pathlib import Path
 
+from .events import emit
 from .fsutil import atomic_write_text
 from .writer import CHAT_FORMAT, CHAT_JSON, locate_recorded, read_chat_json
 
@@ -239,8 +240,8 @@ def prepare(path: Path, *, create: bool = False, readonly: bool = False,
     if state.kind == 'legacy':
         if not readonly and adopt_legacy:
             count = adopt(state.path)
-            print(f'Recognised the existing database in {state.path} and marked it '
-                  f'(timestamps recorded in {count} chats).')
+            emit(None, 'notice', message=f'Recognised the existing database in {state.path} '
+                                         f'and marked it (timestamps recorded in {count} chats).')
             return inspect(state.path)
         return state
     if state.kind in ('missing', 'empty') and create:

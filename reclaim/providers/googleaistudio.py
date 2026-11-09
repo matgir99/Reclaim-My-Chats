@@ -12,21 +12,18 @@ Turn field map (validated against raw dumps):
 
 from __future__ import annotations
 
-import argparse
+import contextlib
 import base64
 import json
 import re
 import time
-import traceback
 from html.parser import HTMLParser
-from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import urlsplit
 
-from ..core import browser, config
+from ..core import browser, engine, retry
 from ..core.events import EventSink, emit
-from ..core.manifest import SyncState, print_dry_run, save_chat, write_manifest
 from ..core.model import Attachment, Chat, Turn
-from ..core.progress import progress
 
 LIBRARY_URL = 'https://aistudio.google.com/library'
 PROVIDER = 'googleaistudio'
@@ -63,7 +60,8 @@ window.__msRpc = async function(rpcName, payload) {
         headers, body: JSON.stringify(payload),
     });
     const text = await resp.text();
-    return {status: resp.status, len: text.length, text};
+    return {status: resp.status, len: text.length, text,
+            retryAfter: resp.headers.get('retry-after')};
 };
 'ready'
 """
@@ -76,10 +74,8 @@ def init_replay(page):
         if url.scheme == 'https' and url.hostname == 'alkalimakersuite-pa.clients6.google.com':
             k = req.headers.get('x-goog-api-key')
             if k:
-                try:
+                with contextlib.suppress(Exception):
                     page.evaluate("(k) => { window.__msApiKey = k; }", k)
-                except Exception:
-                    pass
     page.on('request', grab_key)
     page.goto(LIBRARY_URL, wait_until='domcontentloaded', timeout=60000)
     time.sleep(2)
@@ -89,21 +85,13 @@ def init_replay(page):
 
 
 def rpc_call(page, name: str, payload: list, retries: int = 3) -> tuple[int, str]:
-    last_err = None
-    for attempt in range(retries):
-        try:
-            r = page.evaluate("(a) => window.__msRpc(a.n, a.p)",
-                              {'n': name, 'p': payload})
-            if r['status'] == 200:
-                return r['status'], r['text']
-            if r['status'] in (401, 403) and attempt < retries - 1:
-                time.sleep(2)
-                continue
-            return r['status'], r['text']
-        except Exception as e:
-            last_err = e
-            time.sleep(2 + attempt * 2)
-    raise RuntimeError(f'RPC {name} failed after {retries} attempts: {last_err}')
+    # The page captures its API key from the app's own first requests, so a
+    # 401/403 right after loading is retried once after a short pause.
+    response = retry.send(lambda: page.evaluate("(a) => window.__msRpc(a.n, a.p)",
+                                                {'n': name, 'p': payload}),
+                          what=f'AI Studio RPC {name}', retries=retries,
+                          return_errors=True, auth_retries=1)
+    return response['status'], response['text']
 
 
 # ---------------------------------------------------------------------------
@@ -130,6 +118,7 @@ class DriveClient:
 
     @staticmethod
     def _find_token(o):
+        """The first OAuth access token (ya29.…) anywhere in a JSON value."""
         if isinstance(o, str) and o.startswith('ya29.') and 50 < len(o) < 600:
             return o
         if isinstance(o, list):
@@ -162,7 +151,7 @@ class DriveClient:
             if resp.status == 200:
                 return resp.json()
         except Exception as e:
-            print(f'      Drive metadata error for {fid}: {e}')
+            emit(None, 'warning', PROVIDER, message=f'Drive file {fid}: no details ({e})')
         return {}
 
     def fetch(self, fid: str) -> bytes | None:
@@ -170,53 +159,48 @@ class DriveClient:
             resp = self._get(f'{DRIVE_API}/{fid}?alt=media')
             if resp.status == 200:
                 return resp.body()
-            print(f'      Drive download HTTP {resp.status} for {fid}')
+            emit(None, 'warning', PROVIDER,
+                 message=f'Drive file {fid} was not downloaded (HTTP {resp.status})')
         except Exception as e:
-            print(f'      Drive download error for {fid}: {e}')
+            emit(None, 'warning', PROVIDER, message=f'Drive file {fid} was not downloaded: {e}')
         return None
 
 
 # ---------------------------------------------------------------------------
 # RPC parsing (raw JSON -> entries; also used by offline mode and tests)
 # ---------------------------------------------------------------------------
+def _rpc_entry(turn: list) -> dict | None:
+    """One turn of a ResolveDriveResource response; None for other roles
+    and empty turns. Positions: text [0], Drive file ids [1], an inline
+    image [12][1] (base64), role [8], thought flag [19], error [28]."""
+    role = turn[8] if isinstance(turn[8], str) else 'unknown'
+    if role not in ('user', 'model'):
+        return None
+    text = turn[0] if isinstance(turn[0], str) else ''
+    images = []
+    inline = turn[12] if len(turn) > 12 else None
+    if isinstance(inline, list) and len(inline) > 1 and isinstance(inline[1], str) \
+            and len(inline[1]) > 500:
+        with contextlib.suppress(Exception):
+            images.append(base64.b64decode(inline[1]))
+    files = turn[1] if isinstance(turn[1], list) else []
+    attachments = [v for v in files if isinstance(v, str) and len(v) > 20]
+    if not text.strip() and not images and not attachments:
+        return None
+    error = turn[28] if len(turn) > 28 and isinstance(turn[28], str) else ''
+    return {'role': role, 'text': text, 'thought': bool(turn[19]),
+            'images': images, 'attachments': attachments, 'error': error or None}
+
+
 def parse_rpc(data) -> dict:
     """Parse ResolveDriveResource JSON into title + raw entries."""
     try:
         inner = data[0]
         title = inner[4][0] if len(inner) > 4 and inner[4] and inner[4][0] else ''
-        entries = []
-        for group in inner[13] if len(inner) > 13 else []:
-            if not isinstance(group, list):
-                continue
-            for turn in group:
-                if not isinstance(turn, list) or len(turn) < 20:
-                    continue
-                role = turn[8] if isinstance(turn[8], str) else 'unknown'
-                if role not in ('user', 'model'):
-                    continue
-                text = turn[0] if isinstance(turn[0], str) else ''
-                thought = bool(turn[19]) if len(turn) > 19 else False
-                error = turn[28] if len(turn) > 28 and isinstance(turn[28], str) else ''
-
-                images = []
-                f12 = turn[12] if len(turn) > 12 else None
-                if isinstance(f12, list) and len(f12) > 1 and isinstance(f12[1], str) \
-                        and len(f12[1]) > 500:
-                    try:
-                        images.append(base64.b64decode(f12[1]))
-                    except Exception:
-                        pass
-
-                attachments = []
-                f1 = turn[1] if len(turn) > 1 else None
-                if isinstance(f1, list):
-                    attachments = [v for v in f1 if isinstance(v, str) and len(v) > 20]
-
-                if not text.strip() and not images and not attachments:
-                    continue
-                entries.append({'role': role, 'text': text, 'thought': thought,
-                                'images': images, 'attachments': attachments,
-                                'error': error or None})
+        turns = [turn for group in (inner[13] if len(inner) > 13 else [])
+                 if isinstance(group, list)
+                 for turn in group if isinstance(turn, list) and len(turn) >= 20]
+        entries = [entry for entry in map(_rpc_entry, turns) if entry is not None]
         return {'title': title, 'entries': entries}
     except Exception as e:
         return {'title': '', 'entries': [], 'error': str(e)}
@@ -237,7 +221,7 @@ def entries_to_chat(parsed: dict, chat_id: str, source_url: str,
                 data = drive.fetch(fid)
             atts.append(Attachment(
                 filename=name,
-                kind='image' if re.search(r'\.(png|jpe?g|gif|webp)$', name, re.I) else 'document',
+                kind='image' if re.search(r'\.(png|jpe?g|gif|webp)$', name, re.IGNORECASE) else 'document',
                 data=data,
                 source_url=f'https://drive.google.com/file/d/{fid}/view',
             ))
@@ -254,11 +238,14 @@ def ensure_logged_in(page):
     page.goto(LIBRARY_URL, wait_until='domcontentloaded', timeout=60000)
     time.sleep(3)
     browser.interactive_login(page, 'accounts.google.com',
-                              browser.on_host('aistudio.google.com'), 'Google')
+                              browser.on_host('aistudio.google.com'), 'Google',
+                              provider=PROVIDER)
 
 
 def get_chat_list(page) -> list[dict]:
-    print('Scanning library...')
+    """Fallback listing: scroll the library page to load every row, then
+    read the chat links from it."""
+    emit(None, 'listing', PROVIDER, message='Scanning the library page...')
     for _ in range(35):
         page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
         time.sleep(1.2)
@@ -314,6 +301,8 @@ def list_prompts(page) -> list[dict]:
 # Fallbacks: response interception, then DOM scrape
 # ---------------------------------------------------------------------------
 def intercept_rpc(page, chat_url: str):
+    """Open the chat and capture the ResolveDriveResource response the page
+    itself requests; its parsed entries, or None."""
     rinfo = {}
 
     def _on_response(response):
@@ -344,8 +333,22 @@ def intercept_rpc(page, chat_url: str):
         page.remove_listener('response', _on_response)
 
 
+# Markdown written for tags that only open or close with fixed text.
+_HEADINGS = {f'h{n}': '\n\n' + '#' * n + ' ' for n in range(1, 7)}
+_EMPHASIS = {'b': '**', 'strong': '**', 'i': '*', 'em': '*', 's': '~~', 'del': '~~',
+             'strike': '~~'}
+_OPEN_TEXT = {'p': '\n\n', 'br': '\n', 'blockquote': '\n\n> ', 'hr': '\n\n---\n\n',
+              **_HEADINGS, **_EMPHASIS}
+_CLOSE_TEXT = {**dict.fromkeys(('p', 'blockquote', *_HEADINGS), '\n\n'), **_EMPHASIS}
+
+
 class _HtmlToMd:
-    """Minimal HTML -> Markdown converter for the DOM fallback path."""
+    """Minimal HTML -> Markdown converter for the DOM fallback path.
+
+    Links and <pre> blocks are written as \\x00-delimited markers first and
+    turned into Markdown at the end, once their whole content is known.
+    Unknown tags (including AI Studio's ms-cmark-node wrappers) add nothing.
+    """
     def __init__(self):
         self._r = []
         self._lists = []
@@ -380,24 +383,11 @@ class _HtmlToMd:
 
     def start(self, tag, attrs):
         attrs = dict(attrs)
-        if tag == 'ms-cmark-node':
-            return
-        if tag == 'p':
-            self._o('\n\n')
-        elif tag == 'br':
-            self._o('\n')
-        elif tag in ('h1', 'h2', 'h3', 'h4', 'h5', 'h6'):
-            self._o('\n\n' + '#' * int(tag[1]) + ' ')
-        elif tag in ('b', 'strong'):
-            self._o('**')
-        elif tag in ('i', 'em'):
-            self._o('*')
-        elif tag in ('s', 'del', 'strike'):
-            self._o('~~')
-        elif tag == 'code':
-            if not self._pre:
-                self._code = True
-                self._o('`')
+        if tag in _OPEN_TEXT:
+            self._o(_OPEN_TEXT[tag])
+        elif tag == 'code' and not self._pre:  # inline code; <pre><code> stays raw
+            self._code = True
+            self._o('`')
         elif tag == 'pre':
             self._pre = True
             self._o('\x00P\x00')
@@ -405,38 +395,28 @@ class _HtmlToMd:
             self._o('\x00L\x00' + attrs.get('href', '') + '\x00T\x00')
         elif tag == 'img':
             self._o(f"![{attrs.get('alt', '')}]({attrs.get('src', '')})")
-        elif tag == 'ul':
-            self._lists.append(('ul', 0))
+        elif tag in ('ul', 'ol'):
+            # ('ol', n): n is the number of the last item written
+            first = int(attrs.get('start', '1')) if tag == 'ol' else 1
+            self._lists.append((tag, first - 1))
             self._o('\n\n')
-        elif tag == 'ol':
-            self._lists.append(('ol', int(attrs.get('start', '1')) - 1))
-            self._o('\n\n')
-        elif tag == 'li':
-            if self._lists:
-                kind, idx = self._lists[-1]
-                if kind == 'ul':
-                    self._o('\n- ')
-                else:
-                    self._lists[-1] = (kind, idx + 1)
-                    self._o(f'\n{idx + 1}. ')
-        elif tag == 'blockquote':
-            self._o('\n\n> ')
-        elif tag == 'hr':
-            self._o('\n\n---\n\n')
+        elif tag == 'li' and self._lists:
+            self._list_item()
+
+    def _list_item(self):
+        kind, number = self._lists[-1]
+        if kind == 'ul':
+            self._o('\n- ')
+        else:
+            self._lists[-1] = (kind, number + 1)
+            self._o(f'\n{number + 1}. ')
 
     def end(self, tag):
-        if tag == 'ms-cmark-node':
-            return
-        if tag in ('b', 'strong'):
-            self._o('**')
-        elif tag in ('i', 'em'):
-            self._o('*')
-        elif tag in ('s', 'del', 'strike'):
-            self._o('~~')
-        elif tag == 'code':
-            if not self._pre:
-                self._code = False
-                self._o('`')
+        if tag in _CLOSE_TEXT:
+            self._o(_CLOSE_TEXT[tag])
+        elif tag == 'code' and not self._pre:
+            self._code = False
+            self._o('`')
         elif tag == 'pre':
             self._pre = False
             self._o('\x00Q\x00')
@@ -445,8 +425,6 @@ class _HtmlToMd:
         elif tag in ('ul', 'ol'):
             if self._lists:
                 self._lists.pop()
-            self._o('\n\n')
-        elif tag in ('p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote'):
             self._o('\n\n')
 
     def data(self, d):
@@ -471,10 +449,8 @@ class _P(HTMLParser):
 def extract_dom_fallback(page) -> dict:
     """Last-resort DOM scrape -> entries (text via cmark HTML, images as
     screenshot bytes). Thought flags via positional heuristic."""
-    try:
+    with contextlib.suppress(Exception):
         page.wait_for_selector('.chat-session-content .chat-turn-container', timeout=30000)
-    except Exception:
-        pass
     time.sleep(3)
     n = page.evaluate("""() => {
         const s = document.querySelector('.chat-session-content');
@@ -511,10 +487,8 @@ def extract_dom_fallback(page) -> dict:
                 return t?.querySelector('ms-image-chunk');
             }""", i)
             if handle:
-                try:
+                with contextlib.suppress(Exception):
                     images.append(handle.screenshot())
-                except Exception:
-                    pass
                 handle.dispose()
         md = _HtmlToMd().convert(r.get('html', ''))
         if (md and len(md) > 5) or images:
@@ -535,183 +509,80 @@ def extract_dom_fallback(page) -> dict:
 # ---------------------------------------------------------------------------
 # Main (scrape mode)
 # ---------------------------------------------------------------------------
-def run(page, chats: list[dict], out_dir: Path, skip_unchanged: bool = False,
-        updated_map: dict | None = None, save_raw: bool = True,
-        log: bool = False, sink: EventSink | None = None) -> list[dict]:
-    """Fetch the given chats. Returns per-chat result dicts for the manifest.
+class GoogleAIStudio(engine.Provider):
+    """What only AI Studio does; the engine does the rest."""
 
-    skip_unchanged: skip chats whose server updated_at matches the local sync
-    record (the default update mode). title/--url/--rebuild selections pass
-    False so matches are always fetched freshly. Per-chat lines print only
-    with log=True (default output is summary-level; failures always print).
-    """
-    out_dir = Path(out_dir)
-    drive = DriveClient(page)
-    sync = SyncState(out_dir, PROVIDER)
-    updated_map = updated_map or {}
-    results = []
-    t_run = time.time()
+    name = PROVIDER
+    folder = 'Google AI Studio'
+    description = 'Save Google AI Studio chats to the database (update by default).'
+    pace = 0.0
 
-    for i, chat in enumerate(chats):
-        label = (chat.get('title') or chat['id'])[:55]
-        emit(sink, 'chat_started', PROVIDER, label, i + 1, len(chats))
-        if log:
-            print(progress(i + 1, len(chats), t_run))
-        if skip_unchanged and sync.is_unchanged(chat['id'],
-                                                updated_map.get(chat['id'])):
-            if log:
-                print(f'[{i + 1}/{len(chats)}] {label} -> skip (unchanged)')
-            emit(sink, 'chat_skipped', PROVIDER, label, i + 1, len(chats))
-            continue
-        t0 = time.time()
+    def open(self, page):
+        ensure_logged_in(page)
+        init_replay(page)
+        return SimpleNamespace(page=page, drive=DriveClient(page))
+
+    def listing(self, s) -> list[engine.ChatRef]:
         try:
-            status, text = rpc_call(page, 'ResolveDriveResource', [chat['id']])
-            parsed = parse_rpc(json.loads(text)) if status == 200 else None
-            path = 'rpc'
-
-            if parsed is None or not parsed.get('entries'):
-                if log:
-                    print(f'[{i + 1}/{len(chats)}] {label} [intercept fallback]')
-                parsed = intercept_rpc(page, chat['url'])
-                path = 'intercept'
-            if parsed is None or not parsed.get('entries'):
-                if log:
-                    print(f'[{i + 1}/{len(chats)}] {label} [DOM fallback]')
-                page.goto(chat['url'], wait_until='domcontentloaded', timeout=60000)
-                parsed = extract_dom_fallback(page)
-                path = 'dom'
-            if parsed is None:
-                raise RuntimeError('all extraction paths failed')
-
-            chat['title'] = parsed.get('title') or chat.get('title', '')
-            canonical = entries_to_chat(parsed, chat['id'], chat['url'],
-                                        drive=drive)
-            raw = None
-            if save_raw and path == 'rpc':
-                try:
-                    raw = json.loads(text)
-                except ValueError as e:
-                    print(f'  warning: {label}: raw.json was not saved: {e}')
-            stats = save_chat(canonical, out_dir, sync, chat['id'], updated_map.get(chat['id']),
-                              raw, sink=sink, provider=PROVIDER)
-            results.append({'id': chat['id'], 'title': chat['title'], 'ok': True,
-                            'path': path, 'duration_s': round(time.time() - t0, 1),
-                            **{k: stats[k] for k in ('turns', 'chars', 'images', 'docs')}})
-            emit(sink, 'chat_completed', PROVIDER, chat['title'], i + 1, len(chats))
-            if log:
-                extra = f", {stats['images']} img" if stats['images'] else ''
-                extra += f", {stats['docs']} doc" if stats['docs'] else ''
-                print(f'[{i + 1}/{len(chats)}] {label} -> {stats["turns"]}t, '
-                      f'{stats["chars"]:,} chars{extra}')
-                print(f'    path: {path} · {time.time() - t0:.1f}s')
+            chats = list_prompts(s.page)
         except Exception as e:
-            print(f'[{i + 1}/{len(chats)}] {label} -> FAILED: {e}')
-            traceback.print_exc()
-            results.append({'id': chat['id'], 'title': label, 'ok': False,
-                            'error': str(e)})
-            emit(sink, 'error', PROVIDER, label, i + 1, len(chats), str(e))
-    sync.save()
-    return results
+            emit(None, 'warning', PROVIDER,
+                 message=f'ListPrompts failed ({e}); reading the library page instead')
+            chats = get_chat_list(s.page)
+        return [engine.ChatRef(id=c['id'], title=c.get('title', ''),
+                               updated_at=c.get('updated_at'), data=c) for c in chats]
+
+    def from_url(self, s, url: str) -> engine.ChatRef:
+        cid = url.rsplit('/prompts/', maxsplit=1)[-1].split('?', maxsplit=1)[0].split('#', maxsplit=1)[0]
+        return engine.ChatRef(id=cid, data={'id': cid, 'url': url.split('?', maxsplit=1)[0], 'title': ''})
+
+    def fetch(self, s, ref: engine.ChatRef) -> engine.Fetched:
+        """Three ways to read a chat, each tried when the previous one returns
+        nothing: the RPC called directly ('rpc', also saved as raw.json), the
+        RPC captured while the page loads the chat ('intercept'), and the page
+        itself ('dom'). The manifest records which one worked."""
+        url = (ref.data or {}).get('url') or f'https://aistudio.google.com/prompts/{ref.id}'
+        status, text = rpc_call(s.page, 'ResolveDriveResource', [ref.id])
+        parsed = parse_rpc(json.loads(text)) if status == 200 else None
+        path = 'rpc'
+        if parsed is None or not parsed.get('entries'):
+            parsed = intercept_rpc(s.page, url)
+            path = 'intercept'
+        if parsed is None or not parsed.get('entries'):
+            s.page.goto(url, wait_until='domcontentloaded', timeout=60000)
+            parsed = extract_dom_fallback(s.page)
+            path = 'dom'
+        if parsed is None:
+            raise RuntimeError('all extraction paths failed')
+        chat = entries_to_chat(parsed, ref.id, url, drive=s.drive)
+        raw = None
+        if path == 'rpc':
+            try:
+                raw = json.loads(text)
+            except ValueError as e:
+                emit(None, 'warning', PROVIDER, ref.title or ref.id,
+                     message=f'raw.json was not saved: {e}')
+        return engine.Fetched(chat, raw=raw, detail=f'path: {path}', extra={'path': path})
 
 
-def build_parser() -> argparse.ArgumentParser:
-    ap = argparse.ArgumentParser(
-        prog='reclaim googleaistudio',
-        description='Save Google AI Studio chats to the database (update by default).')
-    ap.add_argument('title', nargs='?',
-                    help='fetch chats whose title contains this '
-                         '(case-insensitive)')
-    ap.add_argument('--rebuild', action='store_true',
-                    help='fetch everything, overwriting local copies')
-    ap.add_argument('--url', help='fetch one exact chat URL')
-    ap.add_argument('--list', action='store_true',
-                    help='print chat titles, no download')
-    ap.add_argument('--log', action='store_true',
-                    help='full per-chat log + verbose progress and timings')
-    ap.add_argument('--dry-run', action='store_true',
-                    help='preview what would be fetched; nothing downloaded')
-    ap.add_argument('--skip', type=int, default=0,
-                    help='skip the first N chats in the listing')
-    ap.add_argument('--limit', type=int, default=0,
-                    help='fetch at most N chats')
-    ap.add_argument('--no-raw', action='store_true',
-                    help='do not save media-stripped raw.json per chat')
-    ap.add_argument('-o', '--output-dir',
-                    default=str(config.archive_root() / 'Google AI Studio'))
-    return ap
+SPEC = GoogleAIStudio()
+
+
+def build_parser():
+    return engine.build_parser(SPEC)
 
 
 def parse_args(argv=None):
-    """Parse + validate CLI args (shared by main() and `reclaim all`)."""
-    ap = build_parser()
-    args = ap.parse_args(argv)
-    if args.title and args.url:
-        ap.error('pass a title or --url, not both')
-    return args
-
-
-def main(argv=None):
-    args = parse_args(argv)
-    from playwright.sync_api import sync_playwright
-    with sync_playwright() as p:
-        ctx, page = browser.launch(p)
-        try:
-            return run_session(page, args)
-        finally:
-            ctx.close()
+    return engine.parse_args(SPEC, argv)
 
 
 def run_session(page, args, sink: EventSink | None = None) -> int:
-    """Provider session on an already-launched page; shared by main()
-    (own browser) and `reclaim all` (one browser for all providers)."""
-    out_dir = Path(args.output_dir)
-    started = time.time()
-    ensure_logged_in(page)
-    init_replay(page)
-    if args.url:
-        cid = args.url.split('/prompts/')[-1].split('?')[0].split('#')[0]
-        chats = [{'id': cid, 'url': args.url.split('?')[0], 'title': ''}]
-        updated_map = {}
-    else:
-        try:
-            chats = list_prompts(page)
-        except Exception as e:
-            print(f'ListPrompts failed ({e}); falling back to DOM scan')
-            chats = get_chat_list(page)
-        updated_map = {c['id']: c.get('updated_at') for c in chats}
-    if args.title:
-        chats = [c for c in chats
-                 if args.title.lower() in (c.get('title') or '').lower()]
-    if args.skip:
-        chats = chats[args.skip:]
-    if args.limit:
-        chats = chats[:args.limit]
-    if not chats:
-        print('No chats matched.')
-        return 1
-    if args.list:
-        for n, c in enumerate(chats, 1):
-            print(f'{n}. {c.get("title") or c["id"]}')
-        print(f'-- {len(chats)} chat(s)')
-        return 0
-    skip_unchanged = not args.rebuild and not args.title
-    if args.dry_run:
-        sync = SyncState(out_dir, PROVIDER, migrate=False)
-        return print_dry_run(chats, updated_map, sync, skip_unchanged,
-                             log=args.log, sink=sink, provider=PROVIDER)
+    """This provider on an already opened page (window and command line)."""
+    return engine.run_session(SPEC, page, args, sink)
 
-    out_dir.mkdir(parents=True, exist_ok=True)
-    print(f"\n{'=' * 50}\n  {len(chats)} chats\n{'=' * 50}\n")
-    results = run(page, chats, out_dir, skip_unchanged=skip_unchanged,
-                  updated_map=updated_map, save_raw=not args.no_raw,
-                  log=args.log, sink=sink)
-    manifest = write_manifest(out_dir, PROVIDER, results, started)
-    ok = sum(1 for r in results if r.get('ok'))
-    print(f"\n{'=' * 50}")
-    print(f'  Done: {ok} ok, {len(results) - ok} failed')
-    print(f'  Manifest: {manifest}')
-    print(f"{'=' * 50}")
-    return 0 if ok == len(results) else 2
+
+def main(argv=None):
+    return engine.main(SPEC, argv)
 
 
 if __name__ == '__main__':

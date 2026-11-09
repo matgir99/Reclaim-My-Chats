@@ -1,9 +1,15 @@
 # Releasing
 
 1. Check that `develop` passes CI and the Flet GUI tests.
-2. Open a pull request from `develop` to `main`.
-3. Merge it after the required checks pass.
-4. The Release workflow builds and checks all packages, tags the commit, and
+2. Run the live check from a `develop` checkout with logged-in providers:
+   `reclaim doctor --live`, or **Diagnostics → Run live check** in the
+   window. Every enabled provider must log in and list its chats. CI cannot
+   do this, because it has no provider accounts; a provider that fails here
+   has changed its service, so fix it before releasing.
+3. Open a pull request from `develop` to `main` and tick the live check in
+   its checklist.
+4. Merge it after the required checks pass.
+5. The Release workflow builds and checks all packages, tags the commit, and
    publishes a GitHub Release with those packages and generated notes.
 
 The first GUI release is `v3.3.0`. Later releases increment the patch

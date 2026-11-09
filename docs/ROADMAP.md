@@ -80,19 +80,24 @@ progress records or silently start a new, empty database.
 Goal: a fix made once reaches every provider, and provider changes are
 caught before users see them.
 
-- [ ] A shared engine for requests, retries, rate limits (honouring
-      `Retry-After`), login checks, the download loop, dry runs and
-      saving. Each provider supplies only how to list its chats, how to
-      fetch one chat and how to tell whether the user is logged in.
-- [ ] Progress reported only as structured events, rendered once each for
-      the window, the terminal and the log file.
+- [x] A shared engine for the download loop, filters, dry runs, saving
+      and the run record (`core/engine.py`), and one request policy for
+      retries and rate limits that honours `Retry-After`
+      (`core/retry.py`). Each provider supplies only how to log in, list
+      its chats, read a chat URL and fetch one chat. The shared login
+      check is part of Phase 3's login task.
+- [x] Progress reported only as structured events, rendered once each for
+      the window, the terminal and the log file (`core/events.py`,
+      `core/render.py`). The window now shows when a provider waits for a
+      login.
 - [ ] A capture tool that records a real provider response with every
       text value replaced, so a format change becomes a test fixture.
-- [ ] Diagnostics: offline checks (browser, settings, database, locks) and
+- [x] Diagnostics: offline checks (browser, settings, database, locks) and
       a read-only live check that lists every provider. **Window:** a
       Diagnostics panel with *Copy diagnostics*. **CLI:** `reclaim doctor`
       and `reclaim doctor --live`.
-- [ ] Release checklist: the live check runs before merging into `main`.
+- [x] Release checklist: the live check runs before merging into `main`
+      ([releasing](RELEASING.md)).
 - [ ] CI on Python 3.12 and 3.14, a lock file for builds, ruff's bugbear
       and pyupgrade rules, and a weekly workflow that reports new commits
       in the reference projects listed in the
@@ -108,7 +113,8 @@ update the database and solve common problems.
       and log in to each provider.
 - [ ] Main window as a provider table: a status chip, chats in the
       database, last checked, and a *Log in* or *Review* button per row.
-- [ ] One shared login check per provider and the same login wait
+- [ ] One shared login check for every provider (a real request, not
+      only a cookie or token), run by the engine, and the same login wait
       everywhere. A visible banner says which provider needs a login, with
       a button that brings the browser window forward.
 - [ ] A *Stop* button that ends a run after the current chat.

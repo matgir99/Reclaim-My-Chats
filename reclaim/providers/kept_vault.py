@@ -43,11 +43,13 @@ import argparse
 import base64
 import re
 import time
+import traceback
 from pathlib import Path
 
 from ..core import config
+from ..core.events import emit
 from ..core.service import offline_session
-from ..core.manifest import SyncState, write_manifest
+from ..core.manifest import SyncState, finish_run, stats_text
 from ..core.model import Chat, Turn
 from ..core.writer import write_chat
 
@@ -164,12 +166,15 @@ def run(vault_dir: Path, out_root: Path, providers: list[str] | None = None) -> 
             except Exception as e:
                 results.append({'id': md_file.stem, 'title': md_file.stem,
                                 'ok': False, 'error': str(e)})
+                emit(None, 'error', PROVIDER, f'{platform}/{md_file.stem}', message=str(e),
+                     detail=traceback.format_exc())
                 continue
             if chat is None:
                 continue
-            label = chat.title[:55]
+            label = f'{platform}/{chat.title}'
             if sync.known(chat.id):
-                print(f'[skip] {platform}/{label}')
+                emit(None, 'chat_skipped', PROVIDER, label,
+                     message='skip (already in the database)')
                 continue
             try:
                 stats = write_chat(chat, out_dir)
@@ -177,12 +182,12 @@ def run(vault_dir: Path, out_root: Path, providers: list[str] | None = None) -> 
                 results.append({'id': chat.id, 'title': chat.title, 'ok': True,
                                 'platform': platform,
                                 **{k: stats[k] for k in ('turns', 'chars', 'images', 'docs')}})
-                print(f'[ok] {platform}/{label} -> {stats["turns"]}t, '
-                      f'{stats["chars"]:,} chars, {stats["images"]} img')
+                emit(None, 'chat_completed', PROVIDER, label, message=stats_text(stats))
             except Exception as e:
                 results.append({'id': chat.id, 'title': chat.title, 'ok': False,
                                 'error': str(e)})
-                print(f'[FAIL] {platform}/{label}: {e}')
+                emit(None, 'error', PROVIDER, label, message=str(e),
+                     detail=traceback.format_exc())
         sync.save()
     return results
 
@@ -201,11 +206,8 @@ def main(argv=None):
     with offline_session(Path(args.output_dir), 'import kept'):
         results = run(Path(args.vault), Path(args.output_dir), providers=providers)
         if results:
-            manifest = write_manifest(Path(args.output_dir), PROVIDER, results, started)
-            ok = sum(1 for r in results if r.get('ok'))
-            print(f"\nDone: {ok}/{len(results)} ok. Manifest: {manifest}")
-            return 0 if ok == len(results) else 2
-    print('No vault conversations found.')
+            return finish_run(Path(args.output_dir), PROVIDER, results, started)
+        emit(None, 'nothing_matched', PROVIDER, message='No vault conversations found.')
     return 1
 
 

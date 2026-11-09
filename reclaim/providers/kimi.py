@@ -22,26 +22,23 @@ become thought turns and are omitted from the archive).
 
 from __future__ import annotations
 
-import argparse
+import contextlib
 import json
 import os
 import re
 import time
-import traceback
-from pathlib import Path
+from types import SimpleNamespace
 
-from ..core import browser, config
-from ..core.events import EventSink, emit
-from ..core.manifest import SyncState, print_dry_run, save_chat, write_manifest
+from ..core import browser, engine, retry
+from ..core.events import EventSink
 from ..core.model import Chat, Turn
-from ..core.progress import progress
 
 BASE_URL = os.environ.get('RECLAIM_KIMI_URL', '').strip().rstrip('/') or 'https://www.kimi.ai'
 API = f'{BASE_URL}/apiv2'
 PROVIDER = 'kimi'
 PAGE_SIZE = 50
 MSG_PAGE_SIZE = 1000
-_THINK_HINT = re.compile(r'think|reason', re.I)
+_THINK_HINT = re.compile(r'think|reason', re.IGNORECASE)
 
 _FETCH_JS = """async (args) => {
     const resp = await fetch(args.url, {
@@ -52,27 +49,16 @@ _FETCH_JS = """async (args) => {
         credentials: 'include',
     });
     const text = await resp.text();
-    return {status: resp.status, text};
+    return {status: resp.status, text, retryAfter: resp.headers.get('retry-after')};
 }"""
 
 
 def _api(page, token: str, path: str, body: dict, retries: int = 3) -> dict:
-    last = None
-    for attempt in range(retries):
-        try:
-            r = page.evaluate(_FETCH_JS, {'url': f'{API}/{path}',
-                                          'token': token, 'body': body})
-            if r['status'] == 200:
-                return json.loads(r['text'])
-            if r['status'] in (401, 403):
-                raise RuntimeError(f'auth failed ({r["status"]}) — token expired?')
-            last = f'HTTP {r["status"]}: {r["text"][:120]}'
-        except RuntimeError:
-            raise
-        except Exception as e:
-            last = e
-        time.sleep(1.5 + attempt)
-    raise RuntimeError(f'{path} failed: {last}')
+    """Page-side POST with the shared retry policy (see core/retry.py)."""
+    response = retry.send(lambda: page.evaluate(_FETCH_JS, {'url': f'{API}/{path}',
+                                                            'token': token, 'body': body}),
+                          what=f'Kimi {path}', retries=retries)
+    return json.loads(response['text'])
 
 
 def get_token(page) -> str:
@@ -99,13 +85,12 @@ def get_token(page) -> str:
         if len(token) < 30 or ' ' in token or '\n' in token:
             continue
         if not (cand['jwt'] or re.search(r'token|access|jwt|session|auth',
-                                         cand['key'], re.I)):
+                                         cand['key'], re.IGNORECASE)):
             continue
         tried += 1
         try:
             _api(page, token, 'kimi.chat.v1.ChatService/ListChats',
                  {'project_id': '', 'page_size': 1, 'query': ''}, retries=1)
-            print(f"  token found ({cand['key']})")
             return token
         except Exception:
             continue
@@ -116,10 +101,8 @@ def get_token(page) -> str:
 
 
 def ensure_logged_in(page):
-    try:
+    with contextlib.suppress(Exception):  # navigation quirks are fine; the token probe decides
         page.goto(BASE_URL, wait_until='domcontentloaded', timeout=60000)
-    except Exception:
-        pass  # navigation quirks are fine; token probe decides
     time.sleep(4)
     try:
         return get_token(page)
@@ -127,19 +110,13 @@ def ensure_logged_in(page):
         pass
     # Kimi login is an SPA modal (no URL change): show the window and poll
     # until a valid token appears in localStorage.
-    page.bring_to_front()
-    browser.set_window_bounds(page, state='normal', left=100, top=100)
-    print('\n' + '=' * 50)
-    print('  LOG IN to Kimi in the browser window.')
-    print('  Waiting (up to 15 minutes)...')
-    print('=' * 50 + '\n')
-    deadline = time.time() + int(os.environ.get('RECLAIM_LOGIN_TIMEOUT', '900'))
+    timeout = browser.login_timeout()
+    browser.ask_for_login(page, PROVIDER, 'Kimi', timeout)
+    deadline = time.time() + timeout
     while time.time() < deadline:
         try:
             token = get_token(page)
-            print('Logged in! Hiding window...\n')
-            browser.set_window_bounds(page, state='minimized')
-            time.sleep(2)
+            browser.login_done(page, PROVIDER)
             return token
         except Exception:
             time.sleep(3)
@@ -147,6 +124,9 @@ def ensure_logged_in(page):
 
 
 def list_chats(page, token: str) -> list[dict]:
+    """Every chat, paged with nextPageToken until a page has none. A
+    repeated token is an error rather than a loop; a chat listed twice is
+    kept once."""
     chats, page_token = [], ''
     seen_tokens, seen_ids = set(), set()
     while True:
@@ -184,39 +164,44 @@ def list_messages(page, token: str, chat_id: str) -> list[dict]:
     return list(reversed(msgs))  # API returns newest-first
 
 
+def _block_text(block: dict) -> str:
+    """A block's text: block.text (a string or {'content': ...}) or block.content."""
+    text = block.get('text')
+    text = (text.get('content') if isinstance(text, dict) else text) or block.get('content') or ''
+    return text if isinstance(text, str) else ''
+
+
+def _block_images(block: dict) -> list[str]:
+    """Best-effort image URLs of a block, whatever key and shape it uses."""
+    urls = []
+    for key in ('image', 'image_url', 'img', 'url'):
+        value = block.get(key)
+        if isinstance(value, dict) and isinstance(value.get('url'), str):
+            urls.append(value['url'])
+        elif isinstance(value, str) and value.startswith('http'):
+            urls.append(value)
+    return urls
+
+
 def _msg_to_turn(msg: dict) -> tuple[Turn | None, list[str]]:
     """Convert one API message. Returns (turn, [image urls])."""
     role_raw = (msg.get('role') or msg.get('sender') or '').lower()
-    role = 'user' if role_raw in ('user', 'human') else 'model'
     if role_raw not in ('user', 'human', 'assistant', 'model'):
         return None, []
-
+    role = 'user' if role_raw in ('user', 'human') else 'model'
     texts, images, thought = [], [], False
-    content = msg.get('content')
-    if isinstance(content, str):
-        texts.append(content)
+    if isinstance(msg.get('content'), str):
+        texts.append(msg['content'])
     elif isinstance(msg.get('text'), str):
         texts.append(msg['text'])
     for block in msg.get('blocks', []) or []:
         if not isinstance(block, dict):
             continue
-        btype = str(block.get('type') or '')
-        if _THINK_HINT.search(btype):
-            thought = True
+        if _THINK_HINT.search(str(block.get('type') or '')):
+            thought = True  # reasoning is not saved, only noted
             continue
-        block_text = block.get('text')
-        text = (block_text.get('content') if isinstance(block_text, dict) else block_text)
-        text = text or block.get('content') or ''
-        if isinstance(text, str) and text:
-            texts.append(text)
-        # best-effort image blocks (url or base64 payloads, various shapes)
-        for key in ('image', 'image_url', 'img', 'url'):
-            v = block.get(key)
-            if isinstance(v, dict) and isinstance(v.get('url'), str):
-                images.append(v['url'])
-            elif isinstance(v, str) and v.startswith('http'):
-                images.append(v)
-
+        texts.append(_block_text(block))
+        images += _block_images(block)
     text = '\n'.join(t for t in texts if t and t.strip()).strip()
     if not text and not images and not thought:
         return None, []
@@ -261,165 +246,62 @@ def _materialize_images(page, chat: Chat, image_map: dict) -> int:
     return ok
 
 
-def run(page, token: str, chats: list[dict], out_dir: Path,
-        skip_unchanged: bool = False, save_raw: bool = True,
-        log: bool = False, sink: EventSink | None = None) -> list[dict]:
-    """Fetch the given chats. Returns per-chat results for the manifest.
+class Kimi(engine.Provider):
+    """What only Kimi does; the engine does the rest."""
 
-    Per-chat lines print only with log=True (default output is
-    summary-level; failures always print)."""
-    out_dir = Path(out_dir)
-    sync = SyncState(out_dir, PROVIDER)
-    results = []
-    t_run = time.time()
-    for i, item in enumerate(chats):
-        chat_id = item.get('id') or item.get('chat_id') or ''
-        label = (item.get('name') or item.get('title') or chat_id)[:55]
-        updated = item.get('updateTime') or item.get('updated_at')
-        emit(sink, 'chat_started', PROVIDER, label, i + 1, len(chats))
-        if log:
-            print(progress(i + 1, len(chats), t_run))
-        if skip_unchanged and sync.is_unchanged(chat_id, updated):
-            if log:
-                print(f'[{i + 1}/{len(chats)}] {label} -> skip (unchanged)')
-            emit(sink, 'chat_skipped', PROVIDER, label, i + 1, len(chats))
-            continue
-        t0 = time.time()
-        try:
-            meta = item
-            if not (meta.get('name') or meta.get('title')):
-                try:
-                    d = _api(page, token, 'kimi.chat.v1.ChatService/GetChat',
-                             {'chat_id': chat_id}, retries=1)
-                    meta = d.get('chat') or d
-                except Exception:
-                    pass
-            messages = list_messages(page, token, chat_id)
-            chat, image_map = parse_chat(meta, messages)
-            if not chat.visible_turns():
-                raise RuntimeError('Kimi returned no readable messages; response shape may have changed')
-            n_imgs = _materialize_images(page, chat, image_map)
-            stats = save_chat(chat, out_dir, sync, chat_id, updated,
-                              {'meta': meta, 'messages': messages} if save_raw else None,
-                              sink=sink, provider=PROVIDER)
-            results.append({'id': chat_id, 'title': chat.title, 'ok': True,
-                            'duration_s': round(time.time() - t0, 1),
-                            **{k: stats[k] for k in ('turns', 'chars', 'images', 'docs')}})
-            emit(sink, 'chat_completed', PROVIDER, chat.title, i + 1, len(chats))
-            if log:
-                extra = f", {stats['images']} img" if stats['images'] else ''
-                extra += f", {stats['docs']} doc" if stats['docs'] else ''
-                print(f'[{i + 1}/{len(chats)}] {label} -> {stats["turns"]}t, '
-                      f'{stats["chars"]:,} chars{extra}')
-                print(f'    images: {n_imgs} · {time.time() - t0:.1f}s')
-        except Exception as e:
-            print(f'[{i + 1}/{len(chats)}] {label} -> FAILED: {e}')
-            traceback.print_exc()
-            results.append({'id': chat_id, 'title': label, 'ok': False,
-                            'error': str(e)})
-            emit(sink, 'error', PROVIDER, label, i + 1, len(chats), str(e))
-        time.sleep(0.3)
-    sync.save()
-    return results
+    name = PROVIDER
+    folder = 'Kimi Chat'
+    description = 'Save Kimi chats to the database (update by default).'
+    pace = 0.3
+
+    def open(self, page):
+        return SimpleNamespace(page=page, token=ensure_logged_in(page))
+
+    def listing(self, s) -> list[engine.ChatRef]:
+        return [engine.ChatRef(id=c.get('id') or c.get('chat_id') or '',
+                               title=c.get('name') or c.get('title') or '',
+                               updated_at=c.get('updateTime') or c.get('updated_at'), data=c)
+                for c in list_chats(s.page, s.token)]
+
+    def from_url(self, s, url: str) -> engine.ChatRef:
+        return engine.ChatRef(id=url.rstrip('/').split('/')[-1].split('?')[0])
+
+    def fetch(self, s, ref: engine.ChatRef) -> engine.Fetched:
+        meta = ref.data or {'id': ref.id}
+        if not (meta.get('name') or meta.get('title')):
+            try:  # a chat fetched by URL: its title comes from GetChat
+                found = _api(s.page, s.token, 'kimi.chat.v1.ChatService/GetChat',
+                             {'chat_id': ref.id}, retries=1)
+                meta = found.get('chat') or found
+            except Exception:
+                pass
+        messages = list_messages(s.page, s.token, ref.id)
+        chat, image_map = parse_chat(meta, messages)
+        if not chat.visible_turns():
+            raise RuntimeError('Kimi returned no readable messages; response shape may have changed')
+        images = _materialize_images(s.page, chat, image_map)
+        return engine.Fetched(chat, raw={'meta': meta, 'messages': messages},
+                              detail=f'images: {images}')
 
 
-def build_parser() -> argparse.ArgumentParser:
-    ap = argparse.ArgumentParser(
-        prog='reclaim kimi',
-        description='Save Kimi chats to the database (update by default).')
-    ap.add_argument('title', nargs='?',
-                    help='fetch chats whose title contains this '
-                         '(case-insensitive)')
-    ap.add_argument('--rebuild', action='store_true',
-                    help='fetch everything, overwriting local copies')
-    ap.add_argument('--url', help='fetch one exact chat URL')
-    ap.add_argument('--list', action='store_true',
-                    help='print chat titles, no download')
-    ap.add_argument('--log', action='store_true',
-                    help='full per-chat log + verbose progress and timings')
-    ap.add_argument('--dry-run', action='store_true',
-                    help='preview what would be fetched; nothing downloaded')
-    ap.add_argument('--skip', type=int, default=0,
-                    help='skip the first N chats in the listing')
-    ap.add_argument('--limit', type=int, default=0,
-                    help='fetch at most N chats')
-    ap.add_argument('--no-raw', action='store_true',
-                    help='do not save media-stripped raw.json per chat')
-    ap.add_argument('-o', '--output-dir',
-                    default=str(config.archive_root() / 'Kimi Chat'))
-    return ap
+SPEC = Kimi()
+
+
+def build_parser():
+    return engine.build_parser(SPEC)
 
 
 def parse_args(argv=None):
-    """Parse + validate CLI args (shared by main() and `reclaim all`)."""
-    ap = build_parser()
-    args = ap.parse_args(argv)
-    if args.title and args.url:
-        ap.error('pass a title or --url, not both')
-    return args
-
-
-def main(argv=None):
-    args = parse_args(argv)
-    from playwright.sync_api import sync_playwright
-    with sync_playwright() as p:
-        ctx, page = browser.launch(p)
-        try:
-            return run_session(page, args)
-        finally:
-            ctx.close()
+    return engine.parse_args(SPEC, argv)
 
 
 def run_session(page, args, sink: EventSink | None = None) -> int:
-    """Provider session on an already-launched page; shared by main()
-    (own browser) and `reclaim all` (one browser for all providers)."""
-    out_dir = Path(args.output_dir)
-    started = time.time()
-    token = ensure_logged_in(page)
-    if args.url:
-        cid = args.url.rstrip('/').split('/')[-1].split('?')[0]
-        chats = [{'id': cid}]
-    else:
-        print('Listing chats...')
-        chats = list_chats(page, token)
-        print(f'Found {len(chats)} chats')
-    if args.title:
-        chats = [c for c in chats
-                 if args.title.lower() in
-                 ((c.get('name') or c.get('title') or '').lower())]
-    if args.skip:
-        chats = chats[args.skip:]
-    if args.limit:
-        chats = chats[:args.limit]
-    if not chats:
-        print('No chats matched.')
-        return 1
-    if args.list:
-        for n, c in enumerate(chats, 1):
-            print(f'{n}. {c.get("name") or c.get("title") or c["id"]}')
-        print(f'-- {len(chats)} chat(s)')
-        return 0
-    skip_unchanged = not args.rebuild and not args.title
-    if args.dry_run:
-        sync = SyncState(out_dir, PROVIDER, migrate=False)
-        updated_map = {c.get('id') or c.get('chat_id') or '':
-                       c.get('updateTime') or c.get('updated_at')
-                       for c in chats}
-        return print_dry_run(chats, updated_map, sync, skip_unchanged,
-                             log=args.log, sink=sink, provider=PROVIDER)
+    """This provider on an already opened page (window and command line)."""
+    return engine.run_session(SPEC, page, args, sink)
 
-    out_dir.mkdir(parents=True, exist_ok=True)
-    print(f"\n{'=' * 50}\n  {len(chats)} chats\n{'=' * 50}\n")
-    results = run(page, token, chats, out_dir,
-                  skip_unchanged=skip_unchanged,
-                  save_raw=not args.no_raw, log=args.log, sink=sink)
-    manifest = write_manifest(out_dir, PROVIDER, results, started)
-    ok = sum(1 for r in results if r.get('ok'))
-    print(f"\n{'=' * 50}")
-    print(f'  Done: {ok} ok, {len(results) - ok} failed')
-    print(f'  Manifest: {manifest}')
-    print(f"{'=' * 50}")
-    return 0 if ok == len(results) else 2
+
+def main(argv=None):
+    return engine.main(SPEC, argv)
 
 
 if __name__ == '__main__':

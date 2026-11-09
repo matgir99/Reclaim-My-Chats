@@ -10,6 +10,7 @@ Usage:
   reclaim <provider> --dry-run [options]   preview what would be fetched
   reclaim status [-o DIR]                  offline database overview
   reclaim init [DIR]                       create a database (default: the configured folder)
+  reclaim doctor [--live]                  check settings, database, locks, browser, logins
   reclaim unlock                           remove a lock left by a run that has ended
   reclaim gui                              launch the desktop application
   reclaim all [options]                    update all six providers, in order
@@ -40,6 +41,7 @@ Examples:
 
 from __future__ import annotations
 
+import importlib
 import sys
 
 PROVIDERS = {
@@ -59,6 +61,14 @@ IMPORTERS = {
     'chatgpt': 'reclaim.providers.chatgpt_import',
     'scrapemychats': 'reclaim.providers.chatgpt_import',
 }
+EXPORTERS = {
+    'haevn-md': 'reclaim.exporters.haevn_md',
+}
+# `reclaim <group> <name> ...` runs the named module's main(). The ChatGPT
+# importer reads the name itself (chatgpt or scrapemychats); the others get
+# only the arguments after it.
+GROUPS = {'parse': PARSERS, 'import': IMPORTERS, 'export': EXPORTERS}
+TAKES_NAME = {'reclaim.providers.chatgpt_import'}
 
 USAGE = __doc__
 
@@ -178,49 +188,53 @@ def main(argv=None):
         return 2
 
 
+def _module_main(module: str, argv: list[str]) -> int:
+    """Run a command implemented by another module (imported only when used)."""
+    return importlib.import_module(module).main(argv)
+
+
+def _version(_rest: list[str]) -> int:
+    from importlib.metadata import PackageNotFoundError, version
+    try:
+        print(f'reclaim {version("reclaimmychats")}')
+    except PackageNotFoundError:
+        print('reclaim (dev, not installed)')
+    return 0
+
+
+def _gui(rest: list[str]) -> int:
+    if rest:
+        print('usage: reclaim gui')
+        return 2
+    from .gui import main as gui_main
+    return gui_main()
+
+
+COMMANDS = {
+    '--version': _version,
+    'all': _run_all,
+    'init': _init,
+    'unlock': _unlock,
+    'gui': _gui,
+    'doctor': lambda rest: _module_main('reclaim.core.doctor', rest),
+    'status': lambda rest: _module_main('reclaim.core.status', rest),
+}
+
+
 def _dispatch(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or argv[0] in ('-h', '--help'):
         print(USAGE)
         return 0
-    if argv[0] == '--version':
-        from importlib.metadata import PackageNotFoundError, version
-        try:
-            print(f'reclaim {version("reclaimmychats")}')
-        except PackageNotFoundError:
-            print('reclaim (dev, not installed)')
-        return 0
     cmd, rest = argv[0], argv[1:]
-
     if cmd in PROVIDERS:
         return _run_single(cmd, rest)
-    if cmd == 'init':
-        return _init(rest)
-    if cmd == 'unlock':
-        return _unlock(rest)
-    if cmd == 'all':
-        return _run_all(rest)
-    if cmd == 'gui':
-        if rest:
-            print('usage: reclaim gui')
-            return 2
-        from .gui import main as gui_main
-        return gui_main()
-    if cmd == 'status':
-        mod = __import__('reclaim.core.status', fromlist=['main'])
-        return mod.main(rest)
-    if cmd == 'parse' and rest and rest[0] in PARSERS:
-        mod = __import__(PARSERS[rest[0]], fromlist=['main'])
-        return mod.main(rest[1:])
-    if cmd == 'import' and rest and rest[0] in IMPORTERS:
-        mod = __import__(IMPORTERS[rest[0]], fromlist=['main'])
-        if rest[0] in ('chatgpt', 'scrapemychats'):
-            return mod.main(rest)
-        return mod.main(rest[1:])
-    if cmd == 'export' and rest and rest[0] == 'haevn-md':
-        mod = __import__('reclaim.exporters.haevn_md', fromlist=['main'])
-        return mod.main(rest[1:])
-
+    if cmd in COMMANDS:
+        return COMMANDS[cmd](rest)
+    group = GROUPS.get(cmd, {})
+    if rest and rest[0] in group:
+        module = group[rest[0]]
+        return _module_main(module, rest if module in TAKES_NAME else rest[1:])
     print(f'unknown command: {" ".join(argv)}\n')
     print(USAGE)
     return 1

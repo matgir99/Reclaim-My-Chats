@@ -13,24 +13,19 @@ from [citation:N] to [-N](url).
 
 from __future__ import annotations
 
-import argparse
 import json
-import os
 import re
 import time
-import traceback
-from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import urlencode
 
-from ..core import browser, config
+from ..core import browser, engine, retry
 from ..core.events import EventSink, emit
-from ..core.manifest import SyncState, print_dry_run, save_chat, write_manifest
 from ..core.model import Attachment, Chat, Turn
-from ..core.progress import progress
 
 BASE_URL = 'https://chat.deepseek.com/'
 PROVIDER = 'deepseek'
-_IMG_EXTS = re.compile(r'\.(png|jpe?g|gif|webp)$', re.I)
+_IMG_EXTS = re.compile(r'\.(png|jpe?g|gif|webp)$', re.IGNORECASE)
 
 
 # ---------------------------------------------------------------------------
@@ -51,51 +46,48 @@ _GET_JS = """async (args) => {
         headers: {'accept': 'application/json', 'authorization': 'Bearer ' + token},
         signal: AbortSignal.timeout(60000),
     });
-    return {status: response.status, text: await response.text()};
+    return {status: response.status, text: await response.text(),
+            retryAfter: response.headers.get('retry-after')};
 }"""
 
 
 def ensure_logged_in(page):
+    """Open DeepSeek and, when the page holds no login token, ask the user to
+    log in in the browser window and wait for one."""
     page.goto(BASE_URL, wait_until='domcontentloaded', timeout=60000)
     time.sleep(3)
     if page.evaluate(_HAS_TOKEN_JS):
         return
-    page.bring_to_front()
-    browser.set_window_bounds(page, state='normal', left=100, top=100)
-    print('\nLog in to DeepSeek in the browser window. Waiting up to 15 minutes...')
-    deadline = time.time() + int(os.environ.get('RECLAIM_LOGIN_TIMEOUT', '900'))
+    timeout = browser.login_timeout()
+    browser.ask_for_login(page, PROVIDER, 'DeepSeek', timeout)
+    deadline = time.time() + timeout
     while time.time() < deadline:
         if page.evaluate(_HAS_TOKEN_JS):
-            browser.set_window_bounds(page, state='minimized')
+            browser.login_done(page, PROVIDER)
             return
         time.sleep(3)
     raise RuntimeError('DeepSeek login timeout')
 
 
 def _api_get(page, path: str, params: dict | None = None) -> dict:
+    """GET a history API path from the page and return its biz_data, raising
+    when the envelope reports an error (code or biz_code other than 0)."""
     url = BASE_URL + 'api/v0/' + path
     if params:
         url += '?' + urlencode(params)
-    for attempt in range(3):
-        response = page.evaluate(_GET_JS, {'url': url})
-        status = response['status']
-        if status in (429, 500, 502, 503, 504) and attempt < 2:
-            time.sleep(2 + attempt * 3)
-            continue
-        if status != 200:
-            raise RuntimeError(f'DeepSeek history API HTTP {status}; check your login and retry')
-        try:
-            envelope = json.loads(response['text'])
-            data = envelope['data']
-            if envelope.get('code') != 0 or data.get('biz_code') != 0:
-                raise RuntimeError('DeepSeek history API rejected the request; check your login and retry')
-            result = data['biz_data']
-        except (ValueError, KeyError, TypeError, AttributeError) as exc:
-            raise RuntimeError('unexpected DeepSeek history API response') from exc
-        if not isinstance(result, dict):
-            raise RuntimeError('unexpected DeepSeek history API payload')
-        return result
-    raise RuntimeError('DeepSeek history API retries exhausted')
+    response = retry.send(lambda: page.evaluate(_GET_JS, {'url': url}),
+                          what='DeepSeek history API')
+    try:
+        envelope = json.loads(response['text'])
+        data = envelope['data']
+        if envelope.get('code') != 0 or data.get('biz_code') != 0:
+            raise RuntimeError('DeepSeek history API rejected the request; check your login and retry')
+        result = data['biz_data']
+    except (ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise RuntimeError('unexpected DeepSeek history API response') from exc
+    if not isinstance(result, dict):
+        raise RuntimeError('unexpected DeepSeek history API payload')
+    return result
 
 
 def list_chats(page) -> list[dict]:
@@ -199,6 +191,66 @@ def replace_citations(text: str, citemap: dict) -> str:
     return re.sub(r'\[citation:(\d+)\]', replacer, text)
 
 
+def _active_chain(messages: list[dict], leaf) -> list[dict]:
+    """The branch the user sees: from the current message back to the root
+    through parent ids, oldest first. All messages when the leaf is unknown."""
+    by_id = {m['message_id']: m for m in messages if m.get('message_id') is not None}
+    if leaf is None or leaf not in by_id:
+        return messages
+    chain, seen = [], set()
+    while leaf is not None and leaf in by_id:
+        if leaf in seen:
+            raise RuntimeError('DeepSeek message tree contains a cycle')
+        seen.add(leaf)
+        chain.append(by_id[leaf])
+        leaf = by_id[leaf].get('parent_id')
+    return list(reversed(chain))
+
+
+def _uploads(fragment: dict) -> list[Attachment]:
+    """A FILE fragment's uploads, to download later from their signed path."""
+    attachments = []
+    for info in fragment.get('files', []) or []:
+        name = info.get('file_name') or 'file'
+        signed = info.get('signed_path', '')
+        size = info.get('file_size')
+        attachments.append(Attachment(
+            filename=name,
+            kind='image' if _IMG_EXTS.search(name) else 'document',
+            data=None,
+            source_url=((signed if signed.startswith('http')
+                         else BASE_URL.rstrip('/') + signed) if signed else ''),
+            description=name + (f' ({size:,} bytes)' if size else ''),
+        ))
+    return attachments
+
+
+def _user_turn(msg: dict) -> Turn | None:
+    text, attachments = '', []
+    for fragment in msg.get('fragments') or []:
+        if fragment.get('type') == 'REQUEST' and fragment.get('content'):
+            text = fragment['content'].strip()
+        elif fragment.get('type') == 'FILE':
+            attachments += _uploads(fragment)
+    if not text and isinstance(msg.get('content'), str):
+        text = msg['content']  # legacy cached records
+    return Turn(role='user', text=text, attachments=attachments) if text or attachments else None
+
+
+def _assistant_turn(msg: dict, citemap: dict) -> Turn | None:
+    fragments = msg.get('fragments') or []
+    text = '\n\n'.join(fragment.get('content') or '' for fragment in fragments
+                        if fragment.get('type') == 'RESPONSE').strip()
+    if not text and isinstance(msg.get('content'), str):
+        text = msg['content']
+    thought = bool(msg.get('thinking_content')) or any(
+        fragment.get('type') == 'THINK' for fragment in fragments)
+    if not text and not thought:
+        return None
+    return Turn(role='model', text=replace_citations(text, citemap),
+                thought=thought and not text, had_thoughts=thought)
+
+
 def record_to_chat(record: dict) -> Chat:
     """Convert a history response or legacy cached record into a canonical Chat.
 
@@ -208,63 +260,17 @@ def record_to_chat(record: dict) -> Chat:
     data = record.get('data', record)
     data = data.get('biz_data', data)
     session = data.get('chat_session', {})
-    messages = data.get('chat_messages', [])
-    leaf = session.get('current_message_id')
-    by_id = {m['message_id']: m for m in messages if m.get('message_id') is not None}
-    if leaf is not None and leaf in by_id:
-        chain, seen = [], set()
-        while leaf is not None and leaf in by_id:
-            if leaf in seen:
-                raise RuntimeError('DeepSeek message tree contains a cycle')
-            seen.add(leaf)
-            message = by_id[leaf]
-            chain.append(message)
-            leaf = message.get('parent_id')
-        messages = list(reversed(chain))
-
-    all_fragments = []
-    for msg in messages:
-        all_fragments.extend(msg.get('fragments') or [])
-    citemap = build_citation_map(all_fragments)
-
+    messages = _active_chain(data.get('chat_messages', []), session.get('current_message_id'))
+    # citations are numbered across the whole chat
+    citemap = build_citation_map([fragment for msg in messages
+                                  for fragment in msg.get('fragments') or []])
     turns = []
     for msg in messages:
         role = msg.get('role', '').upper()
-        fragments = msg.get('fragments') or []
-        if role == 'USER':
-            text, atts = '', []
-            for frag in fragments:
-                if frag.get('type') == 'REQUEST' and frag.get('content'):
-                    text = frag['content'].strip()
-                elif frag.get('type') == 'FILE':
-                    for finfo in frag.get('files', []) or []:
-                        name = finfo.get('file_name') or 'file'
-                        signed = finfo.get('signed_path', '')
-                        size = finfo.get('file_size')
-                        desc = name + (f' ({size:,} bytes)' if size else '')
-                        atts.append(Attachment(
-                            filename=name,
-                            kind='image' if _IMG_EXTS.search(name) else 'document',
-                            data=None,
-                            source_url=((signed if signed.startswith('http')
-                                         else BASE_URL.rstrip('/') + signed) if signed else ''),
-                            description=desc,
-                        ))
-            if not text and isinstance(msg.get('content'), str):
-                text = msg['content']
-            if text or atts:
-                turns.append(Turn(role='user', text=text, attachments=atts))
-        elif role == 'ASSISTANT':
-            text = '\n\n'.join(frag.get('content') or '' for frag in fragments
-                                 if frag.get('type') == 'RESPONSE').strip()
-            if not text and isinstance(msg.get('content'), str):
-                text = msg['content']
-            thought = bool(msg.get('thinking_content')) or any(
-                frag.get('type') == 'THINK' for frag in fragments)
-            if text or thought:
-                turns.append(Turn(role='model', text=replace_citations(text, citemap),
-                                  thought=thought and not text, had_thoughts=thought))
-
+        turn = (_user_turn(msg) if role == 'USER' else
+                _assistant_turn(msg, citemap) if role == 'ASSISTANT' else None)
+        if turn is not None:
+            turns.append(turn)
     chat_id = session.get('id', '')
     return Chat(id=chat_id,
                 title=session.get('title', ''),
@@ -294,193 +300,76 @@ def materialize_attachments(page, chat: Chat, timeout_ms: int = 60000) -> int:
                 att.data = body
                 ok += 1
             except Exception as e:
-                print(f'      attachment download error ({att.filename}): {e}')
+                emit(None, 'warning', PROVIDER,
+                     message=f'attachment {att.filename} was not downloaded: {e}')
     return ok
 
 
 # ---------------------------------------------------------------------------
 # Main (scrape mode)
 # ---------------------------------------------------------------------------
-def run(page, records: list[dict], out_dir: Path,
-        skip_unchanged: bool = False, updated_map: dict | None = None,
-        save_raw: bool = True, log: bool = False,
-        sink: EventSink | None = None, fetch_missing: bool = False) -> list[dict]:
-    """Archive the given records. Returns per-chat results for the manifest.
+class DeepSeek(engine.Provider):
+    """What only DeepSeek does; the engine does the rest."""
 
-    Per-chat lines print only with log=True (default output is
-    summary-level; failures always print)."""
-    out_dir = Path(out_dir)
-    sync = SyncState(out_dir, PROVIDER)
-    results = []
-    updated_map = updated_map or {}
-    t_run = time.time()
+    name = PROVIDER
+    folder = 'Deepseek Chat'
+    description = 'Save DeepSeek chats to the database (update by default).'
+    pace = 0.0
 
-    for i, rec in enumerate(records):
-        try:
-            chat = record_to_chat(rec)
-        except Exception as e:
-            results.append({'id': '?', 'title': '?', 'ok': False, 'error': str(e)})
-            emit(sink, 'error', PROVIDER, '?', i + 1, len(records), str(e))
-            continue
-        label = (chat.title or chat.id)[:55]
-        emit(sink, 'chat_started', PROVIDER, label, i + 1, len(records))
-        if log:
-            print(progress(i + 1, len(records), t_run))
-        if skip_unchanged and sync.is_unchanged(chat.id,
-                                                updated_map.get(chat.id)):
-            if log:
-                print(f'[{i + 1}/{len(records)}] {label} -> skip (unchanged)')
-            emit(sink, 'chat_skipped', PROVIDER, label, i + 1, len(records))
-            continue
-        t0 = time.time()
-        try:
-            if fetch_missing:
-                rec = fetch_record(page, chat.id)
-                chat = record_to_chat(rec)
-                if not chat.visible_turns():
-                    raise RuntimeError('DeepSeek returned no readable messages; refusing to save an empty chat')
-            n_files = materialize_attachments(page, chat)
-            stats = save_chat(chat, out_dir, sync, chat.id, updated_map.get(chat.id),
-                              rec if save_raw else None, sink=sink, provider=PROVIDER)
-            results.append({'id': chat.id, 'title': chat.title, 'ok': True,
-                            'duration_s': round(time.time() - t0, 1),
-                            **{k: stats[k] for k in ('turns', 'chars', 'images', 'docs')}})
-            emit(sink, 'chat_completed', PROVIDER, chat.title, i + 1, len(records))
-            if log:
-                extra = f", {stats['images']} img" if stats['images'] else ''
-                extra += f", {stats['docs']} doc" if stats['docs'] else ''
-                print(f'[{i + 1}/{len(records)}] {label} -> {stats["turns"]}t, '
-                      f'{stats["chars"]:,} chars{extra}')
-                print(f'    files: {n_files} · {time.time() - t0:.1f}s')
-        except Exception as e:
-            print(f'[{i + 1}/{len(records)}] {label} -> FAILED: {e}')
-            traceback.print_exc()
-            results.append({'id': chat.id, 'title': label, 'ok': False,
-                            'error': str(e)})
-            emit(sink, 'error', PROVIDER, label, i + 1, len(records), str(e))
-    sync.save()
-    return results
+    def open(self, page):
+        ensure_logged_in(page)
+        return SimpleNamespace(page=page)
 
+    def listing_text(self) -> str:
+        return 'Listing DeepSeek server history (older history may be limited by the service)...'
 
-def build_parser() -> argparse.ArgumentParser:
-    ap = argparse.ArgumentParser(
-        prog='reclaim deepseek',
-        description='Save DeepSeek chats to the database (update by default).')
-    ap.add_argument('title', nargs='?',
-                    help='fetch chats whose title contains this '
-                         '(case-insensitive)')
-    ap.add_argument('--rebuild', action='store_true',
-                    help='fetch everything, overwriting local copies')
-    ap.add_argument('--url', help='fetch one exact chat URL')
-    ap.add_argument('--list', action='store_true',
-                    help='print chat titles, no download')
-    ap.add_argument('--log', action='store_true',
-                    help='full per-chat log + verbose progress and timings')
-    ap.add_argument('--dry-run', action='store_true',
-                    help='preview what would be fetched; nothing downloaded')
-    ap.add_argument('--skip', type=int, default=0,
-                    help='skip the first N chats in the listing')
-    ap.add_argument('--limit', type=int, default=0,
-                    help='fetch at most N chats')
-    ap.add_argument('--no-raw', action='store_true',
-                    help='do not save media-stripped raw.json per chat')
-    ap.add_argument('-o', '--output-dir',
-                    default=str(config.archive_root() / 'Deepseek Chat'))
-    return ap
+    def found_text(self, refs) -> str:
+        return f'Found {len(refs)} chats. Full messages are fetched only when selected.'
 
-
-def _rec_id(rec: dict) -> str:
-    try:
-        return rec.get('data', rec).get('chat_session', {}).get('id') or '?'
-    except Exception:
-        return '?'
-
-
-def _rec_title(rec: dict) -> str:
-    try:
-        return record_to_chat(rec).title
-    except Exception:
-        return '?'
-
-
-def parse_args(argv=None):
-    """Parse + validate CLI args (shared by main() and `reclaim all`)."""
-    ap = build_parser()
-    args = ap.parse_args(argv)
-    if args.title and args.url:
-        ap.error('pass a title or --url, not both')
-    return args
-
-
-def main(argv=None):
-    args = parse_args(argv)
-    from playwright.sync_api import sync_playwright
-    with sync_playwright() as p:
-        ctx, page = browser.launch(p)
-        try:
-            return run_session(page, args)
-        finally:
-            ctx.close()
-
-
-def run_session(page, args, sink: EventSink | None = None) -> int:
-    """Provider session on an already-launched page; shared by main()
-    (own browser) and `reclaim all` (one shared browser)."""
-    out_dir = Path(args.output_dir)
-    started = time.time()
-    ensure_logged_in(page)
-    if args.url:
-        chat_id = args.url.split('/a/chat/s/')[-1].split('?')[0][:40]
-        summaries = [{'id': chat_id, 'title': chat_id}]
-    else:
-        print('Listing DeepSeek server history (older history may be limited by the service)...')
-        summaries = list_chats(page)
-        seen = {s['id'] for s in summaries}
-        try:
-            for cached in read_summaries(page):
+    def listing(self, s) -> list[engine.ChatRef]:
+        summaries = list_chats(s.page)
+        seen = {item['id'] for item in summaries}
+        try:  # chats this browser cached locally that the server listing omits
+            for cached in read_summaries(s.page):
                 if cached['id'] not in seen:
                     summaries.append(cached)
                     seen.add(cached['id'])
         except Exception:
-            print('Browser cache could not be read; only server-listed chats are available.')
-        print(f'Found {len(summaries)} chats. Full messages are fetched only when selected.')
-    updated_map = {s['id']: s.get('updated_at') for s in summaries}
-    records = [{'data': {'chat_session': s}} for s in summaries]
-    if args.title:
-        records = [r for r in records
-                   if args.title.lower() in _rec_title(r).lower()]
-    if args.skip:
-        records = records[args.skip:]
-    if args.limit:
-        records = records[:args.limit]
-    if not records:
-        print('No chats matched.')
-        return 1
-    if args.list:
-        for n, r in enumerate(records, 1):
-            print(f'{n}. {_rec_title(r)}')
-        print(f'-- {len(records)} chat(s)')
-        return 0
-    skip_unchanged = not args.rebuild and not args.title
-    if args.dry_run:
-        sync = SyncState(out_dir, PROVIDER, migrate=False)
-        view = [{'id': _rec_id(r), 'title': _rec_title(r)}
-                for r in records]
-        return print_dry_run(view, updated_map, sync, skip_unchanged,
-                             log=args.log, sink=sink, provider=PROVIDER)
+            emit(None, 'warning', PROVIDER, message='the browser cache could not be read; '
+                                                     'only server-listed chats are available.')
+        return [engine.ChatRef(id=item['id'], title=item.get('title') or '',
+                               updated_at=item.get('updated_at'), data=item) for item in summaries]
 
-    out_dir.mkdir(parents=True, exist_ok=True)
-    print(f"\n{'=' * 50}\n  {len(records)} chats\n{'=' * 50}\n")
-    results = run(page, records, out_dir, skip_unchanged=skip_unchanged,
-                  updated_map=updated_map, save_raw=not args.no_raw,
-                  log=args.log, sink=sink, fetch_missing=True)
-    manifest = write_manifest(out_dir, PROVIDER, results, started)
-    ok = sum(1 for r in results if r.get('ok'))
-    print(f"\n{'=' * 50}")
-    print(f'  Done: {ok} ok, {len(results) - ok} failed')
-    print(f'  Manifest: {manifest}')
-    print(f"{'=' * 50}")
-    return 0 if ok == len(results) else 2
+    def from_url(self, s, url: str) -> engine.ChatRef:
+        return engine.ChatRef(id=url.rsplit('/a/chat/s/', maxsplit=1)[-1].split('?', maxsplit=1)[0][:40])
+
+    def fetch(self, s, ref: engine.ChatRef) -> engine.Fetched:
+        record = fetch_record(s.page, ref.id)
+        chat = record_to_chat(record)
+        if not chat.visible_turns():
+            raise RuntimeError('DeepSeek returned no readable messages; refusing to save an empty chat')
+        files = materialize_attachments(s.page, chat)
+        return engine.Fetched(chat, raw=record, detail=f'files: {files}')
+
+
+SPEC = DeepSeek()
+
+
+def build_parser():
+    return engine.build_parser(SPEC)
+
+
+def parse_args(argv=None):
+    return engine.parse_args(SPEC, argv)
+
+
+def run_session(page, args, sink: EventSink | None = None) -> int:
+    """This provider on an already opened page (window and command line)."""
+    return engine.run_session(SPEC, page, args, sink)
+
+
+def main(argv=None):
+    return engine.main(SPEC, argv)
 
 
 if __name__ == '__main__':

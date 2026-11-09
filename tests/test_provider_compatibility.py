@@ -12,9 +12,10 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from reclaim.core import browser
+from reclaim.core import browser, engine
 from reclaim.core.batchexecute import decode_response
 from reclaim.core.writer import write_chat
 from reclaim.providers import chatgpt, chatgpt_import, claude, deepseek, googlegemini, kimi
@@ -184,16 +185,19 @@ class TestChatGPTCompatibility(unittest.TestCase):
                  'mapping': {'one': message('Synthetic answer')}})
             assert chat is not None
             return chat, {'gizmo_type': 'snorlax', 'gizmo_id': 'g-p-synthetic'}
+        session = SimpleNamespace(page=None, token='synthetic-token', project_names=None)
         with tempfile.TemporaryDirectory() as tmp, \
                 patch.object(chatgpt, 'fetch_conversation', side_effect=fetched), \
-                patch.object(chatgpt.time, 'sleep'):
+                patch.object(chatgpt, 'list_projects',
+                             return_value=[{'id': 'g-p-synthetic', 'name': 'Research'}]) as projects, \
+                patch.object(chatgpt.time, 'sleep'), contextlib.redirect_stdout(io.StringIO()):
             out = Path(tmp)
-            chatgpt.run(None, 'synthetic-token', [{'id': 'url', 'title': ''}], out,
-                        save_raw=False, project_names={'g-p-synthetic': 'Research'})
-            chatgpt.run(None, 'synthetic-token', [{'id': 'listed', 'title': '', '_project': None}],
-                        out, save_raw=False, project_names={'g-p-synthetic': 'Research'})
+            by_url = chatgpt.SPEC.from_url(session, 'https://chatgpt.com/c/url')
+            listed = engine.ChatRef(id='listed', data={'id': 'listed', 'title': '', '_project': None})
+            engine.download(chatgpt.SPEC, session, [by_url, listed], out, save_raw=False)
             self.assertTrue((out / 'Research' / 'Chat url' / 'Chat url.md').exists())
             self.assertTrue((out / 'Chat listed' / 'Chat listed.md').exists())
+            self.assertEqual(projects.call_count, 1)  # looked up once, for the URL chat only
 
     def test_rate_limits_wait_for_retry_after_and_report_429(self):
         page = Mock()
@@ -305,6 +309,71 @@ class TestChatGPTCompatibility(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'repeated project cursor'):
                 chatgpt.list_projects(None, 'synthetic-token')
         self.assertIn('cursor=next+%26%2F%3D', get.call_args.args[2])
+
+
+def export_chain(cid: str, *messages: dict, update_time: float = 1) -> dict:
+    """An official-export conversation: messages without recipient or channel."""
+    mapping = {}
+    ids = [f'{cid}-{i}' for i in range(len(messages))]
+    for i, msg in enumerate(messages):
+        mapping[ids[i]] = {'id': ids[i], 'parent': ids[i - 1] if i else None,
+                           'children': [ids[i + 1]] if i + 1 < len(ids) else [], 'message': msg}
+    return {'conversation_id': cid, 'title': f'Chat {cid}', 'update_time': update_time,
+            'current_node': ids[-1], 'mapping': mapping}
+
+
+def export_text(role: str, text: str) -> dict:
+    return {'author': {'role': role}, 'content': {'content_type': 'text', 'parts': [text]},
+            'metadata': {}}
+
+
+def export_thoughts() -> dict:
+    return {'author': {'role': 'assistant'},
+            'content': {'content_type': 'thoughts', 'thoughts': [{'summary': 'Plan'}]}, 'metadata': {}}
+
+
+class TestChatGPTOfficialExport(unittest.TestCase):
+    def test_thinking_preambles_are_left_out_of_exports(self):
+        conv = export_chain('t', export_text('user', 'Question'), export_thoughts(),
+                            export_text('assistant', 'Checking the docs'), export_thoughts(),
+                            {'author': {'role': 'assistant'}, 'metadata': {},
+                             'content': {'content_type': 'reasoning_recap', 'content': '12s'}},
+                            export_text('assistant', 'Answer'))
+        chat = chatgpt_import.parse_conversation({**conv, 'id': 't'})
+        assert chat is not None
+        self.assertEqual([t.text for t in chat.turns], ['Question', 'Answer'])
+        consecutive = export_chain('c', export_text('user', 'Every morning'),
+                                   export_text('assistant', 'Monday report'),
+                                   export_text('assistant', 'Tuesday report'))
+        chat = chatgpt_import.parse_conversation({**consecutive, 'id': 'c'})
+        assert chat is not None
+        self.assertEqual(len(chat.turns), 3)
+
+    def test_split_export_folder_and_zip(self):
+        import zipfile
+        first = [export_chain('a', export_text('user', 'old'), update_time=5),
+                 export_chain('b', export_text('user', 'b'))]
+        second = [export_chain('a', export_text('user', 'new'), update_time=9),
+                  {'file_name': 'not a conversation'}]
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp) / 'export'
+            folder.mkdir()
+            (folder / 'conversations-000.json').write_text(json.dumps(first))
+            (folder / 'conversations-001.json').write_text(json.dumps(second))
+            (folder / 'library_files.json').write_text(json.dumps([{'mapping': {}}]))
+            found = {c['id']: c for c in chatgpt_import.collect_conversations(folder)}
+            self.assertEqual(sorted(found), ['a', 'b'])
+            self.assertEqual(found['a']['update_time'], 9)
+            archive = Path(tmp) / 'export.zip'
+            with zipfile.ZipFile(archive, 'w') as bundle:
+                bundle.write(folder / 'conversations-000.json', 'chatgpt/conversations-000.json')
+                bundle.write(folder / 'conversations-001.json', 'chatgpt/conversations-001.json')
+                bundle.write(folder / 'library_files.json', 'chatgpt/library_files.json')
+            self.assertEqual(sorted(c['id'] for c in chatgpt_import.collect_conversations(archive)),
+                             ['a', 'b'])
+            single = Path(tmp) / 'conversations.json'
+            single.write_text(json.dumps({'conversations': first}))
+            self.assertEqual(len(chatgpt_import.collect_conversations(single)), 2)
 
 
 class TestClaudeCompatibility(unittest.TestCase):
@@ -432,11 +501,13 @@ class TestDeepSeekCompatibility(unittest.TestCase):
         record = {'data': {'chat_session': {'id': 'remote', 'title': 'Synthetic remote'},
                            'chat_messages': [{'role': 'USER', 'content': 'A remote question'},
                                              {'role': 'ASSISTANT', 'content': 'A remote answer'}]}}
-        summary = {'data': {'chat_session': {'id': 'remote', 'title': 'Synthetic remote'}}}
+        listed = engine.ChatRef(id='remote', title='Synthetic remote',
+                                data={'id': 'remote', 'title': 'Synthetic remote'})
         with tempfile.TemporaryDirectory() as directory:
             with (patch.object(deepseek, 'fetch_record', return_value=record) as fetch,
                   contextlib.redirect_stdout(io.StringIO())):
-                results = deepseek.run(None, [summary], Path(directory), fetch_missing=True, save_raw=False)
+                results = engine.download(deepseek.SPEC, SimpleNamespace(page=None), [listed],
+                                          Path(directory), save_raw=False)
             self.assertTrue(results[0]['ok'])
             fetch.assert_called_once_with(None, 'remote')
             markdown = next(Path(directory).rglob('*.md')).read_text()

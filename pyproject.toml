@@ -38,7 +38,16 @@ line-length = 99
 target-version = "py312"
 
 [tool.ruff.lint]
-select = ["E4", "E7", "E9", "F"]
+# Errors and likely bugs (E, F, B), modern syntax (UP), function complexity
+# (C90), and simpler forms of common code (SIM, C4, PIE, PERF, FURB...).
+select = ["E4", "E7", "E9", "F", "B", "UP", "C90", "SIM", "C4", "PIE", "PERF", "ISC",
+          "FURB", "PLC0207", "PLR5501", "PLW2901", "RUF005", "RUF012"]
+# Nested `with` blocks in tests keep setup apart from the checked call.
+ignore = ["SIM117"]
+
+[tool.ruff.lint.mccabe]
+# Split a function before it needs more than this many paths to follow.
+max-complexity = 12
 
 [tool.pyright]
 pythonVersion = "3.12"
