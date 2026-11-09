@@ -12,7 +12,7 @@ async def test_opens_and_shows_every_provider(flet_app: ftt.FletTestApp):
                      'deepseek', 'kimi'):
         assert (await tester.find_by_key(f'provider-{provider}')).count == 1
     assert (await tester.find_by_key('archive-path')).count == 1
-    assert (await tester.find_by_text('0 chats archived')).count == 1
+    assert (await tester.find_by_text('0 chats in the database')).count == 1
 
 
 async def test_update_selected_and_dry_run(flet_app: ftt.FletTestApp):

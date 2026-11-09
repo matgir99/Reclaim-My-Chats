@@ -22,7 +22,9 @@ from __future__ import annotations
 import json
 import re
 
-_MARKER = re.compile(r'\ue200([a-z_]+)((?:\ue202[^\ue200\ue201]*)*)\ue201')
+# Fields never contain the separator \ue202; excluding it keeps matching
+# linear (CodeQL py/redos: an unclosed marker backtracked exponentially).
+_MARKER = re.compile(r'\ue200([a-z_]+)((?:\ue202[^\ue200\ue201\ue202]*)*)\ue201')
 _PRIVATE_USE = re.compile(r'[\ue200-\ue20f]')
 _EMPTY_LINK = re.compile(r'\[([^\]]*)\]\(\)')
 _HTTP = re.compile(r'https?://', re.I)
