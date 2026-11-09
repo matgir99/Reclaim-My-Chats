@@ -73,7 +73,7 @@ The other modes remain available:
 
 ```bash
 reclaim parse googleaistudio --from-folder DIRECTORY
-reclaim import chatgpt conversations.json
+reclaim import chatgpt EXPORT.zip       # official export: ZIP, folder or conversations.json
 reclaim import kept VAULT --providers kimi,claude
 reclaim import scrapemychats EXPORT_DIRECTORY
 reclaim export haevn-md . chats.zip

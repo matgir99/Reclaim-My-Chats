@@ -311,6 +311,71 @@ class TestChatGPTCompatibility(unittest.TestCase):
         self.assertIn('cursor=next+%26%2F%3D', get.call_args.args[2])
 
 
+def export_chain(cid: str, *messages: dict, update_time: float = 1) -> dict:
+    """An official-export conversation: messages without recipient or channel."""
+    mapping = {}
+    ids = [f'{cid}-{i}' for i in range(len(messages))]
+    for i, msg in enumerate(messages):
+        mapping[ids[i]] = {'id': ids[i], 'parent': ids[i - 1] if i else None,
+                           'children': [ids[i + 1]] if i + 1 < len(ids) else [], 'message': msg}
+    return {'conversation_id': cid, 'title': f'Chat {cid}', 'update_time': update_time,
+            'current_node': ids[-1], 'mapping': mapping}
+
+
+def export_text(role: str, text: str) -> dict:
+    return {'author': {'role': role}, 'content': {'content_type': 'text', 'parts': [text]},
+            'metadata': {}}
+
+
+def export_thoughts() -> dict:
+    return {'author': {'role': 'assistant'},
+            'content': {'content_type': 'thoughts', 'thoughts': [{'summary': 'Plan'}]}, 'metadata': {}}
+
+
+class TestChatGPTOfficialExport(unittest.TestCase):
+    def test_thinking_preambles_are_left_out_of_exports(self):
+        conv = export_chain('t', export_text('user', 'Question'), export_thoughts(),
+                            export_text('assistant', 'Checking the docs'), export_thoughts(),
+                            {'author': {'role': 'assistant'}, 'metadata': {},
+                             'content': {'content_type': 'reasoning_recap', 'content': '12s'}},
+                            export_text('assistant', 'Answer'))
+        chat = chatgpt_import.parse_conversation({**conv, 'id': 't'})
+        assert chat is not None
+        self.assertEqual([t.text for t in chat.turns], ['Question', 'Answer'])
+        consecutive = export_chain('c', export_text('user', 'Every morning'),
+                                   export_text('assistant', 'Monday report'),
+                                   export_text('assistant', 'Tuesday report'))
+        chat = chatgpt_import.parse_conversation({**consecutive, 'id': 'c'})
+        assert chat is not None
+        self.assertEqual(len(chat.turns), 3)
+
+    def test_split_export_folder_and_zip(self):
+        import zipfile
+        first = [export_chain('a', export_text('user', 'old'), update_time=5),
+                 export_chain('b', export_text('user', 'b'))]
+        second = [export_chain('a', export_text('user', 'new'), update_time=9),
+                  {'file_name': 'not a conversation'}]
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp) / 'export'
+            folder.mkdir()
+            (folder / 'conversations-000.json').write_text(json.dumps(first))
+            (folder / 'conversations-001.json').write_text(json.dumps(second))
+            (folder / 'library_files.json').write_text(json.dumps([{'mapping': {}}]))
+            found = {c['id']: c for c in chatgpt_import.collect_conversations(folder)}
+            self.assertEqual(sorted(found), ['a', 'b'])
+            self.assertEqual(found['a']['update_time'], 9)
+            archive = Path(tmp) / 'export.zip'
+            with zipfile.ZipFile(archive, 'w') as bundle:
+                bundle.write(folder / 'conversations-000.json', 'chatgpt/conversations-000.json')
+                bundle.write(folder / 'conversations-001.json', 'chatgpt/conversations-001.json')
+                bundle.write(folder / 'library_files.json', 'chatgpt/library_files.json')
+            self.assertEqual(sorted(c['id'] for c in chatgpt_import.collect_conversations(archive)),
+                             ['a', 'b'])
+            single = Path(tmp) / 'conversations.json'
+            single.write_text(json.dumps({'conversations': first}))
+            self.assertEqual(len(chatgpt_import.collect_conversations(single)), 2)
+
+
 class TestClaudeCompatibility(unittest.TestCase):
     def test_short_offset_pages_do_not_hide_remaining_chats(self):
         pages = [[{'uuid': 'one'}], [{'uuid': 'two'}], []]

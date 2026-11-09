@@ -25,6 +25,7 @@ import argparse
 import json
 import re
 import time
+import zipfile
 from pathlib import Path
 
 from ..core import config
@@ -141,10 +142,30 @@ def _node_to_turn(node: dict) -> Turn | None:
     return Turn(role='user' if role == 'user' else 'model', text=text.strip())
 
 
+def _export_preambles(nodes: list[dict]) -> set[int]:
+    """Positions of thinking preambles in an official data export.
+
+    The export drops `recipient` and `is_thinking_preamble_message` but keeps
+    the short progress notes a thinking model writes between reasoning
+    steps. A reply without a recipient that is directly followed by a
+    reasoning step is such a note (chatgpt-exporter 8e5bd2a). Live API
+    messages always carry a recipient, so they are never matched."""
+    found = set()
+    for index, node in enumerate(nodes[:-1]):
+        msg = node.get('message') or {}
+        following = ((nodes[index + 1].get('message') or {}).get('content') or {})
+        if (msg.get('recipient') is None and (msg.get('author') or {}).get('role') == 'assistant'
+                and (msg.get('content') or {}).get('content_type') == 'text'
+                and following.get('content_type') in ('thoughts', 'reasoning_recap')):
+            found.add(index)
+    return found
+
+
 def parse_conversation(conv: dict, attachments: list[Attachment] | None = None) -> Chat | None:
     mapping = conv.get('mapping') or {}
     nodes = _linearize(mapping, conv.get('current_node'))
-    turns = [t for t in (_node_to_turn(n) for n in nodes) if t]
+    preambles = _export_preambles(nodes)
+    turns = [t for i, t in enumerate(_node_to_turn(n) for n in nodes) if t and i not in preambles]
     if not turns:
         return None
     if attachments:
@@ -180,11 +201,47 @@ def _write_chats(chats: list[Chat], out_dir: Path) -> list[dict]:
 # ---------------------------------------------------------------------------
 # Source 1: official conversations.json
 # ---------------------------------------------------------------------------
+def _export_files(path: Path):
+    """The parsed JSON files of an official export: one file, the export
+    folder, or the export ZIP. A large export splits its conversations into
+    conversations-000.json, conversations-001.json and so on."""
+    path = Path(path)
+    if path.is_dir():
+        for file in sorted(path.glob('conversations*.json')):
+            yield json.loads(file.read_text(encoding='utf-8'))
+    elif zipfile.is_zipfile(path):
+        with zipfile.ZipFile(path) as bundle:
+            for name in sorted(bundle.namelist()):
+                if re.fullmatch(r'(?:.*/)?conversations[^/]*\.json', name):
+                    yield json.loads(bundle.read(name).decode('utf-8'))
+    else:
+        yield json.loads(path.read_text(encoding='utf-8'))
+
+
+def collect_conversations(path: Path) -> list[dict]:
+    """Every conversation in an official export. Items without a message
+    tree are skipped; a conversation found twice keeps its latest version
+    (chatgpt-exporter 023cf2b)."""
+    found: dict[str, dict] = {}
+    for data in _export_files(path):
+        if isinstance(data, dict):  # some exports wrap in {"conversations": [...]}
+            data = data.get('conversations', [])
+        for item in data if isinstance(data, list) else []:
+            if not isinstance(item, dict) or not isinstance(item.get('mapping'), dict):
+                continue
+            cid = item.get('id') or item.get('conversation_id')
+            if not isinstance(cid, str):
+                continue
+            previous = found.get(cid)
+            if previous and (previous.get('update_time') or 0) >= (item.get('update_time') or 0):
+                continue
+            found[cid] = {**item, 'id': cid}
+    return list(found.values())
+
+
 def run_official(export_path: Path, out_dir: Path) -> list[dict]:
-    data = json.loads(Path(export_path).read_text(encoding='utf-8'))
-    if isinstance(data, dict):  # some exports wrap in {"conversations": [...]}
-        data = data.get('conversations', [])
-    chats = [c for c in (parse_conversation(conv) for conv in data) if c]
+    chats = [c for c in (parse_conversation(conv) for conv in collect_conversations(export_path))
+             if c]
     return _write_chats(chats, out_dir)
 
 
@@ -221,7 +278,8 @@ def run_scrapemychats(export_dir: Path, out_dir: Path) -> list[dict]:
 def main(argv=None):
     ap = argparse.ArgumentParser(prog='reclaim import chatgpt|scrapemychats')
     ap.add_argument('source', choices=['chatgpt', 'scrapemychats'])
-    ap.add_argument('path', help='conversations.json (chatgpt) or export dir (scrapemychats)')
+    ap.add_argument('path', help='official export: conversations.json, the export folder or '
+                                 'its ZIP (chatgpt); export dir (scrapemychats)')
     ap.add_argument('-o', '--output-dir',
                     default=str(config.archive_root() / 'ChatGPT'))
     args = ap.parse_args(argv)
