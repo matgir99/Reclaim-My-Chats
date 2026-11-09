@@ -267,6 +267,16 @@ class TestChatGPTCompatibility(unittest.TestCase):
         self.assertEqual(native.text, expected)
         self.assertEqual(imported.text, expected)
 
+    def test_unclosed_marker_cannot_stall_the_parser(self):
+        # CodeQL py/redos: the old pattern needed ~45 s for this input.
+        import time
+        from reclaim.providers import chatgpt_references
+        text = '\ue200cite' + '\ue202' * 30 + ' trailing text'
+        started = time.perf_counter()
+        resolved = chatgpt_references.resolve(text, {})
+        self.assertLess(time.perf_counter() - started, 1.0)
+        self.assertEqual(resolved, 'cite trailing text')
+
     def test_unreferenced_markers_in_interactive_markdown(self):
         fallback = ('Go to \ue200url\ue202Docs\ue202https://example.com/docs\ue201 or '
                     '\ue200url\ue202Notes\ue202turn0search1\ue201 near '
