@@ -1,29 +1,146 @@
 # Roadmap
 
-Planned work, in priority order. Each item lists what is decided and what
-still needs a decision or live evidence. Completed items move to
-[the provider review](UPSTREAM_REVIEW.md) or the relevant document.
+Planned work for Reclaim My Chats, in the order it will be done. The phases
+come from the November 2026 engineering assessment of stability,
+maintainability and ease of use. Finished tasks are ticked here and
+described in the document they affect.
 
-## 1. Follow chats as they change at the provider
+## Principles
+
+1. **The window is the main interface.** Everything a user needs works in
+   the desktop app without a terminal: setup, logins, checking and saving
+   chats, reviewing changes, settings and troubleshooting. The command line
+   offers the same operations for scripts and experienced users. A feature
+   is finished only when it works in the window; a feature that exists
+   only on the command line is not done.
+2. **Never lose data, never delete on the user's behalf.** Updates add
+   chats, replace them with newer copies or move folders. Permanent
+   deletion is always an explicit user action.
+3. **Fail loudly and safely.** When the settings are invalid, the database
+   folder is missing, another run is in progress or a provider changed,
+   stop and say what happened and how to fix it, in the window and on the
+   command line. Never fall back silently.
+4. **Check against the real services before every release.** Synthetic
+   tests cannot see provider changes. A read-only live check of every
+   provider is part of each release.
+
+Terms: the **database** is the local folder holding every saved chat.
+**Archived** means only a provider's own archive feature. **Deleted** means
+a chat no longer exists at the provider.
+
+Each task below names what the window offers (**Window**) and what the
+command line offers (**CLI**) where the task is visible to users.
+
+## Phase 0. Release the provider fixes
+
+- [ ] Merge `develop` into `main`. This publishes the fixes for ChatGPT,
+      Claude, DeepSeek, Kimi and the Google logins to users of the
+      desktop download.
+
+## Phase 1. Protect the database
+
+Goal: no interruption, crash, settings mistake or missing folder can lose
+progress records or silently start a new, empty database.
+
+- [ ] Save sync records after every chat, and write every file atomically
+      (a temporary file, then a rename). An interrupted run keeps the
+      records of every chat it saved, which also makes a Stop button safe.
+- [ ] Validate the settings file at start. An invalid file stops with a
+      clear message instead of falling back to defaults. **Window:** a
+      banner with *Open settings folder* and *Reset settings*. **CLI:** the
+      message and exit code 2.
+- [ ] Mark each database with `.reclaim-database.json`, which records its
+      format version. A missing database folder is never created on the
+      fly, except the default location on first use. Existing databases
+      are recognised and marked automatically. **Window:** a banner with
+      *Retry*, *Choose folder* and *Create database here*; choosing an
+      empty folder in Settings creates the database. **CLI:** `reclaim
+      init`.
+- [ ] Lock files in the database and the login data folder, naming the
+      computer and process. A lock left by a process that no longer runs
+      on this computer is cleared automatically. **Window:** a dialog that
+      names the holder and offers *Remove lock*. **CLI:** `reclaim
+      unlock`.
+- [ ] Run every command through the shared controller, so these checks
+      apply however a run starts. (Moved forward from Phase 2.)
+- [ ] A rotating log file in the data folder that records every run,
+      including provider output and errors. Failed `raw.json` writes are
+      reported. **Window:** *Open log folder*.
+- [ ] Safe, unique folder and file names: no trailing dots or spaces and
+      no names Windows reserves (such as CON or AUX). Two different chats
+      with the same title get separate folders instead of sharing one.
+- [ ] `chat.json` records the provider's timestamp, the save time, the
+      chat's state and a format version. Missing or damaged sync records
+      are rebuilt from the chat files, keeping the damaged file as a
+      backup. Chats saved earlier get their timestamps when the database
+      is first marked.
+
+## Phase 2. One provider engine
+
+Goal: a fix made once reaches every provider, and provider changes are
+caught before users see them.
+
+- [ ] A shared engine for requests, retries, rate limits (honouring
+      `Retry-After`), login checks, the download loop, dry runs and
+      saving. Each provider supplies only how to list its chats, how to
+      fetch one chat and how to tell whether the user is logged in.
+- [ ] Progress reported only as structured events, rendered once each for
+      the window, the terminal and the log file.
+- [ ] A capture tool that records a real provider response with every
+      text value replaced, so a format change becomes a test fixture.
+- [ ] Diagnostics: offline checks (browser, settings, database, locks) and
+      a read-only live check that lists every provider. **Window:** a
+      Diagnostics panel with *Copy diagnostics*. **CLI:** `reclaim doctor`
+      and `reclaim doctor --live`.
+- [ ] Release checklist: the live check runs before merging into `main`.
+- [ ] CI on Python 3.12 and 3.14, a lock file for builds, ruff's bugbear
+      and pyupgrade rules, and a weekly workflow that reports new commits
+      in the reference projects listed in the
+      [provider review](UPSTREAM_REVIEW.md).
+
+## Phase 3. A clearer app
+
+Goal: someone who never opens a terminal can set up the app, log in,
+update the database and solve common problems.
+
+- [ ] First-run setup: find an existing database and login data folder or
+      create new ones, choose providers, check that Chrome is installed,
+      and log in to each provider.
+- [ ] Main window as a provider table: a status chip, chats in the
+      database, last checked, and a *Log in* or *Review* button per row.
+- [ ] One shared login check per provider and the same login wait
+      everywhere. A visible banner says which provider needs a login, with
+      a button that brings the browser window forward.
+- [ ] A *Stop* button that ends a run after the current chat.
+- [ ] Plain labels: *Check for updates*, *Download everything again*,
+      *Login data folder*. Show "last checked" separately from "last
+      download".
+- [ ] Every setting in the window, including the Kimi region, the Chrome
+      location and the login wait. Environment variables remain only as
+      overrides.
+- [ ] Version number and a notice when a new release is available.
+- [ ] A version number in the settings file, with migrations.
+
+## Phase 4. Follow chats at the provider
 
 ### Goal
 
-An update should mirror what happened in the chat app since the last run:
-new and edited chats, renamed chats, chats moved between projects or
-notebooks, archived chats and deleted chats. The database remains a backup:
-an update never deletes a chat. Chats that disappear or are archived at
-the provider are moved into separate folders, where the owner decides
-whether to keep or delete them.
+An update mirrors what happened in the chat app since the last run: new
+and edited chats, renamed chats, chats moved between projects or
+notebooks, archived chats and deleted chats. The database remains a
+backup: chats that are archived or deleted at the provider move into
+separate folders, where the user decides whether to keep them.
 
-Terms: the **database** is the local folder holding every saved chat.
-**Archived** means only the provider's own archive feature, which this
-section reproduces with `_Archived` folders.
+Updates follow a *check, review, merge* flow. *Check* contacts the
+providers and builds a plan without writing anything. *Review* shows the
+plan per provider; the user merges everything, merges selected items or
+skips. *Merge* downloads and moves only the approved items.
 
 ### Folder layout
 
 ```
 <database>/<Provider>/
-├── <Project>/<Chat>/          # active chats, as today
+├── <Project>/<Chat>/            # active chats, as today
 ├── <Chat>/
 ├── _Archived/<Project>/<Chat>/  # archived at the provider
 └── _Deleted/<Project>/<Chat>/   # no longer at the provider
@@ -41,16 +158,15 @@ them.
 |:--|:--|:--|
 | New chat | Listed, no sync record | Download (today) |
 | Edited chat | Listed, newer timestamp | Download again (today) |
-| Renamed, or moved to another project | Listed title or project differs from the record | Download again and move the folder (done for title and project changes that also change the timestamp; see below) |
+| Renamed, or moved to another project | Listed title or project differs from the record | Download again and move the folder (done when the timestamp also changes) |
 | Archived | In the provider's archived listing | Move to `_Archived/` |
 | Unarchived or restored | Listed again with an `_Archived`/`_Deleted` record | Move back, then update normally |
 | Deleted | Missing from a complete listing and confirmed missing | Move to `_Deleted/` |
 
-Already done: when a chat is saved in a new folder, its previous folder is
-retired (`retire_previous`), and sync records store paths relative to the
-provider folder. Still missing: the sync record does not store the title
-or project, so a rename that leaves the provider timestamp unchanged is
-skipped. Store both, and treat a difference as a change.
+When a chat is saved in a new folder, its previous folder is already
+retired (`retire_previous`). Still missing: the sync record does not store
+the title or project, so a rename that leaves the provider timestamp
+unchanged is skipped. Store both, and treat a difference as a change.
 
 ### Safety rules
 
@@ -59,7 +175,6 @@ in November 2026 a DeepSeek and a Kimi listing change each made complete
 listings look broken.
 
 1. **Never delete.** Updates only move folders within the provider folder.
-   Permanent deletion is a separate, explicit owner action.
 2. **Only complete listings count.** Absence is evaluated only after a
    provider listing finished every page without errors, rate limits or
    truncation. Otherwise no lifecycle move happens and the run says why.
@@ -69,12 +184,10 @@ listings look broken.
    "unconfirmed".
 4. **Mass-change brake.** If a run would move more than a small share of a
    provider's chats (proposed: 10% or 20 chats, whichever is smaller), it
-   moves nothing and asks for confirmation (`--apply-lifecycle` in the CLI,
-   a dialog in the GUI).
-5. **Preview.** `--dry-run` lists planned lifecycle moves with the reason.
-6. **Audit trail.** Each move is appended to a per-provider event log
-   (time, chat id, from, to, reason), and the sync record keeps the status
-   (`active`, `archived`, `deleted`) and the original path.
+   moves nothing until the user confirms in the review.
+5. **Audit trail.** Each move is appended to a per-provider event log
+   (time, chat id, from, to, reason), and `chat.json` records the state
+   (`active`, `archived`, `deleted`).
 
 ### Provider capabilities (verify live before enabling each)
 
@@ -92,78 +205,56 @@ one at a time with synthetic tests of each response shape.
 
 ### Tasks
 
-- [ ] Sync record v2: title, project, status, original path; migrate v1
-      records in place.
-- [ ] Listing completeness flag returned by every provider listing.
-- [ ] Lifecycle planner shared by all providers: classify, confirm, apply
-      the brake, report.
-- [ ] ChatGPT archived listing and deletion confirmation.
-- [ ] Moves into and out of `_Archived` / `_Deleted`, with the event log.
-- [ ] Reserve `_Archived` and `_Deleted` in the writer.
-- [ ] `reclaim status` and the GUI: counts per status.
-- [ ] `reclaim tidy`: find chat ids saved in more than one folder and
-      retire stale copies with the same rules as `retire_previous`
-      (preview first). Covers duplicates created before November 2026.
-- [ ] Other providers, one at a time; Claude, Kimi and Gemini grouping.
+- [ ] Sync records with title, project and state.
+- [ ] A completeness flag returned by every provider listing.
+- [ ] A lifecycle planner shared by all providers: classify, confirm,
+      apply the brake, report.
+- [ ] ChatGPT archived listing and deletion confirmation, then the other
+      providers one at a time, including Claude, Kimi and Gemini grouping.
+- [ ] Moves into and out of `_Archived` and `_Deleted`, with the event
+      log; reserve both names in the writer.
+- [ ] Check without writing, and merge of an approved subset.
+- [ ] Tidy: find chats saved in more than one folder and retire stale
+      copies after a preview. Covers the duplicates created before
+      November 2026. **Window:** a *Tidy* action with a preview.
+      **CLI:** `reclaim tidy`.
+- [ ] **Window:** the review dialog (per-provider lists with checkboxes,
+      merge all, merge selected, skip); a review screen for `_Archived`
+      and `_Deleted` to open, restore or permanently delete chats with
+      confirmation; counts per state in the provider table.
+      **CLI:** the same plan in `--dry-run`, and `reclaim status` counts
+      per state.
+- [ ] **Window:** setting to check for updates when the app starts (off
+      by default). Opening the app then runs *Check* and shows *Review*
+      when something was found. The automatic check never waits for a
+      login; a provider that needs one shows *Log in*.
+- [ ] **Window:** setting to start the app at login (off by default),
+      creating a per-user autostart entry: an XDG autostart `.desktop`
+      file on Linux, a `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
+      value on Windows, and a login item on macOS. Turning it off removes
+      the entry.
+- [ ] A run summary after each merge, also as a desktop notification.
 
-## 2. Updates from the desktop application
+## Phase 5. Packaging and updates
 
-### Goal
+Goal: installing, updating and removing the app works the way people
+expect on each system, and fixes reach users quickly.
 
-Keep the database current without a terminal, on Linux, Windows and macOS,
-while the owner stays in control of what enters the database.
+- [ ] Build the desktop apps from the GUI dependencies only, removing
+      about 20 MB of unused libraries.
+- [ ] Linux: an AppImage with an unpacked folder inside (faster start) and
+      a `.deb` for Debian, Ubuntu and Mint, both with a menu entry and
+      icon. Build on an older base (glibc 2.35 or lower) so Ubuntu 22.04,
+      Debian 12 and Mint 21 can run it; v3.3.3 needs glibc 2.38.
+- [ ] Windows: a per-user installer that needs no administrator rights,
+      with a Start menu entry, an uninstaller and the start-at-login
+      option.
+- [ ] macOS: a `.dmg` with drag-to-Applications, plus an Intel build.
+- [ ] PyPI releases, so the command line installs with `pipx install
+      reclaimmychats`.
+- [ ] Build-provenance attestations on release files.
+- [ ] Later, if users need it: code signing for Windows and macOS (paid).
 
-### Design
-
-- **Check, review, merge.** An update has two phases. *Check* contacts the
-  providers and builds a plan: new, changed, renamed or moved, archived,
-  deleted and restored chats. It writes nothing; the existing dry run is
-  its basis. *Review* shows the plan per provider; the owner merges all,
-  merges selected items or skips. *Merge* downloads and moves only the
-  approved items. Skipping writes nothing; the next check rebuilds the plan.
-- **Check when the app starts** (setting, off by default). Opening the app
-  runs Check and shows Review when something was found.
-- **Start the app at login** (setting, off by default). Together with the
-  previous setting this gives an update prompt after each login. The
-  entries are per user: an XDG autostart `.desktop` file on Linux, a
-  `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` value or a Startup
-  shortcut on Windows, and a login item or LaunchAgent on macOS. Turning
-  the setting off removes the entry. "At boot" means at login: the
-  browser profile and accounts belong to the user's session.
-- **Manual use.** Without the startup check, the **Check for updates**
-  button runs the same Check → Review → Merge. Other commands are buttons
-  too: dry run, rebuild, status, tidy, open database folder, settings, and the
-  `_Archived`/`_Deleted` review (section 3).
-- **No surprise login windows.** The automatic check never waits for a
-  login; a provider that needs one shows "login required" with a
-  **Log in** button.
-- **Profile lock.** One Reclaim process per browser profile, so the app
-  and a CLI run cannot use it at the same time.
-
-### Tasks
-
-- [ ] Check that returns a plan without writing (dry run plus lifecycle
-      moves from section 1).
-- [ ] Merge that applies an approved subset of the plan.
-- [ ] Review dialog: per-provider lists with checkboxes, merge all,
-      merge selected, skip.
-- [ ] Settings: check when the app starts; start the app at login, with
-      autostart entries for the three systems.
-- [ ] No-login mode for the automatic check, with per-provider login
-      buttons.
-- [ ] Profile lock file shared by the app and the CLI.
-- [ ] Run summary after each merge, also as a desktop notification.
-
-## 3. Desktop application
-
-The Flet desktop application already ships for Linux x86_64, Windows
-x86_64 and macOS (see [GUI](GUI.md)). Planned improvements besides
-section 2:
-
-- [ ] Review screen for `_Archived` and `_Deleted`: open, restore, or
-      delete permanently with confirmation.
-- [ ] Installers: AppImage or `.deb`, an MSI or setup program, and a
-      `.dmg`; the Linux installer also adds a menu entry.
-- [ ] Code signing for Windows and macOS notarization, removing the
-      security prompts unsigned builds show.
-- [ ] In-app update check against GitHub Releases.
+Not planned: a Flatpak or Snap, whose sandbox blocks starting the
+installed Chrome and writing to any folder the user chooses, and a
+container, which cannot show a browser for logins on the user's desktop.
