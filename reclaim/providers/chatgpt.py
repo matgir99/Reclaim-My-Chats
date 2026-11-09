@@ -18,19 +18,15 @@ are excluded per project policy.
 
 from __future__ import annotations
 
-import argparse
 import json
 import re
 import time
-import traceback
-from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import urlencode
 
-from ..core import browser, config
-from ..core.events import EventSink, emit
-from ..core.manifest import SyncState, print_dry_run, save_chat, write_manifest
+from ..core import browser, engine
+from ..core.events import EventSink
 from ..core.model import Attachment, Chat, Turn
-from ..core.progress import progress
 from .chatgpt_import import (_SKIP_CONTENT_TYPES, _IMG_EXT, _content_parts, _is_tool_call,
                              _linearize)
 
@@ -399,157 +395,62 @@ def _project_name(item: dict, data: dict, project_names: dict[str, str] | None) 
     return project_names.get(data.get('gizmo_id') or '')
 
 
-def run(page, token: str, items: list[dict], out_dir: Path,
-        skip_unchanged: bool = False, save_raw: bool = True,
-        log: bool = False, sink: EventSink | None = None,
-        project_names: dict[str, str] | None = None) -> list[dict]:
-    """Fetch the given conversations. Returns per-chat results for the manifest.
+class ChatGPT(engine.Provider):
+    """What only ChatGPT does; the engine does the rest."""
 
-    Per-chat lines print only with log=True (default output is
-    summary-level; failures always print)."""
-    out_dir = Path(out_dir)
-    sync = SyncState(out_dir, PROVIDER)
-    results = []
-    t_run = time.time()
-    for i, item in enumerate(items):
-        cid = item.get('id', '')
-        label = (item.get('title') or cid)[:55]
-        updated = item.get('update_time')
-        emit(sink, 'chat_started', PROVIDER, label, i + 1, len(items))
-        if log:
-            print(progress(i + 1, len(items), t_run))
-        if skip_unchanged and sync.is_unchanged(cid, updated):
-            if log:
-                print(f'[{i + 1}/{len(items)}] {label} -> skip (unchanged)')
-            emit(sink, 'chat_skipped', PROVIDER, label, i + 1, len(items))
-            continue
-        t0 = time.time()
-        try:
-            chat, raw = fetch_conversation(page, token, cid, item.get('title', ''))
-            chat.project = _project_name(item, raw, project_names)
-            stats = save_chat(chat, out_dir, sync, cid, updated, raw if save_raw else None,
-                              sink=sink, provider=PROVIDER)
-            results.append({'id': cid, 'title': chat.title, 'ok': True,
-                            'duration_s': round(time.time() - t0, 1),
-                            **{k: stats[k] for k in ('turns', 'chars', 'images', 'docs')}})
-            emit(sink, 'chat_completed', PROVIDER, chat.title, i + 1, len(items))
-            if log:
-                extra = f", {stats['images']} img" if stats['images'] else ''
-                extra += f", {stats['docs']} doc" if stats['docs'] else ''
-                print(f'[{i + 1}/{len(items)}] {label} -> {stats["turns"]}t, '
-                      f'{stats["chars"]:,} chars{extra}')
-                print(f'    assets: {stats["images"] + stats["docs"]} · '
-                      f'{time.time() - t0:.1f}s')
-        except Exception as e:
-            print(f'[{i + 1}/{len(items)}] {label} -> FAILED: {e}')
-            traceback.print_exc()
-            results.append({'id': cid, 'title': label, 'ok': False, 'error': str(e)})
-            emit(sink, 'error', PROVIDER, label, i + 1, len(items), str(e))
-        time.sleep(0.4)
-    sync.save()
-    return results
+    name = PROVIDER
+    folder = 'ChatGPT'
+    description = ('Save ChatGPT conversations incl. Projects to the database '
+                   '(update by default).')
+    noun = 'conversations'
+    pace = 0.4
+
+    def open(self, page):
+        return SimpleNamespace(page=page, token=ensure_logged_in(page), project_names=None)
+
+    def announce_listing(self) -> None:
+        print('Listing conversations (main list + projects)...')
+
+    def announce_found(self, refs) -> None:
+        in_projects = sum(1 for r in refs if (r.data or {}).get('_project'))
+        print(f'Found {len(refs)} conversations ({in_projects} in projects)')
+
+    def listing(self, s) -> list[engine.ChatRef]:
+        return [engine.ChatRef(id=item.get('id', ''), title=item.get('title') or '',
+                               updated_at=item.get('update_time'), data=item)
+                for item in list_all_conversations(s.page, s.token)]
+
+    def from_url(self, s, url: str) -> engine.ChatRef:
+        return engine.ChatRef(id=url.rstrip('/').split('/')[-1].split('?')[0], data={})
+
+    def fetch(self, s, ref: engine.ChatRef) -> engine.Fetched:
+        item = ref.data or {}
+        chat, raw = fetch_conversation(s.page, s.token, ref.id, item.get('title') or ref.title)
+        if '_project' not in item and s.project_names is None:
+            # Fetched by URL: find its project from the conversation itself.
+            s.project_names = {p['id']: p['name'] for p in list_projects(s.page, s.token)}
+        chat.project = _project_name(item, raw, s.project_names)
+        return engine.Fetched(chat, raw=raw)
 
 
-def build_parser() -> argparse.ArgumentParser:
-    ap = argparse.ArgumentParser(
-        prog='reclaim chatgpt',
-        description='Save ChatGPT conversations incl. Projects to the database '
-                    '(update by default).')
-    ap.add_argument('title', nargs='?',
-                    help='fetch chats whose title contains this '
-                         '(case-insensitive)')
-    ap.add_argument('--rebuild', action='store_true',
-                    help='fetch everything, overwriting local copies')
-    ap.add_argument('--url', help='fetch one exact chat URL')
-    ap.add_argument('--list', action='store_true',
-                    help='print chat titles, no download')
-    ap.add_argument('--log', action='store_true',
-                    help='full per-chat log + verbose progress and timings')
-    ap.add_argument('--dry-run', action='store_true',
-                    help='preview what would be fetched; nothing downloaded')
-    ap.add_argument('--skip', type=int, default=0,
-                    help='skip the first N chats in the listing')
-    ap.add_argument('--limit', type=int, default=0,
-                    help='fetch at most N chats')
-    ap.add_argument('--no-raw', action='store_true',
-                    help='do not save media-stripped raw.json per chat')
-    ap.add_argument('-o', '--output-dir',
-                    default=str(config.archive_root() / 'ChatGPT'))
-    return ap
+SPEC = ChatGPT()
+
+
+def build_parser():
+    return engine.build_parser(SPEC)
 
 
 def parse_args(argv=None):
-    """Parse + validate CLI args (shared by main() and `reclaim all`)."""
-    ap = build_parser()
-    args = ap.parse_args(argv)
-    if args.title and args.url:
-        ap.error('pass a title or --url, not both')
-    return args
-
-
-def main(argv=None):
-    args = parse_args(argv)
-    from playwright.sync_api import sync_playwright
-    with sync_playwright() as p:
-        ctx, page = browser.launch(p)
-        try:
-            return run_session(page, args)
-        finally:
-            ctx.close()
+    return engine.parse_args(SPEC, argv)
 
 
 def run_session(page, args, sink: EventSink | None = None) -> int:
-    """Provider session on an already-launched page; shared by main()
-    (own browser) and `reclaim all` (one browser for all providers)."""
-    out_dir = Path(args.output_dir)
-    started = time.time()
-    token = ensure_logged_in(page)
-    project_names = None
-    if args.url:
-        cid = args.url.rstrip('/').split('/')[-1].split('?')[0]
-        items = [{'id': cid, 'title': ''}]
-        project_names = {p['id']: p['name'] for p in list_projects(page, token)}
-    else:
-        print('Listing conversations (main list + projects)...')
-        items = list_all_conversations(page, token)
-        n_proj = sum(1 for c in items if c.get('_project'))
-        print(f'Found {len(items)} conversations ({n_proj} in projects)')
-    if args.title:
-        items = [c for c in items
-                 if args.title.lower() in (c.get('title') or '').lower()]
-    if args.skip:
-        items = items[args.skip:]
-    if args.limit:
-        items = items[:args.limit]
-    if not items:
-        print('No chats matched.')
-        return 1
-    if args.list:
-        for n, c in enumerate(items, 1):
-            print(f'{n}. {c.get("title") or c["id"]}')
-        print(f'-- {len(items)} chat(s)')
-        return 0
-    skip_unchanged = not args.rebuild and not args.title
-    if args.dry_run:
-        sync = SyncState(out_dir, PROVIDER, migrate=False)
-        updated_map = {c.get('id', ''): c.get('update_time')
-                       for c in items}
-        return print_dry_run(items, updated_map, sync, skip_unchanged,
-                             log=args.log, sink=sink, provider=PROVIDER)
+    """This provider on an already opened page (window and command line)."""
+    return engine.run_session(SPEC, page, args, sink)
 
-    out_dir.mkdir(parents=True, exist_ok=True)
-    print(f"\n{'=' * 50}\n  {len(items)} conversations\n{'=' * 50}\n")
-    results = run(page, token, items, out_dir,
-                  skip_unchanged=skip_unchanged,
-                  save_raw=not args.no_raw, log=args.log, sink=sink,
-                  project_names=project_names)
-    manifest = write_manifest(out_dir, PROVIDER, results, started)
-    ok = sum(1 for r in results if r.get('ok'))
-    print(f"\n{'=' * 50}")
-    print(f'  Done: {ok} ok, {len(results) - ok} failed')
-    print(f'  Manifest: {manifest}')
-    print(f"{'=' * 50}")
-    return 0 if ok == len(results) else 2
+
+def main(argv=None):
+    return engine.main(SPEC, argv)
 
 
 if __name__ == '__main__':

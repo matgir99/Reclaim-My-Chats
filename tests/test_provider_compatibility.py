@@ -12,9 +12,10 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from reclaim.core import browser
+from reclaim.core import browser, engine
 from reclaim.core.batchexecute import decode_response
 from reclaim.core.writer import write_chat
 from reclaim.providers import chatgpt, chatgpt_import, claude, deepseek, googlegemini, kimi
@@ -184,16 +185,19 @@ class TestChatGPTCompatibility(unittest.TestCase):
                  'mapping': {'one': message('Synthetic answer')}})
             assert chat is not None
             return chat, {'gizmo_type': 'snorlax', 'gizmo_id': 'g-p-synthetic'}
+        session = SimpleNamespace(page=None, token='synthetic-token', project_names=None)
         with tempfile.TemporaryDirectory() as tmp, \
                 patch.object(chatgpt, 'fetch_conversation', side_effect=fetched), \
-                patch.object(chatgpt.time, 'sleep'):
+                patch.object(chatgpt, 'list_projects',
+                             return_value=[{'id': 'g-p-synthetic', 'name': 'Research'}]) as projects, \
+                patch.object(chatgpt.time, 'sleep'), contextlib.redirect_stdout(io.StringIO()):
             out = Path(tmp)
-            chatgpt.run(None, 'synthetic-token', [{'id': 'url', 'title': ''}], out,
-                        save_raw=False, project_names={'g-p-synthetic': 'Research'})
-            chatgpt.run(None, 'synthetic-token', [{'id': 'listed', 'title': '', '_project': None}],
-                        out, save_raw=False, project_names={'g-p-synthetic': 'Research'})
+            by_url = chatgpt.SPEC.from_url(session, 'https://chatgpt.com/c/url')
+            listed = engine.ChatRef(id='listed', data={'id': 'listed', 'title': '', '_project': None})
+            engine.download(chatgpt.SPEC, session, [by_url, listed], out, save_raw=False)
             self.assertTrue((out / 'Research' / 'Chat url' / 'Chat url.md').exists())
             self.assertTrue((out / 'Chat listed' / 'Chat listed.md').exists())
+            self.assertEqual(projects.call_count, 1)  # looked up once, for the URL chat only
 
     def test_rate_limits_wait_for_retry_after_and_report_429(self):
         page = Mock()
@@ -432,11 +436,13 @@ class TestDeepSeekCompatibility(unittest.TestCase):
         record = {'data': {'chat_session': {'id': 'remote', 'title': 'Synthetic remote'},
                            'chat_messages': [{'role': 'USER', 'content': 'A remote question'},
                                              {'role': 'ASSISTANT', 'content': 'A remote answer'}]}}
-        summary = {'data': {'chat_session': {'id': 'remote', 'title': 'Synthetic remote'}}}
+        listed = engine.ChatRef(id='remote', title='Synthetic remote',
+                                data={'id': 'remote', 'title': 'Synthetic remote'})
         with tempfile.TemporaryDirectory() as directory:
             with (patch.object(deepseek, 'fetch_record', return_value=record) as fetch,
                   contextlib.redirect_stdout(io.StringIO())):
-                results = deepseek.run(None, [summary], Path(directory), fetch_missing=True, save_raw=False)
+                results = engine.download(deepseek.SPEC, SimpleNamespace(page=None), [listed],
+                                          Path(directory), save_raw=False)
             self.assertTrue(results[0]['ok'])
             fetch.assert_called_once_with(None, 'remote')
             markdown = next(Path(directory).rglob('*.md')).read_text()

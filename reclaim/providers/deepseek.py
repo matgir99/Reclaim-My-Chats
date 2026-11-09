@@ -13,20 +13,16 @@ from [citation:N] to [-N](url).
 
 from __future__ import annotations
 
-import argparse
 import json
 import os
 import re
 import time
-import traceback
-from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import urlencode
 
-from ..core import browser, config
-from ..core.events import EventSink, emit
-from ..core.manifest import SyncState, print_dry_run, save_chat, write_manifest
+from ..core import browser, engine
+from ..core.events import EventSink
 from ..core.model import Attachment, Chat, Turn
-from ..core.progress import progress
 
 BASE_URL = 'https://chat.deepseek.com/'
 PROVIDER = 'deepseek'
@@ -301,186 +297,67 @@ def materialize_attachments(page, chat: Chat, timeout_ms: int = 60000) -> int:
 # ---------------------------------------------------------------------------
 # Main (scrape mode)
 # ---------------------------------------------------------------------------
-def run(page, records: list[dict], out_dir: Path,
-        skip_unchanged: bool = False, updated_map: dict | None = None,
-        save_raw: bool = True, log: bool = False,
-        sink: EventSink | None = None, fetch_missing: bool = False) -> list[dict]:
-    """Archive the given records. Returns per-chat results for the manifest.
+class DeepSeek(engine.Provider):
+    """What only DeepSeek does; the engine does the rest."""
 
-    Per-chat lines print only with log=True (default output is
-    summary-level; failures always print)."""
-    out_dir = Path(out_dir)
-    sync = SyncState(out_dir, PROVIDER)
-    results = []
-    updated_map = updated_map or {}
-    t_run = time.time()
+    name = PROVIDER
+    folder = 'Deepseek Chat'
+    description = 'Save DeepSeek chats to the database (update by default).'
+    pace = 0
 
-    for i, rec in enumerate(records):
-        try:
-            chat = record_to_chat(rec)
-        except Exception as e:
-            results.append({'id': '?', 'title': '?', 'ok': False, 'error': str(e)})
-            emit(sink, 'error', PROVIDER, '?', i + 1, len(records), str(e))
-            continue
-        label = (chat.title or chat.id)[:55]
-        emit(sink, 'chat_started', PROVIDER, label, i + 1, len(records))
-        if log:
-            print(progress(i + 1, len(records), t_run))
-        if skip_unchanged and sync.is_unchanged(chat.id,
-                                                updated_map.get(chat.id)):
-            if log:
-                print(f'[{i + 1}/{len(records)}] {label} -> skip (unchanged)')
-            emit(sink, 'chat_skipped', PROVIDER, label, i + 1, len(records))
-            continue
-        t0 = time.time()
-        try:
-            if fetch_missing:
-                rec = fetch_record(page, chat.id)
-                chat = record_to_chat(rec)
-                if not chat.visible_turns():
-                    raise RuntimeError('DeepSeek returned no readable messages; refusing to save an empty chat')
-            n_files = materialize_attachments(page, chat)
-            stats = save_chat(chat, out_dir, sync, chat.id, updated_map.get(chat.id),
-                              rec if save_raw else None, sink=sink, provider=PROVIDER)
-            results.append({'id': chat.id, 'title': chat.title, 'ok': True,
-                            'duration_s': round(time.time() - t0, 1),
-                            **{k: stats[k] for k in ('turns', 'chars', 'images', 'docs')}})
-            emit(sink, 'chat_completed', PROVIDER, chat.title, i + 1, len(records))
-            if log:
-                extra = f", {stats['images']} img" if stats['images'] else ''
-                extra += f", {stats['docs']} doc" if stats['docs'] else ''
-                print(f'[{i + 1}/{len(records)}] {label} -> {stats["turns"]}t, '
-                      f'{stats["chars"]:,} chars{extra}')
-                print(f'    files: {n_files} · {time.time() - t0:.1f}s')
-        except Exception as e:
-            print(f'[{i + 1}/{len(records)}] {label} -> FAILED: {e}')
-            traceback.print_exc()
-            results.append({'id': chat.id, 'title': label, 'ok': False,
-                            'error': str(e)})
-            emit(sink, 'error', PROVIDER, label, i + 1, len(records), str(e))
-    sync.save()
-    return results
+    def open(self, page):
+        ensure_logged_in(page)
+        return SimpleNamespace(page=page)
 
-
-def build_parser() -> argparse.ArgumentParser:
-    ap = argparse.ArgumentParser(
-        prog='reclaim deepseek',
-        description='Save DeepSeek chats to the database (update by default).')
-    ap.add_argument('title', nargs='?',
-                    help='fetch chats whose title contains this '
-                         '(case-insensitive)')
-    ap.add_argument('--rebuild', action='store_true',
-                    help='fetch everything, overwriting local copies')
-    ap.add_argument('--url', help='fetch one exact chat URL')
-    ap.add_argument('--list', action='store_true',
-                    help='print chat titles, no download')
-    ap.add_argument('--log', action='store_true',
-                    help='full per-chat log + verbose progress and timings')
-    ap.add_argument('--dry-run', action='store_true',
-                    help='preview what would be fetched; nothing downloaded')
-    ap.add_argument('--skip', type=int, default=0,
-                    help='skip the first N chats in the listing')
-    ap.add_argument('--limit', type=int, default=0,
-                    help='fetch at most N chats')
-    ap.add_argument('--no-raw', action='store_true',
-                    help='do not save media-stripped raw.json per chat')
-    ap.add_argument('-o', '--output-dir',
-                    default=str(config.archive_root() / 'Deepseek Chat'))
-    return ap
-
-
-def _rec_id(rec: dict) -> str:
-    try:
-        return rec.get('data', rec).get('chat_session', {}).get('id') or '?'
-    except Exception:
-        return '?'
-
-
-def _rec_title(rec: dict) -> str:
-    try:
-        return record_to_chat(rec).title
-    except Exception:
-        return '?'
-
-
-def parse_args(argv=None):
-    """Parse + validate CLI args (shared by main() and `reclaim all`)."""
-    ap = build_parser()
-    args = ap.parse_args(argv)
-    if args.title and args.url:
-        ap.error('pass a title or --url, not both')
-    return args
-
-
-def main(argv=None):
-    args = parse_args(argv)
-    from playwright.sync_api import sync_playwright
-    with sync_playwright() as p:
-        ctx, page = browser.launch(p)
-        try:
-            return run_session(page, args)
-        finally:
-            ctx.close()
-
-
-def run_session(page, args, sink: EventSink | None = None) -> int:
-    """Provider session on an already-launched page; shared by main()
-    (own browser) and `reclaim all` (one shared browser)."""
-    out_dir = Path(args.output_dir)
-    started = time.time()
-    ensure_logged_in(page)
-    if args.url:
-        chat_id = args.url.split('/a/chat/s/')[-1].split('?')[0][:40]
-        summaries = [{'id': chat_id, 'title': chat_id}]
-    else:
+    def announce_listing(self) -> None:
         print('Listing DeepSeek server history (older history may be limited by the service)...')
-        summaries = list_chats(page)
-        seen = {s['id'] for s in summaries}
-        try:
-            for cached in read_summaries(page):
+
+    def announce_found(self, refs) -> None:
+        print(f'Found {len(refs)} chats. Full messages are fetched only when selected.')
+
+    def listing(self, s) -> list[engine.ChatRef]:
+        summaries = list_chats(s.page)
+        seen = {item['id'] for item in summaries}
+        try:  # chats this browser cached locally that the server listing omits
+            for cached in read_summaries(s.page):
                 if cached['id'] not in seen:
                     summaries.append(cached)
                     seen.add(cached['id'])
         except Exception:
             print('Browser cache could not be read; only server-listed chats are available.')
-        print(f'Found {len(summaries)} chats. Full messages are fetched only when selected.')
-    updated_map = {s['id']: s.get('updated_at') for s in summaries}
-    records = [{'data': {'chat_session': s}} for s in summaries]
-    if args.title:
-        records = [r for r in records
-                   if args.title.lower() in _rec_title(r).lower()]
-    if args.skip:
-        records = records[args.skip:]
-    if args.limit:
-        records = records[:args.limit]
-    if not records:
-        print('No chats matched.')
-        return 1
-    if args.list:
-        for n, r in enumerate(records, 1):
-            print(f'{n}. {_rec_title(r)}')
-        print(f'-- {len(records)} chat(s)')
-        return 0
-    skip_unchanged = not args.rebuild and not args.title
-    if args.dry_run:
-        sync = SyncState(out_dir, PROVIDER, migrate=False)
-        view = [{'id': _rec_id(r), 'title': _rec_title(r)}
-                for r in records]
-        return print_dry_run(view, updated_map, sync, skip_unchanged,
-                             log=args.log, sink=sink, provider=PROVIDER)
+        return [engine.ChatRef(id=item['id'], title=item.get('title') or '',
+                               updated_at=item.get('updated_at'), data=item) for item in summaries]
 
-    out_dir.mkdir(parents=True, exist_ok=True)
-    print(f"\n{'=' * 50}\n  {len(records)} chats\n{'=' * 50}\n")
-    results = run(page, records, out_dir, skip_unchanged=skip_unchanged,
-                  updated_map=updated_map, save_raw=not args.no_raw,
-                  log=args.log, sink=sink, fetch_missing=True)
-    manifest = write_manifest(out_dir, PROVIDER, results, started)
-    ok = sum(1 for r in results if r.get('ok'))
-    print(f"\n{'=' * 50}")
-    print(f'  Done: {ok} ok, {len(results) - ok} failed')
-    print(f'  Manifest: {manifest}')
-    print(f"{'=' * 50}")
-    return 0 if ok == len(results) else 2
+    def from_url(self, s, url: str) -> engine.ChatRef:
+        return engine.ChatRef(id=url.split('/a/chat/s/')[-1].split('?')[0][:40])
+
+    def fetch(self, s, ref: engine.ChatRef) -> engine.Fetched:
+        record = fetch_record(s.page, ref.id)
+        chat = record_to_chat(record)
+        if not chat.visible_turns():
+            raise RuntimeError('DeepSeek returned no readable messages; refusing to save an empty chat')
+        files = materialize_attachments(s.page, chat)
+        return engine.Fetched(chat, raw=record, detail=f'files: {files}')
+
+
+SPEC = DeepSeek()
+
+
+def build_parser():
+    return engine.build_parser(SPEC)
+
+
+def parse_args(argv=None):
+    return engine.parse_args(SPEC, argv)
+
+
+def run_session(page, args, sink: EventSink | None = None) -> int:
+    """This provider on an already opened page (window and command line)."""
+    return engine.run_session(SPEC, page, args, sink)
+
+
+def main(argv=None):
+    return engine.main(SPEC, argv)
 
 
 if __name__ == '__main__':
