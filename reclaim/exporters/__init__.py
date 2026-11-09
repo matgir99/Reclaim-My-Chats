@@ -1,1 +1,1 @@
-"""Archive exporters (interop with other tools)."""
+"""Database exporters (interop with other tools)."""

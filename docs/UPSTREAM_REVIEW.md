@@ -1,7 +1,8 @@
 # Provider compatibility review
 
-Reviewed on 26 October 2026. This records source-backed compatibility work,
-not a claim that every feature of the live websites has been tested.
+Reviewed on 26 October 2026 and updated on 8 November 2026. This records
+source-backed compatibility work, not a claim that every feature of the live
+websites has been tested.
 
 ## What these projects provide
 
@@ -97,10 +98,10 @@ be added to a public commit or release asset.
 - Real provider accounts were not used. Logins, rate limits, workspaces and
   attachment downloads need acceptance testing with the owner's local accounts.
   Keep captured responses private.
-- DeepSeek may limit older server listings; upstream reports roughly 100
-  chats per pinned category. Cached IDs and exact URLs help discover more,
-  but do not prove a complete account export. The app reports this limit
-  when listing. Non-progressing pages are errors.
+- DeepSeek's reported limit of roughly 100 chats per pinned category was
+  the separate pinned pass repeating its first page (see the November
+  update). A single pass listed all 105 chats of a live account. Cached IDs
+  and exact URLs remain supplements. Non-progressing pages are errors.
 - Kimi pagination beyond its read window has not been established. A
   continuation token or full 1,000-message response is an error, rather than
   a successful partial archive. Gemini likewise refuses a response filling
@@ -113,10 +114,105 @@ be added to a public commit or release asset.
   Optional `raw.json` retains the provider response except oversized media,
   and can contain reasoning. See [the output contract](OUTPUT.md).
 
+## November 2026 update
+
+Every source above was compared with its default branch on 8 November.
+Eight were unchanged. Two had new commits:
+
+| Project and inspected revision | Findings and decision |
+|---|---|
+| [chatgpt-exporter, 44affd4](https://github.com/pionxzh/chatgpt-exporter/tree/44affd4d68c88f73be59f8adda521da08ba95ba0) | Inline `url`, `entity` and `image_group` markers in interactive replies; residual private-use markers; official JSON messages without a recipient. Adopted, see below. Image, ZIP and userscript changes do not apply. |
+| [better-deepseek, df0c9a1](https://github.com/EdgeTypE/better-deepseek/tree/df0c9a1867f112069cc0d6ecd26509ba8e7a8a5d) | Prompt modules, skills, web search, MCP and UI work only. No history endpoint or cache change, so nothing to adopt. |
+
+**ChatGPT citation markers.** Replies contain private-use markers such as
+`\ue200cite\ue202turn0search3\ue201`, described in
+`metadata.content_references`. The parser did not resolve them, so saved
+Markdown showed text like `citeturn0search3`. They now become what ChatGPT
+displays: web citations become links, file citations the file name,
+entities their name, hidden and interactive-only markers nothing, and a
+source footnote a **Sources** list. Unlike upstream, ordinary reply text is
+not normalized, so dashes and non-breaking spaces are kept. A `url` marker
+that holds a search reference instead of an address takes its link from
+the matching reference. Unreferenced markers are removed whole rather
+than leaving their inner text.
+
+**ChatGPT tool calls.** The October change that renders `code` content also
+rendered messages addressed to tools: web searches, code runs, plan and
+memory updates. In a local test over 42 stored ChatGPT responses, 674 of
+1,476 produced turns were such calls. A message whose recipient is set and
+is not `all` is now skipped, matching upstream. A missing recipient, as in
+some official exports, remains visible. Tool calls stay in `raw.json`.
+
+**ChatGPT workspace cookie.** A live check on 8 November found the
+`_account` cookie set to `personal`, while the accounts check keys accounts
+by account id and `default`. The exact-key lookup failed, stopping every
+listing. The cookie now matches an accounts key, an account id, or, for
+`personal`, the account whose structure is `personal`. Exactly one account
+must match; an unknown workspace still stops before any chat is fetched.
+Upstream instead falls back to sending no workspace header.
+
+**ChatGPT rate limits.** A live update of 238 chats received HTTP 429
+for its last few chats. Rate-limited requests waited only 15 seconds in
+total and then failed with the message `failed: None`. They now honor
+`Retry-After`, otherwise wait 15, 30, 60 and 120 seconds, and report
+HTTP 429. Failed chats keep their old sync record, so the next update
+retries them.
+
+**Renamed and moved chats (all providers).** A chat folder is named after
+the chat title and, for ChatGPT, its project. Renaming a chat, moving it
+into a project or renaming the project created a new folder and left the
+old one as a stale duplicate; the live update produced 23. When a chat is
+saved in a new folder, its previous folder is now retired: its Markdown,
+`chat.json` and `raw.json` are removed, media missing from the new folder
+is moved there, and identical media is removed. A folder shared with
+another chat, containing subfolders or holding conflicting media is kept.
+Sync records now store paths relative to the provider folder; older
+absolute records are rebased by the provider folder name, so a moved
+archive still resolves.
+
+**ChatGPT `--url`.** A chat fetched by URL had no project and was saved
+outside its project folder. Its project is now taken from the
+conversation's `gizmo_id`. As before, `--url` skips a chat that is already
+archived unless `--rebuild` is given.
+
+**Kimi moved to kimi.ai.** Kimi now serves accounts outside mainland
+China at kimi.ai, with Google or non-+86 phone sign-in; kimi.com shows a
+notice sending those users there. Both run the same web app and `/apiv2`
+API, and a live account kept its chat ids. The provider now defaults to
+`https://www.kimi.ai`; set `RECLAIM_KIMI_URL=https://www.kimi.com` for a
+mainland account. The site stores its token separately, so the first run
+asks for a new login. The last listing page is now `{}`, because protobuf
+JSON omits empty fields; it ends the listing instead of failing it.
+Re-parsing 80 previously saved Kimi responses found no missing answers.
+
+**DeepSeek listing.** The listing cursor is the last row's position,
+`(pinned, updated_at)`, in a list sorted pinned-first. The October code ran
+a second pass with `pinned=true`; for an unpinned time that request
+restarts the unpinned section, so it returned the same 100 chats with
+`has_more` forever and every live run failed. The provider now makes one
+pass starting at `pinned=true` and takes each cursor's pinned flag from the
+last row. Re-parsing 100 previously saved responses found no missing answers.
+
+**Google sign-in (AI Studio and Gemini).** Login completion was detected
+with the glob `**/aistudio.google.com/**`, which also matches Google's
+account chooser because its address carries `?continue=https://aistudio…`.
+An expired session therefore reported "Logged in!" at once, and requests
+then failed with HTTP 401. Completion now requires the page's own host.
+
+**Claude with a saved session.** The provider opened claude.ai only when
+the session cookie was missing. With a saved session the page stayed on
+`about:blank`, and every page-side request failed with `Failed to fetch`;
+only runs that needed a login worked. It now opens claude.ai whenever the
+page is elsewhere, which also covers `reclaim all`. A live account listed
+its chat organization; its API-console organization has no chats (HTTP 403).
+
+ChatGPT archives saved before this change need **one rebuild** to remove
+the markers: `reclaim chatgpt --rebuild`, or Rebuild in the GUI.
+
 ## Runtime and bot updates
 
-Playwright uses a version range rather than vendored provider code. Flet
-remains an optional pinned GUI dependency. Dependabot's existing Flet 1.0.5
-PR targets `develop`; its documented fix concerns web/FastAPI startup, not
-provider APIs. It and the separate Actions major-version PR remain
-independently reviewable. Neither was merged as part of this format review.
+Playwright uses a version range rather than vendored provider code. The
+November checks ran with Playwright 1.64.1 and Chrome 157. Flet remains an
+optional pinned GUI dependency. Dependabot's Flet 1.0.5 and Actions
+major-version updates were merged into `develop` after their checks passed.
+Flet 1.1 was released days before this review; it stays for a later update.

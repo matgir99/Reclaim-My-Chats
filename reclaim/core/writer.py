@@ -103,6 +103,51 @@ def _same_chat(chat_dir: Path, chat_id: str) -> bool:
         return False
 
 
+def _inside(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+    except ValueError:
+        return False
+    return path.resolve() != root.resolve()
+
+
+def retire_previous(out_dir: Path, chat_id: str, previous_md: Path, current_md: Path) -> bool:
+    """Remove the folder a chat was saved in before it moved.
+
+    A renamed chat, a chat moved into a project, or a renamed project gets a
+    new folder; the old one would otherwise remain as a stale duplicate.
+    Only a folder whose chat.json has the same id and whose only Markdown
+    file is `previous_md` is touched. Its Markdown, chat.json and raw.json
+    are deleted; media absent from the current folder is moved there, and
+    identical copies are deleted. A conflicting file keeps the old folder.
+    Returns True when the old folder was removed.
+    """
+    out_dir, old_dir, new_dir = Path(out_dir), Path(previous_md).parent, Path(current_md).parent
+    if (not old_dir.is_dir() or not _inside(old_dir, out_dir) or not _inside(new_dir, out_dir)
+            or old_dir.resolve() == new_dir.resolve() or not _same_chat(old_dir, chat_id)):
+        return False
+    entries = list(old_dir.iterdir())
+    if any(e.is_dir() for e in entries) or any(
+            e.suffix == '.md' and e.name != Path(previous_md).name for e in entries):
+        return False
+    generated = {Path(previous_md).name, 'chat.json', 'raw.json'}
+    for entry in entries:
+        target = new_dir / entry.name
+        if entry.name in generated:
+            entry.unlink()
+        elif not target.exists():
+            entry.rename(target)
+        elif target.is_file() and target.read_bytes() == entry.read_bytes():
+            entry.unlink()
+    if any(old_dir.iterdir()):
+        return False
+    old_dir.rmdir()
+    parent = old_dir.parent
+    if _inside(parent, out_dir) and not any(parent.iterdir()):
+        parent.rmdir()  # an emptied project folder
+    return True
+
+
 def write_raw(chat_dir: Path, obj, max_str: int = 200_000) -> Path:
     """Write raw.json: the provider's original response, with oversized
     (media/base64) string payloads replaced by a placeholder — images are

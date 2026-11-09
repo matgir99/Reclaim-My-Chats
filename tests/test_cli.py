@@ -139,6 +139,93 @@ class TestWriterOverwrite(unittest.TestCase):
         self.assertIn('two', (d / 'Foo_1.md').read_text())
 
 
+class TestMovedChats(unittest.TestCase):
+    """A renamed chat or project gets a new folder; the old one is retired."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.out = self.tmp / 'ChatGPT'
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def save(self, sync, title, project=None, text='answer', images=()):
+        chat = Chat(id='x1', title=title, source_url='https://x', provider='test',
+                    turns=[Turn('user', text), Turn('model', 'reply', images=list(images))],
+                    project=project)
+        stats = write_chat(chat, self.out)
+        sync.mark('x1', 1, str(stats['md']))
+        return stats['dir']
+
+    def test_moved_into_project_and_renamed(self):
+        sync = SyncState(self.out, 'chatgpt')
+        old = self.save(sync, 'Old title', text='first', images=[b'\x89PNG one'])
+        (old / 'notes.pdf').write_bytes(b'%PDF only in old folder')
+        new = self.save(sync, 'New title', project='Research', text='second',
+                        images=[b'\x89PNG one'])
+        self.assertFalse(old.exists())
+        self.assertEqual(new, self.out / 'Research' / 'New title')
+        self.assertEqual(sorted(p.name for p in new.iterdir()),
+                         ['New title.md', 'chat.json', 'image_1.png', 'notes.pdf'])
+        self.assertEqual(sync.known('x1'), {'updated_at': 1,
+                                            'md': 'Research/New title/New title.md'})
+        # Renaming the project removes the emptied project folder as well.
+        newest = self.save(sync, 'New title', project='Research 2026')
+        self.assertFalse((self.out / 'Research').exists())
+        self.assertTrue((newest / 'notes.pdf').exists())
+
+    def test_conflicting_media_or_another_chat_keeps_old_folder(self):
+        sync = SyncState(self.out, 'chatgpt')
+        old = self.save(sync, 'Old title', images=[b'\x89PNG one'])
+        self.save(sync, 'New title', images=[b'\x89PNG different'])
+        self.assertTrue((old / 'image_1.png').exists())
+        self.assertFalse((old / 'Old title.md').exists())
+
+        sync = SyncState(self.out, 'chatgpt')
+        shared = self.save(sync, 'Shared')
+        (shared / 'Shared_1.md').write_text('another chat with the same title')
+        self.save(sync, 'Moved')
+        self.assertTrue((shared / 'Shared.md').exists())
+
+    def test_absolute_record_from_moved_archive_is_rebased(self):
+        sync = SyncState(self.out, 'chatgpt')
+        old = self.save(sync, 'Old title')
+        sync._state['x1']['md'] = '/elsewhere/before/move/ChatGPT/Old title/Old title.md'
+        self.save(sync, 'New title')
+        self.assertFalse(old.exists())
+
+    def test_record_relative_to_an_old_working_directory_is_rebased(self):
+        # Before November 2026 a relative -o stored paths such as
+        # chats/ChatGPT/Old title/Old title.md, relative to the working directory.
+        sync = SyncState(self.out, 'chatgpt')
+        old = self.save(sync, 'Old title')
+        sync._state['x1']['md'] = 'chats/ChatGPT/Old title/Old title.md'
+        self.save(sync, 'New title')
+        self.assertFalse(old.exists())
+
+    def test_project_named_like_the_provider_folder(self):
+        # A ChatGPT project called "ChatGPT" saves to ChatGPT/ChatGPT/<chat>.
+        sync = SyncState(self.out, 'chatgpt')
+        old = self.save(sync, 'Old title', project='ChatGPT')
+        self.assertEqual(sync.known('x1'), {'updated_at': 1, 'md': 'ChatGPT/Old title/Old title.md'})
+        self.save(sync, 'New title', project='ChatGPT')
+        self.assertFalse(old.exists())
+        sync._state['x1']['md'] = '/old/place/ChatGPT/ChatGPT/New title/New title.md'
+        newest = self.save(sync, 'Newest title', project='ChatGPT')
+        self.assertEqual(sorted(p.name for p in (self.out / 'ChatGPT').iterdir()), ['Newest title'])
+        self.assertTrue(newest.exists())
+
+    def test_record_outside_archive_is_never_touched(self):
+        outside = self.tmp / 'outside'
+        outside.mkdir()
+        (outside / 'chat.json').write_text(json.dumps({'id': 'x1'}))
+        (outside / 'keep.md').write_text('not part of the archive')
+        sync = SyncState(self.out, 'chatgpt')
+        sync._state['x1'] = {'updated_at': 1, 'md': str(outside / 'keep.md')}
+        self.save(sync, 'Title')
+        self.assertTrue((outside / 'keep.md').exists())
+
+
 class TestSyncState(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
@@ -334,7 +421,7 @@ class TestStatus(unittest.TestCase):
             json.dumps({'a': {}, 'b': {}, 'c': {}}))
         infos = status.scan(self.root)
         ga_info = next(i for i in infos if i.provider == 'googleaistudio')
-        self.assertTrue(ga_info.archived)
+        self.assertTrue(ga_info.present)
         self.assertEqual(ga_info.chat_folders, 2)
         self.assertEqual(ga_info.synced_chats, 3)
         self.assertEqual(ga_info.last_run['ok'], 3)
@@ -343,9 +430,19 @@ class TestStatus(unittest.TestCase):
         self.assertEqual(ga_info.last_sync, '2026-08-04 20:03:01')
         self.assertEqual(ga_info.duration_s, 42.3)
         ds = next(i for i in infos if i.provider == 'deepseek')
-        self.assertFalse(ds.archived)
-        self.assertIn('not archived', status.format_status(ds))
-        self.assertIn('chats archived: 2', status.format_status(ga_info))
+        self.assertFalse(ds.present)
+        self.assertIn('no chats saved yet', status.format_status(ds))
+        self.assertIn('chats in database: 2', status.format_status(ga_info))
+
+    def test_chat_saved_in_two_folders_counts_once(self):
+        ga = self._ga_dir()
+        for name in ('Old title', 'New title'):
+            (ga / name).mkdir()
+            (ga / name / 'chat.json').write_text(json.dumps({'id': 'same-chat'}))
+        info = next(i for i in status.scan(self.root) if i.provider == 'googleaistudio')
+        self.assertEqual((info.chats, info.chat_folders), (3, 4))
+        self.assertIn('older copies: 1 extra folder of chats saved elsewhere',
+                      status.format_status(info))
 
     def test_failures_reported(self):
         ga = self._ga_dir()
@@ -396,8 +493,8 @@ class TestStatus(unittest.TestCase):
         self.assertEqual(ga_info.archive_images, 4)
         self.assertEqual(ga_info.archive_docs, 1)
         out = status.format_status(ga_info)
-        self.assertIn('archive totals: 4 images · 1 doc · 14 chars', out)
-        # last-run manifest line still present alongside archive totals
+        self.assertIn('database totals: 4 images · 1 doc · 14 chars', out)
+        # last-run manifest line still present alongside database totals
         self.assertIn('last run: 3 ok, 0 failed', out)
 
 
@@ -480,7 +577,7 @@ class TestDispatch(unittest.TestCase):
             with redirect_stdout(buf):
                 code = cli.main(['status', '-o', str(root)])
             self.assertEqual(code, 0)
-            self.assertIn('not archived yet', buf.getvalue())
+            self.assertIn('no chats saved yet', buf.getvalue())
         finally:
             shutil.rmtree(root, ignore_errors=True)
 

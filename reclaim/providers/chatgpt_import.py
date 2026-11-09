@@ -31,6 +31,7 @@ from ..core import config
 from ..core.manifest import SyncState, write_manifest
 from ..core.model import Attachment, Chat, Turn
 from ..core.writer import write_chat
+from . import chatgpt_references
 
 PROVIDER = 'chatgpt'
 
@@ -65,20 +66,40 @@ def _linearize(mapping: dict, current_node: str | None) -> list[dict]:
         path.append(nxt)
 
 
+def _is_tool_call(msg: dict) -> bool:
+    """A message addressed to a tool: a web search, code run, memory update…
+
+    ChatGPT shows only the final reply. Official exports can omit the
+    recipient; such a message is visible (chatgpt-exporter 44affd4).
+    """
+    recipient = msg.get('recipient')
+    return recipient is not None and recipient != 'all'
+
+
 def _content_parts(msg: dict) -> list:
-    """Visible text/media parts, including current interactive Markdown replies."""
+    """Visible text/media parts, including current interactive Markdown replies.
+
+    Citation and widget markers are resolved to what ChatGPT displays, and a
+    source footnote becomes a final Sources part.
+    """
     content = msg.get('content') or {}
+    meta = msg.get('metadata') or {}
+    sources = chatgpt_references.source_list(meta)
     if content.get('content_type') == 'text':
-        fallback = ((msg.get('metadata') or {}).get('model_dil_v2') or {}).get('fallbackMarkdown')
+        fallback = (meta.get('model_dil_v2') or {}).get('fallbackMarkdown')
         if isinstance(fallback, str) and fallback.strip():
-            return [re.sub(r'<escape>([\s\S]*?)</escape>', r'\1', fallback)]
+            text = re.sub(r'<escape>([\s\S]*?)</escape>', r'\1', fallback)
+            return [chatgpt_references.resolve(text, meta)] + ([sources] if sources else [])
     if content.get('content_type') == 'code' and isinstance(content.get('text'), str):
         text = content['text']
         fence = '`' * max(3, max((len(m[0]) + 1 for m in re.finditer(r'`+', text)), default=3))
         language = str(content.get('language') or '').replace('\n', '')
         return [f'{fence}{language}\n{text}\n{fence}']
     parts = content.get('parts') or []
-    return parts if isinstance(parts, list) else []
+    if not isinstance(parts, list):
+        return []
+    parts = [chatgpt_references.resolve(p, meta) if isinstance(p, str) else p for p in parts]
+    return parts + [sources] if sources and parts else parts
 
 
 def _node_to_turn(node: dict) -> Turn | None:
@@ -87,6 +108,8 @@ def _node_to_turn(node: dict) -> Turn | None:
         return None
     meta = msg.get('metadata') or {}
     if meta.get('is_visually_hidden_from_conversation') or meta.get('is_thinking_preamble_message'):
+        return None
+    if _is_tool_call(msg):
         return None
     role = (msg.get('author') or {}).get('role', '')
     if role not in ('user', 'assistant'):

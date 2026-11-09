@@ -32,7 +32,8 @@ from ..core.manifest import SyncState, print_dry_run, write_manifest
 from ..core.model import Attachment, Chat, Turn
 from ..core.progress import progress
 from ..core.writer import write_chat, write_raw
-from .chatgpt_import import _SKIP_CONTENT_TYPES, _IMG_EXT, _content_parts, _linearize
+from .chatgpt_import import (_SKIP_CONTENT_TYPES, _IMG_EXT, _content_parts, _is_tool_call,
+                             _linearize)
 
 BASE_URL = 'https://chatgpt.com'
 PROVIDER = 'chatgpt'
@@ -51,8 +52,14 @@ _GET_JS = """async (args) => {
                 headers, credentials: 'include', signal: AbortSignal.timeout(60000),
             });
             if (!check.ok) return {status: check.status, text: 'workspace lookup failed'};
-            const accounts = await check.json();
-            const accountId = accounts.accounts?.[workspace]?.account?.account_id;
+            const accounts = (await check.json()).accounts || {};
+            // The cookie can be an accounts key, an account id, or "personal"
+            // while accounts are keyed by id and "default". Require one match.
+            const ids = new Set(Object.entries(accounts).filter(([key, entry]) =>
+                key === workspace || entry?.account?.account_id === workspace
+                || (workspace === 'personal' && entry?.account?.structure === 'personal'))
+                .map(([, entry]) => entry?.account?.account_id).filter(Boolean));
+            const accountId = ids.size === 1 ? [...ids][0] : null;
             if (!accountId) throw new Error('Selected ChatGPT workspace could not be resolved; reload ChatGPT and retry');
             window.__reclaimAccount = {workspace, accountId};
         }
@@ -64,13 +71,28 @@ _GET_JS = """async (args) => {
         signal: AbortSignal.timeout(60000),
     });
     const text = await resp.text();
-    return {status: resp.status, text};
+    return {status: resp.status, text, retryAfter: resp.headers.get('retry-after')};
 }"""
+
+# Waits after successive HTTP 429 responses without a usable Retry-After.
+RATE_LIMIT_WAITS = (15, 30, 60, 120)
+MAX_RATE_LIMIT_WAIT = 300
+
+
+def _rate_limit_wait(retry_after, index: int) -> float:
+    try:
+        seconds = float(retry_after)
+    except (TypeError, ValueError):
+        return RATE_LIMIT_WAITS[index]
+    return min(max(seconds, 1.0), MAX_RATE_LIMIT_WAIT)
 
 
 def _get(page, token: str, url: str, retries: int = 3) -> dict:
+    """GET with retries. Rate limiting (HTTP 429) waits separately and longer,
+    honoring Retry-After, so a busy period does not exhaust ordinary retries."""
     last = None
-    for attempt in range(retries):
+    attempt = limited = 0
+    while attempt < retries:
         try:
             r = page.evaluate(_GET_JS, {'url': url, 'token': token})
             if r['status'] == 200:
@@ -78,13 +100,18 @@ def _get(page, token: str, url: str, retries: int = 3) -> dict:
             if r['status'] in (401, 403):
                 raise RuntimeError(f'auth failed ({r["status"]}) — session expired?')
             if r['status'] == 429:
-                time.sleep(5 + attempt * 5)
+                last = 'HTTP 429: rate limited by ChatGPT; retry later'
+                if limited == len(RATE_LIMIT_WAITS):
+                    break
+                time.sleep(_rate_limit_wait(r.get('retryAfter'), limited))
+                limited += 1
                 continue
             last = f'HTTP {r["status"]}: {r["text"][:120]}'
         except RuntimeError:
             raise
         except Exception as e:
             last = e
+        attempt += 1
         time.sleep(2 + attempt * 2)
     raise RuntimeError(f'GET {url[:80]} failed: {last}')
 
@@ -250,7 +277,7 @@ def list_all_conversations(page, token: str) -> list[dict]:
         except Exception as e:
             raise RuntimeError(
                 f"Could not list ChatGPT project '{p['name']}': {e}. "
-                'The archive may be incomplete; retry the update.'
+                'The database may be incomplete; retry the update.'
             ) from e
     add(list_conversations(page, token), None)
     return out
@@ -269,6 +296,8 @@ def _node_to_turn(node: dict) -> tuple[Turn | None, list[str]]:
         return None, []
     meta = msg.get('metadata') or {}
     if meta.get('is_visually_hidden_from_conversation') or meta.get('is_thinking_preamble_message'):
+        return None, []
+    if _is_tool_call(msg):
         return None, []
     role = (msg.get('author') or {}).get('role', '')
     if role not in ('user', 'assistant'):
@@ -359,9 +388,22 @@ def fetch_conversation(page, token: str, conv_id: str, title: str = '') -> tuple
     return chat, data
 
 
+def _project_name(item: dict, data: dict, project_names: dict[str, str] | None) -> str | None:
+    """The listing's project, else the project named by the conversation itself.
+
+    A chat fetched by URL has no listing entry; without this it would be
+    saved outside its project folder."""
+    if '_project' in item or not project_names:
+        return item.get('_project')
+    if data.get('gizmo_type') != 'snorlax':
+        return None
+    return project_names.get(data.get('gizmo_id') or '')
+
+
 def run(page, token: str, items: list[dict], out_dir: Path,
         skip_unchanged: bool = False, save_raw: bool = True,
-        log: bool = False, sink: EventSink | None = None) -> list[dict]:
+        log: bool = False, sink: EventSink | None = None,
+        project_names: dict[str, str] | None = None) -> list[dict]:
     """Fetch the given conversations. Returns per-chat results for the manifest.
 
     Per-chat lines print only with log=True (default output is
@@ -385,7 +427,7 @@ def run(page, token: str, items: list[dict], out_dir: Path,
         t0 = time.time()
         try:
             chat, raw = fetch_conversation(page, token, cid, item.get('title', ''))
-            chat.project = item.get('_project')
+            chat.project = _project_name(item, raw, project_names)
             stats = write_chat(chat, out_dir)
             if save_raw:
                 try:
@@ -417,7 +459,7 @@ def run(page, token: str, items: list[dict], out_dir: Path,
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog='reclaim chatgpt',
-        description='Archive ChatGPT conversations incl. Projects '
+        description='Save ChatGPT conversations incl. Projects to the database '
                     '(update by default).')
     ap.add_argument('title', nargs='?',
                     help='fetch chats whose title contains this '
@@ -468,9 +510,11 @@ def run_session(page, args, sink: EventSink | None = None) -> int:
     out_dir = Path(args.output_dir)
     started = time.time()
     token = ensure_logged_in(page)
+    project_names = None
     if args.url:
         cid = args.url.rstrip('/').split('/')[-1].split('?')[0]
         items = [{'id': cid, 'title': ''}]
+        project_names = {p['id']: p['name'] for p in list_projects(page, token)}
     else:
         print('Listing conversations (main list + projects)...')
         items = list_all_conversations(page, token)
@@ -503,7 +547,8 @@ def run_session(page, args, sink: EventSink | None = None) -> int:
     print(f"\n{'=' * 50}\n  {len(items)} conversations\n{'=' * 50}\n")
     results = run(page, token, items, out_dir,
                   skip_unchanged=skip_unchanged,
-                  save_raw=not args.no_raw, log=args.log, sink=sink)
+                  save_raw=not args.no_raw, log=args.log, sink=sink,
+                  project_names=project_names)
     manifest = write_manifest(out_dir, PROVIDER, results, started)
     ok = sum(1 for r in results if r.get('ok'))
     print(f"\n{'=' * 50}")

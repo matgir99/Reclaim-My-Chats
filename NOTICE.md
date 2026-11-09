@@ -14,7 +14,7 @@ copied verbatim unless explicitly stated below.
 | [egroup-labs/kept](https://github.com/egroup-labs/kept) | Kimi endpoint/auth research, implemented vault importer, Claude/Gemini pagination and response formats | MIT |
 | [aiamblichus/haevn](https://github.com/aiamblichus/haevn) | Provider architecture, bulk-sync resume ideas and DeepSeek history API/message formats | MIT |
 | [blueberrycongee/DeepSeek-Chat-Exporter](https://github.com/blueberrycongee/DeepSeek-Chat-Exporter) | "Extract original markdown from app state instead of rendered HTML" — the principle behind our IndexedDB approach | MIT |
-| [pionxzh/chatgpt-exporter](https://github.com/pionxzh/chatgpt-exporter) | ChatGPT API endpoints, session/workspace auth, two-step downloads, Projects and interactive Markdown fallback | MIT |
+| [pionxzh/chatgpt-exporter](https://github.com/pionxzh/chatgpt-exporter) | ChatGPT API endpoints, session/workspace auth, two-step downloads, Projects, interactive Markdown fallback, citation markers and tool-call filtering | MIT |
 | [conradqh/scrapemychats](https://github.com/conradqh/scrapemychats) | Confirmation of the real-Chrome bulk-export pattern for ChatGPT | MIT |
 | [queelius/ctk](https://github.com/queelius/ctk) | Tree/conversation-format design ideas for importers | MIT |
 | [glebmish/claude-exporter](https://github.com/glebmish/claude-exporter) | Claude API documentation, active message lineage and content-block formats | MIT |

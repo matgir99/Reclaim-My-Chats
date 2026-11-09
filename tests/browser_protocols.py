@@ -18,7 +18,7 @@ from urllib.parse import urlsplit
 
 from playwright.sync_api import Browser, Playwright, Route, sync_playwright
 
-from reclaim.providers import chatgpt, deepseek
+from reclaim.providers import chatgpt, claude, deepseek
 
 
 class TestBrowserProtocols(unittest.TestCase):
@@ -40,7 +40,7 @@ class TestBrowserProtocols(unittest.TestCase):
         cls.playwright.stop()
 
     def setUp(self):
-        self.responses: dict[str, dict] = {}
+        self.responses: dict[str, dict | list] = {}
         self.requests: list[dict] = []
         self.unexpected: list[str] = []
         self.context = self.browser.new_context(service_workers='block')
@@ -89,6 +89,26 @@ class TestBrowserProtocols(unittest.TestCase):
         self.assertEqual(len(checks), 1)
         self.assertNotIn('chatgpt-account-id', checks[0]['headers'])
 
+    def test_personal_workspace_cookie_resolves_by_account_structure(self):
+        # Current shape: cookie "personal", accounts keyed by account id and "default".
+        personal = {'account': {'account_id': 'synthetic-personal-id', 'structure': 'personal'}}
+        self.responses['/backend-api/accounts/check/v4-2023-04-27'] = {
+            'accounts': {'synthetic-personal-id': personal, 'default': personal,
+                         'synthetic-team-id': {'account': {'account_id': 'synthetic-team-id',
+                                                           'structure': 'workspace'}}},
+            'account_ordering': ['synthetic-personal-id', 'synthetic-team-id']}
+        self.responses['/backend-api/conversations'] = {'items': []}
+        self.context.add_cookies([{'name': '_account', 'value': 'personal',
+                                  'domain': 'chatgpt.com', 'path': '/'}])
+        self.page.goto('https://chatgpt.com/')
+        chatgpt._get(self.page, 'synthetic-token', 'https://chatgpt.com/backend-api/conversations')
+        self.assertEqual(self.requests[-1]['headers']['chatgpt-account-id'], 'synthetic-personal-id')
+        self.page.evaluate('delete window.__reclaimAccount')
+        self.context.add_cookies([{'name': '_account', 'value': 'synthetic-team-id',
+                                  'domain': 'chatgpt.com', 'path': '/'}])
+        chatgpt._get(self.page, 'synthetic-token', 'https://chatgpt.com/backend-api/conversations')
+        self.assertEqual(self.requests[-1]['headers']['chatgpt-account-id'], 'synthetic-team-id')
+
     def test_unresolved_workspace_stops_before_fetching_another_accounts_chats(self):
         self.responses['/backend-api/accounts/check/v4-2023-04-27'] = {'accounts': {}}
         self.context.add_cookies([{'name': '_account', 'value': 'synthetic-missing',
@@ -99,6 +119,19 @@ class TestBrowserProtocols(unittest.TestCase):
                 chatgpt._get(self.page, 'synthetic-token', 'https://chatgpt.com/backend-api/conversations')
         self.assertFalse(any(urlsplit(request['url']).path == '/backend-api/conversations'
                              for request in self.requests))
+
+    def test_claude_existing_session_opens_claude_before_page_requests(self):
+        # Live failure: with a saved session the page stayed on about:blank.
+        self.context.add_cookies([
+            {'name': 'sessionKey', 'value': 'synthetic-session', 'domain': 'claude.ai', 'path': '/'},
+            {'name': 'lastActiveOrg', 'value': 'synthetic-org', 'domain': 'claude.ai', 'path': '/'}])
+        path = '/api/organizations/synthetic-org/chat_conversations'
+        self.responses[path] = []
+        self.assertEqual(self.page.url, 'about:blank')
+        with patch.object(claude.time, 'sleep'):
+            self.assertEqual(claude.ensure_logged_in(self.page), 'synthetic-org')
+            self.assertEqual(claude._get(self.page, 'https://claude.ai' + path + '?limit=1'), [])
+        self.assertEqual(urlsplit(self.page.url).hostname, 'claude.ai')
 
     def test_deepseek_token_is_read_in_page_and_api_envelope_unwrapped(self):
         self.responses['/api/v0/chat_session/fetch_page'] = {

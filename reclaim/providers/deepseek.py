@@ -100,34 +100,39 @@ def _api_get(page, path: str, params: dict | None = None) -> dict:
 
 
 def list_chats(page) -> list[dict]:
-    """Read the two server listings; never accept a stuck/incomplete page."""
-    chats, seen = [], set()
-    for pinned in ('false', 'true'):
-        cursor, seen_cursors = None, set()
-        while True:
-            params: dict[str, str | int | float] = {'lte_cursor.pinned': pinned}
-            if cursor is not None:
-                params['lte_cursor.updated_at'] = cursor
-            data = _api_get(page, 'chat_session/fetch_page', params)
-            batch = data.get('chat_sessions')
-            if not isinstance(batch, list) or not isinstance(data.get('has_more'), bool):
-                raise RuntimeError('unexpected DeepSeek conversation list shape')
-            for item in batch:
-                if not isinstance(item, dict) or not item.get('id'):
-                    raise RuntimeError('unexpected DeepSeek conversation row')
-                if item['id'] not in seen:
-                    seen.add(item['id'])
-                    chats.append(item)
-            if not data['has_more']:
-                break
-            cursor = data.get('lte_cursor')
-            if cursor is None and batch:
-                cursor = batch[-1].get('updated_at')
-            if (not batch or not isinstance(cursor, (int, float))
-                    or cursor in seen_cursors):
-                raise RuntimeError('DeepSeek conversation pagination made no progress; archive may be incomplete')
-            seen_cursors.add(cursor)
-    return chats
+    """One pass over the server listing, pinned chats first.
+
+    The cursor is the last row's position, (pinned, updated_at), in a list
+    sorted pinned-first. It must use that row's own pinned flag: asking for
+    pinned=true before an unpinned row's time restarts the unpinned section,
+    so a separate pinned pass repeats the first page forever. A page that
+    adds no chat while more are reported is an error, not a complete list.
+    """
+    chats, seen, seen_cursors = [], set(), set()
+    params: dict[str, str | int | float] = {'lte_cursor.pinned': 'true'}
+    while True:
+        data = _api_get(page, 'chat_session/fetch_page', params)
+        batch = data.get('chat_sessions')
+        if not isinstance(batch, list) or not isinstance(data.get('has_more'), bool):
+            raise RuntimeError('unexpected DeepSeek conversation list shape')
+        added = 0
+        for item in batch:
+            if not isinstance(item, dict) or not item.get('id'):
+                raise RuntimeError('unexpected DeepSeek conversation row')
+            if item['id'] not in seen:
+                seen.add(item['id'])
+                chats.append(item)
+                added += 1
+        if not data['has_more']:
+            return chats
+        last = batch[-1] if batch else {}
+        cursor = (bool(last.get('pinned')), last.get('updated_at'))
+        if (not added or not isinstance(cursor[1], (int, float))
+                or isinstance(cursor[1], bool) or cursor in seen_cursors):
+            raise RuntimeError('DeepSeek conversation pagination made no progress; the database may be incomplete')
+        seen_cursors.add(cursor)
+        params = {'lte_cursor.pinned': 'true' if cursor[0] else 'false',
+                  'lte_cursor.updated_at': cursor[1]}
 
 
 def fetch_record(page, chat_id: str) -> dict:
@@ -334,7 +339,7 @@ def run(page, records: list[dict], out_dir: Path,
                 rec = fetch_record(page, chat.id)
                 chat = record_to_chat(rec)
                 if not chat.visible_turns():
-                    raise RuntimeError('DeepSeek returned no readable messages; refusing an empty archive')
+                    raise RuntimeError('DeepSeek returned no readable messages; refusing to save an empty chat')
             n_files = materialize_attachments(page, chat)
             stats = write_chat(chat, out_dir)
             if save_raw:
@@ -366,7 +371,7 @@ def run(page, records: list[dict], out_dir: Path,
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog='reclaim deepseek',
-        description='Archive DeepSeek Chat history (update by default).')
+        description='Save DeepSeek chats to the database (update by default).')
     ap.add_argument('title', nargs='?',
                     help='fetch chats whose title contains this '
                          '(case-insensitive)')

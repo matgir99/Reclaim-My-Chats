@@ -53,5 +53,5 @@ class Chat:
         return [t.error for t in self.turns if t.error]
 
     def visible_turns(self) -> list[Turn]:
-        """Turns that belong in the archive (thoughts excluded)."""
+        """Turns that belong in the database (thoughts excluded)."""
         return [t for t in self.turns if not t.thought]

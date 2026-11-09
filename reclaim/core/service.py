@@ -67,7 +67,7 @@ class ArchiveController:
         if not chosen or any(p not in PROVIDER_DIRS for p in chosen):
             raise ValueError('choose at least one known provider')
         if not self._lock.acquire(blocking=False):
-            raise BusyOperationError('another archive operation is running')
+            raise BusyOperationError('another operation is running')
         try:
             flags = {'update': [], 'rebuild': ['--rebuild'],
                      'dry-run': ['--dry-run']}[mode]
@@ -84,7 +84,7 @@ class ArchiveController:
     def run_cli(self, providers: list[str], argv: list[str]) -> RunSummary:
         """Preserve the existing `reclaim all` argument and output contract."""
         if not self._lock.acquire(blocking=False):
-            raise BusyOperationError('another archive operation is running')
+            raise BusyOperationError('another operation is running')
         try:
             parsed = {name: provider_module(name).parse_args(list(argv))
                       for name in providers}

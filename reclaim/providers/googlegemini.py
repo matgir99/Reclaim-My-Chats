@@ -84,7 +84,7 @@ def ensure_logged_in(page):
         pass
     time.sleep(3)
     browser.interactive_login(page, 'accounts.google.com',
-                              '**/gemini.google.com/**', 'Google')
+                              browser.on_host('gemini.google.com'), 'Google')
 
 
 def init_session(page) -> dict:
@@ -327,7 +327,7 @@ def fetch_chat(page, tokens: dict, chat_id: str, reqid: int,
         raise RuntimeError(f'{READ_RPC} HTTP {status}')
     raw = decode_response(text, READ_RPC)
     if len(_find_rows(raw, want_user=True)) >= MAX_TURNS:
-        raise RuntimeError('Gemini message history may be truncated; refusing an incomplete archive')
+        raise RuntimeError('Gemini message history may be truncated; refusing to save an incomplete chat')
     parsed = parse_read(raw)
     if not parsed:
         raise RuntimeError('Gemini returned no readable messages; response shape may have changed')
@@ -398,7 +398,7 @@ def run(page, tokens: dict, chats: list[dict], out_dir: Path,
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog='reclaim googlegemini',
-        description='Archive Google Gemini chats (update by default).')
+        description='Save Google Gemini chats to the database (update by default).')
     ap.add_argument('title', nargs='?',
                     help='fetch chats whose title contains this '
                          '(case-insensitive)')

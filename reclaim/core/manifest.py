@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 
 from .events import EventSink, emit
+from .writer import _same_chat, retire_previous
 
 
 def write_manifest(out_dir: Path, provider: str, results: list[dict],
@@ -92,8 +93,48 @@ class SyncState:
     def is_unchanged(self, chat_id: str, updated_at) -> bool:
         return self.classify(chat_id, updated_at) == 'unchanged'
 
+    def _resolve(self, md: str, chat_id: str | None = None) -> Path:
+        """A recorded md path inside this provider folder.
+
+        Records written since November 2026 are relative to the provider
+        folder. Older records are absolute, or relative to the working
+        directory of the run that wrote them (a relative `-o`); both contain
+        the provider folder's name and are rebased at it. When several
+        readings are possible, for example a project named like the provider
+        folder, the one whose chat.json belongs to `chat_id` wins, then one
+        that exists."""
+        out_dir = self.path.parent
+        path = Path(md)
+        parts = path.parts
+        candidates = [] if path.is_absolute() else [out_dir / path]
+        candidates += [out_dir.joinpath(*parts[i + 1:])
+                       for i, part in enumerate(parts[:-1]) if part == out_dir.name]
+        if not candidates:
+            return path
+        if chat_id:
+            for candidate in candidates:
+                if _same_chat(candidate.parent, chat_id):
+                    return candidate
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
+        return candidates[-1] if path.is_absolute() else candidates[0]
+
     def mark(self, chat_id: str, updated_at, md_path: str):
-        self._state[chat_id] = {'updated_at': updated_at, 'md': md_path}
+        """Record a written chat; retire its previous folder if it moved."""
+        out_dir = self.path.parent
+        current = Path(md_path)
+        previous = (self._state.get(chat_id) or {}).get('md')
+        if isinstance(previous, str) and previous:
+            try:
+                retire_previous(out_dir, chat_id, self._resolve(previous, chat_id), current)
+            except OSError as exc:
+                print(f'  note: could not remove previous folder of {chat_id}: {exc}')
+        try:
+            stored = current.resolve().relative_to(out_dir.resolve()).as_posix()
+        except ValueError:
+            stored = str(current)
+        self._state[chat_id] = {'updated_at': updated_at, 'md': stored}
 
     def save(self):
         self.path.write_text(json.dumps(self._state, indent=2,

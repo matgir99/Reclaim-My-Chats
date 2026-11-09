@@ -255,7 +255,7 @@ def ensure_logged_in(page):
     page.goto(LIBRARY_URL, wait_until='domcontentloaded', timeout=60000)
     time.sleep(3)
     browser.interactive_login(page, 'accounts.google.com',
-                              '**/aistudio.google.com/**', 'Google')
+                              browser.on_host('aistudio.google.com'), 'Google')
 
 
 def get_chat_list(page) -> list[dict]:
@@ -618,7 +618,7 @@ def run(page, chats: list[dict], out_dir: Path, skip_unchanged: bool = False,
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog='reclaim googleaistudio',
-        description='Archive Google AI Studio chats (update by default).')
+        description='Save Google AI Studio chats to the database (update by default).')
     ap.add_argument('title', nargs='?',
                     help='fetch chats whose title contains this '
                          '(case-insensitive)')

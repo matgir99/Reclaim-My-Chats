@@ -80,7 +80,7 @@ class TestGui(unittest.IsolatedAsyncioTestCase):
     async def test_opens_with_all_providers_and_archive_path(self):
         self.assertEqual(len(self.window.checks), 6)
         self.assertEqual(self.window.archive_path.value, str(self.root / 'chats'))
-        self.assertEqual(self.window.archive_total.value, '0 chats archived')
+        self.assertEqual(self.window.archive_total.value, '0 chats in the database')
 
     async def test_selected_update_and_dry_run_use_selection(self):
         self.window.checks['kimi'].value = False
