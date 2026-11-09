@@ -66,8 +66,9 @@ def offline_session(db: Path, label: str, root: Path | None = None):
     root = Path(root) if root is not None else config.default_root()
     db = Path(db)
     with logs.capture(root, label):
-        database.prepare(db, create=_may_create(root, db))
+        database.prepare(db, create=_may_create(root, db), adopt_legacy=False)
         with locks.hold(db, 'update'):
+            database.prepare(db)  # marks an older database only under its lock
             yield db
 
 
@@ -124,13 +125,17 @@ class ArchiveController:
         label = f'{mode} {", ".join(chosen)}'
         with ExitStack() as stack:
             stack.enter_context(logs.capture(self.root, label))
+            # Validate first (creating the default location on first use): the
+            # lock file lives inside the database folder.
             for db in sorted(roots):
-                database.prepare(db, create=_may_create(self.root, db), readonly=readonly)
+                database.prepare(db, create=_may_create(self.root, db), readonly=readonly,
+                                 adopt_legacy=False)
             profile = config.profile_root(self.root)
             stack.enter_context(locks.hold(profile, 'browser'))
             if not readonly:
                 for db in sorted(roots):
                     stack.enter_context(locks.hold(db, 'update'))
+                    database.prepare(db)  # marks an older database only under its lock
             return self._run_providers(chosen, parsed, mode, sink, profile)
         raise AssertionError('unreachable')  # ExitStack never suppresses here
 

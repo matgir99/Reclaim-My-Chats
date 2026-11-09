@@ -45,11 +45,14 @@ A database made before the marker existed is recognised by its provider
 folders and marked on the first update; the provider timestamps from its
 sync records are then copied into each `chat.json`.
 
-While an update runs, `.reclaim.lock` in the database names the computer and
-process using it, and a second run is refused. The same applies to the
-login data folder. A lock left by a process that has ended on the same
-computer is cleared automatically; `reclaim unlock` or *Remove lock* in the
-window removes one left by another computer.
+While an update runs, the app holds an operating-system lock on
+`.reclaim.lock` in the database and writes the computer and process using it
+into the file; a second run is refused. The same applies to the login data
+folder. The operating system releases the lock when the process ends, even
+after a crash, so nothing needs cleaning up on the same computer; the file
+stays, empty, between runs. A lock written by another computer through a
+synced folder is removed with `reclaim unlock` or *Remove lock* in the
+window, once that computer no longer runs the app.
 
 ## Chat folders
 

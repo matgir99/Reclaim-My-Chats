@@ -161,6 +161,18 @@ class TestWriterOverwrite(unittest.TestCase):
         self.assertEqual((d / 'Plan_2.md').read_bytes(), b'# same name as the chat')
         self.assertTrue((d / 'notes.txt').exists())
 
+    def test_failed_download_keeps_its_name_so_a_namesake_cannot_overwrite_it(self):
+        chat = Chat(id='x1', title='Notes', source_url='https://x/1', provider='test', turns=[
+            Turn('user', 'two uploads', attachments=[Attachment('notes.txt', data=b'first'),
+                                                     Attachment('notes.txt', data=b'second')])])
+        d = write_chat(chat, self.tmp)['dir']
+        self.assertEqual(((d / 'notes.txt').read_bytes(), (d / 'notes_1.txt').read_bytes()),
+                         (b'first', b'second'))
+        chat.turns[0].attachments[0] = Attachment('notes.txt', data=None, source_url='https://x/f')
+        write_chat(chat, self.tmp)
+        self.assertEqual((d / 'notes.txt').read_bytes(), b'first')
+        self.assertEqual((d / 'notes_1.txt').read_bytes(), b'second')
+
     def test_names_valid_on_every_system(self):
         self.assertEqual(slugify('CON'), 'CON_')
         self.assertEqual(slugify('_Archived'), '_Archived_')

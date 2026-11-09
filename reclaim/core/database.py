@@ -19,6 +19,7 @@ import json
 import os
 import time
 from dataclasses import dataclass
+from itertools import islice
 from pathlib import Path
 
 from .fsutil import atomic_write_text
@@ -36,7 +37,6 @@ PROVIDER_DIRS = {
     'claude': 'Claude',
     'googlegemini': 'Google Gemini',
 }
-_LEGACY_SYNC = {'googleaistudio': 'aistudio'}
 # Files that do not make a folder "non-empty": sync tools, file managers, locks.
 _IGNORABLE = {'.stfolder', '.stignore', '.DS_Store', 'desktop.ini', 'Thumbs.db',
               '.directory', '.localized', '.reclaim.lock'}
@@ -90,19 +90,27 @@ def _marker_format(path: Path) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
-def _has_records(path: Path) -> bool:
-    """True when `path` holds provider folders written by this app."""
-    for name in PROVIDER_DIRS.values():
-        folder = path / name
-        if not folder.is_dir():
-            continue
-        if any((folder / record).exists() for record in _RECORD_FILES):
-            return True
-        if any(folder.glob('.last_sync_*.json')):
-            return True
-        if any(folder.glob(f'*/{CHAT_JSON}')) or any(folder.glob(f'*/*/{CHAT_JSON}')):
-            return True
+def _holds_our_files(folder: Path) -> bool:
+    """True when `folder` holds records or chats written by this app."""
+    if any((folder / record).exists() for record in _RECORD_FILES):
+        return True
+    if any(folder.glob('.last_sync_*.json')):
+        return True
+    for pattern in (f'*/{CHAT_JSON}', f'*/*/{CHAT_JSON}'):
+        for path in islice(folder.glob(pattern), 5):
+            payload = read_chat_json(path.parent)
+            if payload and 'id' in payload and 'turns' in payload:
+                return True
     return False
+
+
+def _has_records(path: Path) -> bool:
+    """True when `path` holds this app's output: native provider folders,
+    Kept imports (Gemini, Grok, Ollama…) or folders chosen with `-o`."""
+    if any((path / record).exists() for record in _RECORD_FILES):
+        return True  # `reclaim import kept` keeps its manifest in the database folder
+    return any(entry.is_dir() and not entry.name.startswith('.') and _holds_our_files(entry)
+               for entry in path.iterdir())
 
 
 def inspect(path: Path) -> DatabaseState:
@@ -172,17 +180,17 @@ def adopt(path: Path) -> int:
     return count
 
 
-def _sync_records(folder: Path, provider: str) -> dict:
-    for name in (provider, _LEGACY_SYNC.get(provider)):
-        if not name:
-            continue
-        try:
-            data = json.loads((folder / f'.last_sync_{name}.json').read_text(encoding='utf-8'))
-        except (OSError, ValueError):
-            continue
-        if isinstance(data, dict):
-            return data
-    return {}
+def _sync_files(path: Path):
+    """Every sync record file in the provider folders of a database, for
+    native providers, Kept imports and folders chosen with `-o` alike."""
+    for folder in sorted(p for p in path.iterdir() if p.is_dir() and not p.name.startswith('.')):
+        for sync_file in sorted(folder.glob('.last_sync_*.json')):
+            try:
+                data = json.loads(sync_file.read_text(encoding='utf-8'))
+            except (OSError, ValueError):
+                continue
+            if isinstance(data, dict):
+                yield folder, data
 
 
 def _with_metadata(payload: dict, record: dict, markdown: str) -> dict:
@@ -200,9 +208,8 @@ def backfill(path: Path) -> int:
     """Copy provider timestamps from the sync records into older chat.json
     files that lack them. Adds fields only; never removes or changes others."""
     count = 0
-    for provider, name in PROVIDER_DIRS.items():
-        folder = Path(path) / name
-        for chat_id, record in _sync_records(folder, provider).items():
+    for folder, records in _sync_files(Path(path)):
+        for chat_id, record in records.items():
             if not isinstance(record, dict) or not isinstance(record.get('md'), str):
                 continue
             md = locate_recorded(folder, record['md'], chat_id)
@@ -216,18 +223,21 @@ def backfill(path: Path) -> int:
     return count
 
 
-def prepare(path: Path, *, create: bool = False, readonly: bool = False) -> DatabaseState:
+def prepare(path: Path, *, create: bool = False, readonly: bool = False,
+            adopt_legacy: bool = True) -> DatabaseState:
     """Make sure `path` can be used as the database before a run.
 
     `create` allows creating a missing or empty database (only for the
     default location on first use). `readonly` (previews) never writes: a
     database made by an earlier version is used as it is, and a missing
-    default database is treated as empty. Raises DatabaseError otherwise."""
+    default database is treated as empty. `adopt_legacy=False` validates
+    without marking an older database, so callers can take the database
+    lock first and then mark it. Raises DatabaseError otherwise."""
     state = inspect(path)
     if state.kind == 'ready':
         return state
     if state.kind == 'legacy':
-        if not readonly:
+        if not readonly and adopt_legacy:
             count = adopt(state.path)
             print(f'Recognised the existing database in {state.path} and marked it '
                   f'(timestamps recorded in {count} chats).')

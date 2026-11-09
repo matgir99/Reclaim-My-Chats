@@ -150,7 +150,9 @@ class TestArchiveController(unittest.TestCase):
             # log file and the login data folder the browser uses.
             self.assertFalse((root / 'chats').exists())
             self.assertEqual(sorted(p.name for p in root.iterdir()), ['.playwright-profile', 'logs'])
-            self.assertEqual(list((root / '.playwright-profile').iterdir()), [])
+            self.assertEqual([p.name for p in (root / '.playwright-profile').iterdir()],
+                             ['.reclaim.lock'])
+            self.assertEqual((root / '.playwright-profile' / '.reclaim.lock').read_text(), '')
             self.assertIn('listing failed', (root / 'logs' / 'reclaim.log').read_text())
 
     def test_provider_exception_is_reported_persisted_and_does_not_stop_other_providers(self):

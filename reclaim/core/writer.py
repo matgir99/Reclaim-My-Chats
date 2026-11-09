@@ -327,6 +327,9 @@ class _Media:
         out.append(f'![{fname}]({fname})\n\n')
 
     def attachment(self, att, rec: dict, out: list[str]) -> None:
+        # Reserve the name even when the download failed: the copy saved by an
+        # earlier run keeps it, so a namesake cannot overwrite that copy.
+        fname = self.dedup.unique(sanitize_filename(att.filename) or 'file')
         if att.data is None:
             self.links += 1
             label = att.description or att.filename
@@ -335,7 +338,6 @@ class _Media:
                 'filename': att.filename, 'kind': att.kind, 'saved': False,
                 'source_url': att.source_url, 'description': att.description})
             return
-        fname = self.dedup.unique(sanitize_filename(att.filename) or 'file')
         atomic_write_bytes(self.dir / fname, att.data)
         if att.kind == 'image':
             self.images += 1

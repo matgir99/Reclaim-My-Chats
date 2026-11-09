@@ -10,7 +10,7 @@ Usage:
   reclaim <provider> --dry-run [options]   preview what would be fetched
   reclaim status [-o DIR]                  offline database overview
   reclaim init [DIR]                       create a database (default: the configured folder)
-  reclaim unlock [--force]                 remove a lock left by a run that has ended
+  reclaim unlock                           remove a lock left by a run that has ended
   reclaim gui                              launch the desktop application
   reclaim all [options]                    update all six providers, in order
   reclaim all --rebuild                    rebuild all providers
@@ -115,7 +115,12 @@ def _init(rest: list[str]) -> int:
     configured = config.archive_root(root)
     path = Path(args.dir).expanduser().resolve() if args.dir else configured
     before = database.inspect(path).kind
-    database.init(path)
+    if before == 'legacy':
+        from .core import locks
+        with locks.hold(path, 'update'):  # marking rewrites chat metadata
+            database.init(path)
+    else:
+        database.init(path)
     print({'ready': f'{path} is already a Reclaim My Chats database.',
            'legacy': f'Marked the existing database in {path}.'}.get(
                before, f'Created a new database in {path}.'))
@@ -130,20 +135,20 @@ def _unlock(rest: list[str]) -> int:
     from .core import config, locks
     ap = argparse.ArgumentParser(
         prog='reclaim unlock',
-        description='Remove the locks of the database and the login data folder, left '
-                    'by a run that has ended (for example after a crash).')
-    ap.add_argument('--force', action='store_true',
-                    help='also remove a lock held by a process still running on this computer')
-    args = ap.parse_args(rest)
+        description='Clear the locks of the database and the login data folder when the '
+                    'run that set them is no longer running, for example after another '
+                    'computer crashed. A lock of a run on this computer clears itself '
+                    'when that run ends.')
+    ap.parse_args(rest)
     root = config.default_root()
     code = 0
     for folder in (config.archive_root(root), config.profile_root(root)):
         holder = locks.read_holder(folder)
         if holder is None:
             print(f'{folder}: not locked')
-        elif locks.running_here(holder) and not args.force:
-            print(f'{folder}: locked by process {holder.get("pid")} on this computer, which '
-                  'is still running. Close it, or use --force.')
+        elif locks.held_here(folder):
+            print(f'{folder}: in use by a run on this computer (process '
+                  f'{holder.get("pid") or "unknown"}). Close it, then try again.')
             code = 1
         else:
             locks.remove(folder)

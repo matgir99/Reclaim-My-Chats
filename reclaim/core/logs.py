@@ -21,8 +21,26 @@ from pathlib import Path
 from . import config
 
 LOG_NAME = 'reclaim.log'
-_handler: logging.Handler | None = None
+
+
+class _SafeFileHandler(logging.handlers.RotatingFileHandler):
+    """Stops logging after the first failure. The default handler prints its
+    errors to stderr, which a run redirects into this log: the error would
+    be logged again, endlessly."""
+
+    broken = False
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if not self.broken:
+            super().emit(record)
+
+    def handleError(self, record: logging.LogRecord) -> None:
+        self.broken = True
+
+
+_handler: _SafeFileHandler | None = None
 _handler_path: Path | None = None
+_local = threading.local()
 
 
 def log_dir(root: Path | None = None) -> Path:
@@ -40,10 +58,11 @@ def get_logger(root: Path | None = None) -> logging.Logger:
     log = logging.getLogger('reclaim')
     log.setLevel(logging.INFO)
     log.propagate = False
-    if _handler_path != path:
+    if _handler_path != path or (_handler is not None and _handler.broken):
         path.parent.mkdir(parents=True, exist_ok=True)
-        handler = logging.handlers.RotatingFileHandler(
-            path, maxBytes=1_000_000, backupCount=5, encoding='utf-8', delay=True)
+        # Opened now, not on the first message, so a file that cannot be
+        # opened raises OSError here, before any output is redirected.
+        handler = _SafeFileHandler(path, maxBytes=1_000_000, backupCount=5, encoding='utf-8')
         handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)-7s %(message)s'))
         if _handler is not None:
             log.removeHandler(_handler)
@@ -77,9 +96,18 @@ class _Tee(io.TextIOBase):
         with self._lock:
             *lines, self._pending = (self._pending + text).split('\n')
         for line in lines:
-            if line.strip():
-                self._log.log(self._level, line.rstrip())
+            self._log_line(line)
         return len(text)
+
+    def _log_line(self, line: str) -> None:
+        # Anything printed while logging (a logging error) must not be logged again.
+        if not line.strip() or getattr(_local, 'active', False):
+            return
+        _local.active = True
+        try:
+            self._log.log(self._level, line.rstrip())
+        finally:
+            _local.active = False
 
     def flush(self) -> None:
         if self._stream is not None:
@@ -103,8 +131,7 @@ class _Tee(io.TextIOBase):
     def finish(self) -> None:
         with self._lock:
             rest, self._pending = self._pending, ''
-        if rest.strip():
-            self._log.log(self._level, rest.rstrip())
+        self._log_line(rest)
 
 
 @contextmanager
@@ -121,8 +148,8 @@ def capture(root: Path | None, label: str):
     out, err = sys.stdout, sys.stderr
     tee_out, tee_err = _Tee(out, log, logging.INFO), _Tee(err, log, logging.WARNING)
     sys.stdout, sys.stderr = tee_out, tee_err
-    log.info('=== %s: started', label)
     try:
+        log.info('=== %s: started', label)
         yield log
     except BaseException:
         log.exception('=== %s: stopped by an error', label)

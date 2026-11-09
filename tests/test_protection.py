@@ -198,6 +198,23 @@ class TestDatabase(Temp):
             database.prepare(db)
         self.assertEqual(json.loads((stats['dir'] / 'chat.json').read_text())['provider_updated_at'], 9)
 
+    def test_kept_imports_and_custom_folders_are_recognised(self):
+        kept = self.tmp / 'kept-db'
+        stats = write_chat(chat('g', 'Gem'), kept / 'Gemini')
+        (kept / 'Gemini' / '.last_sync_kept-gemini.json').write_text(
+            json.dumps({'g': {'updated_at': 'g1', 'md': 'Gem/Gem.md'}}))
+        (kept / '.reclaim_manifest.json').write_text('{}')
+        custom = self.tmp / 'custom-db'
+        write_chat(chat('m', 'Mine'), custom / 'MyGPT')
+        for db in (kept, custom):
+            self.assertEqual(database.inspect(db).kind, 'legacy', db)
+        payload = json.loads((stats['dir'] / 'chat.json').read_text())
+        payload.pop('provider_updated_at')
+        (stats['dir'] / 'chat.json').write_text(json.dumps(payload))
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(database.init(kept).kind, 'ready')
+        self.assertEqual(json.loads((stats['dir'] / 'chat.json').read_text())['provider_updated_at'], 'g1')
+
     def test_only_the_default_location_is_created_on_first_use(self):
         with self.assertRaisesRegex(database.DatabaseError, 'was not found'):
             database.prepare(self.tmp / 'custom')
@@ -207,21 +224,63 @@ class TestDatabase(Temp):
         self.assertEqual(database.prepare(self.tmp / 'default', create=True).kind, 'ready')
 
 
+_HOLDER = """
+import sys, time
+from pathlib import Path
+from reclaim.core import locks
+try:
+    locks.acquire(Path(sys.argv[1]), 'update')
+except locks.LockedError:
+    sys.exit(3)
+print('locked', flush=True)
+time.sleep(float(sys.argv[2]))
+"""
+
+
 class TestLocks(Temp):
+    def holder(self, seconds: float):
+        import subprocess
+        return subprocess.Popen([sys.executable, '-c', _HOLDER, str(self.tmp), str(seconds)],
+                                stdout=subprocess.PIPE, text=True,
+                                cwd=Path(__file__).resolve().parents[1])
+
     def test_second_run_is_refused_and_the_lock_is_released(self):
         with locks.hold(self.tmp, 'update'):
             with self.assertRaises(locks.LockedError) as caught:
                 locks.acquire(self.tmp, 'update')
             self.assertFalse(caught.exception.removable)  # this process is running
             self.assertIn('this computer', str(caught.exception))
+            self.assertTrue(locks.held_here(self.tmp))
         self.assertIsNone(locks.read_holder(self.tmp))
+        self.assertFalse(locks.held_here(self.tmp))
+        self.assertTrue((self.tmp / locks.LOCK_NAME).exists())  # never deleted
 
-    def test_lock_of_an_ended_process_here_is_cleared(self):
+    def test_record_left_by_an_ended_process_here_does_not_block(self):
         (self.tmp / locks.LOCK_NAME).write_text(json.dumps(
             {'host': socket.gethostname(), 'pid': 999_999, 'started': 'earlier'}))
-        with patch('reclaim.core.locks._pid_alive', return_value=False):
-            mine = locks.acquire(self.tmp, 'update')
+        mine = locks.acquire(self.tmp, 'update')
         self.assertEqual(locks.read_holder(self.tmp), mine)
+        locks.release(self.tmp, mine)
+
+    def test_two_processes_racing_for_an_abandoned_lock_cannot_both_win(self):
+        (self.tmp / locks.LOCK_NAME).write_text(json.dumps(
+            {'host': socket.gethostname(), 'pid': 999_999, 'started': 'crashed run'}))
+        racers = [self.holder(3) for _ in range(2)]
+        for racer in racers:
+            racer.wait(timeout=60)
+        self.assertEqual(sorted(r.returncode for r in racers), [0, 3])
+
+    def test_a_killed_holder_releases_the_lock(self):
+        racer = self.holder(60)
+        try:
+            assert racer.stdout is not None
+            self.assertEqual(racer.stdout.readline().strip(), 'locked')
+            with self.assertRaises(locks.LockedError):
+                locks.acquire(self.tmp, 'update')
+        finally:
+            racer.kill()
+            racer.wait(timeout=30)
+        mine = locks.acquire(self.tmp, 'update')  # no cleanup needed after a crash
         locks.release(self.tmp, mine)
 
     def test_lock_of_another_computer_needs_an_explicit_removal(self):
@@ -237,12 +296,11 @@ class TestLocks(Temp):
         self.assertEqual(removed['host'], 'laptop-elsewhere')
         locks.release(self.tmp, locks.acquire(self.tmp, 'update'))
 
-    def test_release_never_removes_someone_elses_lock(self):
-        mine = locks.acquire(self.tmp, 'update')
-        locks.remove(self.tmp)
-        other = locks.acquire(self.tmp, 'update')
-        locks.release(self.tmp, mine)
-        self.assertEqual(locks.read_holder(self.tmp), other)
+    def test_a_running_lock_cannot_be_removed(self):
+        with locks.hold(self.tmp, 'update'):
+            with self.assertRaises(locks.LockedError):
+                locks.remove(self.tmp)
+        self.assertIsNone(locks.remove(self.tmp))
 
 
 class TestLog(Temp):
@@ -261,6 +319,39 @@ class TestLog(Temp):
                          'partial line without newline', 'RuntimeError: listing failed',
                          'update chatgpt: finished'):
             self.assertIn(expected, text)
+
+
+class _BrokenStream:
+    def write(self, _text):
+        raise OSError('disk full')
+
+    def flush(self):
+        pass
+
+    def close(self):
+        pass
+
+
+class TestLogFailures(Temp):
+    def test_a_log_that_cannot_be_opened_does_not_stop_the_run(self):
+        (self.tmp / 'logs' / 'reclaim.log').mkdir(parents=True)  # a folder where the file goes
+        out, err = sys.stdout, sys.stderr
+        with logs.capture(self.tmp, 'update') as log:
+            self.assertIsNone(log)
+            self.assertIs(sys.stdout, out)
+            self.assertIs(sys.stderr, err)
+
+    def test_a_failing_log_stops_logging_without_recursion(self):
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer), contextlib.redirect_stderr(io.StringIO()):
+            with logs.capture(self.tmp, 'update') as log:
+                assert log is not None
+                handler = log.handlers[0]
+                handler.stream = _BrokenStream()  # type: ignore[attr-defined]
+                print('first line')
+                print('second line')
+        self.assertIn('second line', buffer.getvalue())
+        self.assertTrue(getattr(handler, 'broken'))
 
 
 class _Context:
@@ -328,6 +419,24 @@ class TestRunChecks(Temp):
                 ArchiveController(self.tmp).run(['chatgpt'])
         self.assertFalse(provider.ran)
 
+    def test_a_refused_run_does_not_mark_an_older_database(self):
+        db = self.tmp / 'chats'
+        write_chat(chat('a', 'Alpha'), db / 'ChatGPT')
+        (db / 'ChatGPT' / '.last_sync_chatgpt.json').write_text(
+            json.dumps({'a': {'updated_at': 't', 'md': 'Alpha/Alpha.md'}}))
+        provider = _Provider()
+        with fake_browser(provider), locks.hold(db, 'update'):
+            with self.assertRaises(locks.LockedError):
+                ArchiveController(self.tmp).run(['chatgpt'])
+            with self.assertRaises(locks.LockedError):
+                with offline_session(db, 'import chatgpt', root=self.tmp):
+                    pass
+        self.assertFalse((db / database.MARKER).exists())
+        self.assertFalse(provider.ran)
+        with fake_browser(provider):
+            ArchiveController(self.tmp).run(['chatgpt'])
+        self.assertTrue((db / database.MARKER).exists())
+
     def test_invalid_settings_stop_the_window_and_command_line_runs(self):
         (self.tmp / '.reclaim.json').write_text('{"providers": ["chatgpt"],}')
         with fake_browser(_Provider()):
@@ -377,15 +486,17 @@ class TestCommands(Temp):
         (self.tmp / 'chats' / locks.LOCK_NAME).write_text(json.dumps(
             {'host': 'laptop-elsewhere', 'pid': 1, 'started': 'yesterday'}))
         mine = locks.acquire(self.tmp / '.playwright-profile', 'browser')
-        code, out, _ = self.run_cli('unlock')
+        try:
+            code, out, _ = self.run_cli('unlock')
+        finally:
+            locks.release(self.tmp / '.playwright-profile', mine)
         self.assertEqual(code, 1)
         self.assertIn('removed the lock held by laptop-elsewhere', out)
-        self.assertIn('still running', out)
-        self.assertIsNotNone(locks.read_holder(self.tmp / '.playwright-profile'))
-        code, _, _ = self.run_cli('unlock', '--force')
+        self.assertIn('in use by a run on this computer', out)
+        self.assertIsNone(locks.read_holder(self.tmp / 'chats'))
+        code, out, _ = self.run_cli('unlock')
         self.assertEqual(code, 0)
-        self.assertIsNone(locks.read_holder(self.tmp / '.playwright-profile'))
-        locks.release(self.tmp / '.playwright-profile', mine)
+        self.assertEqual(out.count('not locked'), 2)
 
     def test_invalid_settings_explain_the_problem(self):
         (self.tmp / '.reclaim.json').write_text('{"archive": 42}')
