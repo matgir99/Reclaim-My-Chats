@@ -21,7 +21,7 @@ import os
 import time
 from pathlib import Path
 
-from .events import EventSink, emit
+from .events import EventSink, emit, resolve
 from .fsutil import atomic_write_text
 from .model import Chat
 from .writer import (CHAT_JSON, locate_recorded, read_chat_json, retire_previous,
@@ -128,8 +128,9 @@ class SyncState:
                 f'{self.path.name}.damaged-{time.strftime("%Y%m%d-%H%M%S")}')
             os.replace(self.path, backup)
             where = f'; the old file was kept as {backup.name}'
-        print(f'warning: the sync record {self.path.name} {problem}{where}. '
-              f'Rebuilt {len(records)} records from the chat folders.')
+        emit(None, 'warning', self.provider,
+             message=f'the sync record {self.path.name} {problem}{where}. '
+                     f'Rebuilt {len(records)} records from the chat folders.')
         if not self.readonly:
             self._state = records
             self.save()
@@ -165,7 +166,8 @@ class SyncState:
             try:
                 retire_previous(out_dir, chat_id, self._resolve(previous, chat_id), current)
             except OSError as exc:
-                print(f'  note: could not remove previous folder of {chat_id}: {exc}')
+                emit(None, 'warning', self.provider,
+                     message=f'could not remove the previous folder of {chat_id}: {exc}')
         try:
             stored = current.resolve().relative_to(out_dir.resolve()).as_posix()
         except ValueError:
@@ -181,13 +183,31 @@ class SyncState:
                                                 default=str))
 
 
+def stats_text(stats: dict) -> str:
+    """One chat's size for progress lines: '12t, 3,456 chars, 2 img'."""
+    text = f'{stats["turns"]}t, {stats["chars"]:,} chars'
+    text += f', {stats["images"]} img' if stats.get('images') else ''
+    return text + (f', {stats["docs"]} doc' if stats.get('docs') else '')
+
+
+def finish_run(out_dir: Path, provider: str, results: list[dict], started: float,
+               sink: EventSink | None = None) -> int:
+    """Write the run manifest and report the counts (a downloaded event).
+    Returns the exit code: 0 when every chat was saved, else 2."""
+    manifest = write_manifest(out_dir, provider, results, started)
+    ok = sum(1 for r in results if r.get('ok'))
+    emit(sink, 'downloaded', provider, current=ok, total=len(results),
+         message=f'Done: {ok} ok, {len(results) - ok} failed', detail=f'Manifest: {manifest}')
+    return 0 if ok == len(results) else 2
+
+
 def save_chat(chat: Chat, out_dir: Path, sync: SyncState, sync_id: str, updated_at,
               raw=None, *, sink: EventSink | None = None, provider: str = '') -> dict:
     """Save one downloaded chat: its folder, raw.json and sync record.
 
     Shared by every provider. A raw.json that cannot be written is reported
-    (printed, logged and sent to the window) instead of ignored; the chat
-    itself still counts as saved. Returns write_chat's stats plus
+    as a warning event (terminal or window, and the log) instead of ignored;
+    the chat itself still counts as saved. Returns write_chat's stats plus
     'warnings'."""
     stats = write_chat(chat, out_dir, updated_at=updated_at)
     warnings: list[str] = []
@@ -197,7 +217,6 @@ def save_chat(chat: Chat, out_dir: Path, sync: SyncState, sync_id: str, updated_
         except Exception as exc:  # noqa: BLE001 - reported, never hidden
             warnings.append(f'raw.json was not saved: {exc}')
     for warning in warnings:
-        print(f'  warning: {chat.title[:55]}: {warning}')
         emit(sink, 'warning', provider, chat.title, message=warning)
     sync.mark(sync_id, updated_at, str(stats['md']))
     stats['warnings'] = warnings
@@ -235,46 +254,35 @@ def plan_fetch(chats: list[dict], updated_map: dict | None, sync: SyncState,
             'changed': n_changed, 'unchanged': n_unchanged, 'titles': titles}
 
 
-def print_dry_run(chats: list[dict], updated_map: dict | None, sync: SyncState,
-                  skip_unchanged: bool, log: bool = False,
-                  sink: EventSink | None = None, provider: str = '') -> int:
-    """Print what a run WOULD do (--dry-run). Returns the exit code (0).
+def report_dry_run(chats: list[dict], updated_map: dict | None, sync: SyncState,
+                   skip_unchanged: bool, log: bool = False,
+                   sink: EventSink | None = None, provider: str = '') -> int:
+    """Report what a run WOULD do (--dry-run). Returns the exit code (0).
 
-    Default (quiet): the counts line plus the titles that would be fetched.
-    log=True: per-chat lines in the real run's [i/N] format, then the
-    counts line. Nothing is downloaded or written."""
+    A chat_planned event per chat ('fetch (new)', 'skip (unchanged)'...),
+    then a plan event: the counts, and the titles that would be fetched.
+    The terminal shows the counts and titles, or with --log (`log` when no
+    sink or route is set) a line per chat and the counts. Nothing is
+    downloaded or written."""
+    sink = resolve(sink, verbose=log)
     updated_map = updated_map or {}
     plan = plan_fetch(chats, updated_map, sync, skip_unchanged)
-    if sink is not None:
-        for i, chat in enumerate(chats, 1):
-            state = sync.classify(chat['id'], updated_map.get(chat['id']))
-            action = 'skip' if skip_unchanged and state == 'unchanged' else 'fetch'
-            emit(sink, 'chat_planned', provider,
-                 str(chat.get('title') or chat.get('name') or chat.get('id') or '?'),
-                 i, len(chats), f'{action} ({state})')
-    if log:
-        for i, c in enumerate(chats, 1):
-            st = sync.classify(c['id'], updated_map.get(c['id']))
-            label = (c.get('title') or c.get('name') or c.get('id') or '?')[:55]
-            if not skip_unchanged:
-                action = 'fetch (fresh)'
-            elif st == 'unchanged':
-                action = 'skip (unchanged)'
-            elif st == 'new':
-                action = 'fetch (new)'
-            else:
-                action = 'fetch (changed)'
-            print(f'[{i}/{len(chats)}] {label} -> {action}')
-    if skip_unchanged:
-        print(f'would fetch: {plan["fetch"]} ({plan["new"]} new, '
-              f'{plan["changed"]} changed) · would skip: '
-              f'{plan["skip"]} unchanged')
-    else:
-        print(f'would fetch: {plan["fetch"]} (fresh) · would skip: 0')
-    if not log:
-        if plan['titles']:
-            for t in plan['titles']:
-                print(f'  - {t}')
+    for i, chat in enumerate(chats, 1):
+        state = sync.classify(chat['id'], updated_map.get(chat['id']))
+        if not skip_unchanged:
+            action = 'fetch (fresh)'
+        elif state == 'unchanged':
+            action = 'skip (unchanged)'
         else:
-            print('  (nothing to fetch)')
+            action = f'fetch ({state})'
+        emit(sink, 'chat_planned', provider,
+             str(chat.get('title') or chat.get('name') or chat.get('id') or '?'),
+             i, len(chats), action)
+    if skip_unchanged:
+        counts = (f'would fetch: {plan["fetch"]} ({plan["new"]} new, {plan["changed"]} '
+                  f'changed) · would skip: {plan["skip"]} unchanged')
+    else:
+        counts = f'would fetch: {plan["fetch"]} (fresh) · would skip: 0'
+    titles = '\n'.join(f'  - {t}' for t in plan['titles']) or '  (nothing to fetch)'
+    emit(sink, 'plan', provider, total=plan['fetch'], message=counts, detail=titles)
     return 0

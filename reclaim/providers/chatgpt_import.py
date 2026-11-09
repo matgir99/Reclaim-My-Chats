@@ -25,12 +25,14 @@ import argparse
 import json
 import re
 import time
+import traceback
 import zipfile
 from pathlib import Path
 
 from ..core import config
+from ..core.events import emit
 from ..core.service import offline_session
-from ..core.manifest import SyncState, write_manifest
+from ..core.manifest import SyncState, finish_run, stats_text
 from ..core.model import Attachment, Chat, Turn
 from ..core.writer import write_chat
 from . import chatgpt_references
@@ -180,20 +182,21 @@ def _write_chats(chats: list[Chat], out_dir: Path) -> list[dict]:
     out_dir.mkdir(parents=True, exist_ok=True)
     sync = SyncState(out_dir, PROVIDER)
     results = []
-    for chat in chats:
-        label = (chat.title or chat.id)[:55]
+    for i, chat in enumerate(chats, 1):
+        label = chat.title or chat.id
         if sync.known(chat.id):
-            print(f'[skip] {label}')
+            emit(None, 'chat_skipped', PROVIDER, label, i, len(chats),
+                 'skip (already in the database)')
             continue
         try:
             stats = write_chat(chat, out_dir)
             sync.mark(chat.id, None, str(stats['md']))
             results.append({'id': chat.id, 'title': chat.title, 'ok': True,
                             **{k: stats[k] for k in ('turns', 'chars', 'images', 'docs')}})
-            print(f'[ok] {label} -> {stats["turns"]}t, {stats["chars"]:,} chars')
+            emit(None, 'chat_completed', PROVIDER, label, i, len(chats), stats_text(stats))
         except Exception as e:
             results.append({'id': chat.id, 'title': label, 'ok': False, 'error': str(e)})
-            print(f'[FAIL] {label}: {e}')
+            emit(None, 'error', PROVIDER, label, i, len(chats), str(e), traceback.format_exc())
     sync.save()
     return results
 
@@ -290,10 +293,7 @@ def main(argv=None):
             results = run_official(Path(args.path), Path(args.output_dir))
         else:
             results = run_scrapemychats(Path(args.path), Path(args.output_dir))
-        manifest = write_manifest(Path(args.output_dir), PROVIDER, results, started)
-    ok = sum(1 for r in results if r.get('ok'))
-    print(f"\nDone: {ok}/{len(results)} ok. Manifest: {manifest}")
-    return 0 if ok == len(results) else 2
+        return finish_run(Path(args.output_dir), PROVIDER, results, started)
 
 
 if __name__ == '__main__':

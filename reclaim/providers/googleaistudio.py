@@ -21,7 +21,7 @@ from types import SimpleNamespace
 from urllib.parse import urlsplit
 
 from ..core import browser, engine, retry
-from ..core.events import EventSink
+from ..core.events import EventSink, emit
 from ..core.model import Attachment, Chat, Turn
 
 LIBRARY_URL = 'https://aistudio.google.com/library'
@@ -151,7 +151,7 @@ class DriveClient:
             if resp.status == 200:
                 return resp.json()
         except Exception as e:
-            print(f'      Drive metadata error for {fid}: {e}')
+            emit(None, 'warning', PROVIDER, message=f'Drive file {fid}: no details ({e})')
         return {}
 
     def fetch(self, fid: str) -> bytes | None:
@@ -159,9 +159,10 @@ class DriveClient:
             resp = self._get(f'{DRIVE_API}/{fid}?alt=media')
             if resp.status == 200:
                 return resp.body()
-            print(f'      Drive download HTTP {resp.status} for {fid}')
+            emit(None, 'warning', PROVIDER,
+                 message=f'Drive file {fid} was not downloaded (HTTP {resp.status})')
         except Exception as e:
-            print(f'      Drive download error for {fid}: {e}')
+            emit(None, 'warning', PROVIDER, message=f'Drive file {fid} was not downloaded: {e}')
         return None
 
 
@@ -243,11 +244,12 @@ def ensure_logged_in(page):
     page.goto(LIBRARY_URL, wait_until='domcontentloaded', timeout=60000)
     time.sleep(3)
     browser.interactive_login(page, 'accounts.google.com',
-                              browser.on_host('aistudio.google.com'), 'Google')
+                              browser.on_host('aistudio.google.com'), 'Google',
+                              provider=PROVIDER)
 
 
 def get_chat_list(page) -> list[dict]:
-    print('Scanning library...')
+    emit(None, 'listing', PROVIDER, message='Scanning the library page...')
     for _ in range(35):
         page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
         time.sleep(1.2)
@@ -541,7 +543,8 @@ class GoogleAIStudio(engine.Provider):
         try:
             chats = list_prompts(s.page)
         except Exception as e:
-            print(f'ListPrompts failed ({e}); falling back to DOM scan')
+            emit(None, 'warning', PROVIDER,
+                 message=f'ListPrompts failed ({e}); reading the library page instead')
             chats = get_chat_list(s.page)
         return [engine.ChatRef(id=c['id'], title=c.get('title', ''),
                                updated_at=c.get('updated_at'), data=c) for c in chats]
@@ -570,7 +573,8 @@ class GoogleAIStudio(engine.Provider):
             try:
                 raw = json.loads(text)
             except ValueError as e:
-                print(f'  warning: {ref.title or ref.id}: raw.json was not saved: {e}')
+                emit(None, 'warning', PROVIDER, ref.title or ref.id,
+                     message=f'raw.json was not saved: {e}')
         return engine.Fetched(chat, raw=raw, detail=f'path: {path}', extra={'path': path})
 
 

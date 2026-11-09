@@ -293,6 +293,26 @@ class TestGuiDiagnostics(unittest.IsolatedAsyncioTestCase):
         self.assertIn('Diagnostics copied', self.window.summary.value)
 
 
+@unittest.skipUnless(gui.ft is not None, 'Flet GUI extra is not installed')
+class TestGuiLoginRequest(unittest.IsolatedAsyncioTestCase):
+    async def test_login_request_shows_in_the_status_and_the_provider_row(self):
+        with tempfile.TemporaryDirectory() as temp:
+            page = _Page()
+            window = gui.ReclaimWindow(page, Path(temp), _Controller())
+            await window.refresh_archive()
+            request = 'Log in to Kimi in the browser window. Waiting up to 15 minutes...'
+            window._event(ProgressEvent('provider_started', 'kimi', current=1, total=1))
+            window._event(ProgressEvent('login_needed', 'kimi', message=request))
+            self.assertEqual(window.current.value, f'Kimi: {request}')
+            self.assertEqual(window.provider_status['kimi'].value,
+                             'Waiting for login in the browser window')
+            self.assertIn(f'Kimi: {request}', window.log.value)
+            window._event(ProgressEvent('logged_in', 'kimi', message='Logged in.'))
+            self.assertEqual(window.provider_status['kimi'].value, 'Running')
+            window._event(ProgressEvent('chat_started', 'kimi', 'Example', 1, 2))
+            self.assertNotIn('Example', window.log.value)  # progress, not Details
+
+
 class TestOptionalGui(unittest.TestCase):
     def test_cli_entry_explains_missing_extra(self):
         stderr = StringIO()

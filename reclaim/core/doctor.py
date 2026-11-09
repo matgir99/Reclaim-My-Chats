@@ -17,7 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import browser, config, database, locks, logs, status
-from .events import ProgressEvent
+from .events import EventSink, ProgressEvent
+from .render import TerminalRenderer, fanout
 
 OK, INFO, WARNING, PROBLEM = 'ok', 'info', 'warning', 'problem'
 _SYNCED_NAMES = {'Dropbox', 'OneDrive', 'Google Drive', 'iCloud Drive', 'Nextcloud', 'pCloud Drive'}
@@ -139,14 +140,16 @@ def run_checks(root: Path | None = None) -> list[Check]:
 
 
 def live_checks(root: Path | None = None, providers: list[str] | None = None,
-                controller=None) -> list[Check]:
-    """Log in to each provider and list its chats, writing nothing."""
+                controller=None, echo: EventSink | None = None) -> list[Check]:
+    """Log in to each provider and list its chats, writing nothing. `echo`
+    also receives the run's events, for example to show login requests."""
     from .service import ALL_PROVIDERS, ArchiveController
     root = Path(root) if root is not None else config.default_root()
     if providers is None:
         providers, _, _ = config.selected_providers(root, ALL_PROVIDERS)
     events: list[ProgressEvent] = []
-    (controller or ArchiveController(root)).run(providers, 'check', events.append)
+    (controller or ArchiveController(root)).run(providers, 'check',
+                                                fanout(events.append, echo))
     return checks_from_events(events)
 
 
@@ -184,6 +187,6 @@ def main(argv=None) -> int:
                     help='also log in to each enabled provider and list its chats')
     args = ap.parse_args(argv)
     checks = run_checks()
-    live = live_checks() if args.live else None
+    live = live_checks(echo=TerminalRenderer(sys.stdout)) if args.live else None
     sys.stdout.write(report(checks, live))
     return 1 if any(c.status == PROBLEM for c in [*checks, *(live or [])]) else 0

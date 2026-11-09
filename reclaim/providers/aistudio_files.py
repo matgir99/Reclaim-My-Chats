@@ -20,15 +20,17 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import time
+import traceback
 import zipfile
 from pathlib import Path
 
 from ..core import config
+from ..core.events import emit
 from ..core.service import offline_session
-from ..core.manifest import write_manifest
+from ..core.manifest import finish_run, stats_text
 from ..core.model import Attachment, Chat, Turn
 from ..core.writer import write_chat
-import time
 
 PROVIDER = 'aistudio'
 _IMG_MIMES = ('image/png', 'image/jpeg', 'image/gif', 'image/webp')
@@ -122,11 +124,11 @@ def run(folder: Path, out_dir: Path, titles: dict | None = None,
             stats = write_chat(chat, out_dir)
             results.append({'id': stem, 'title': chat.title, 'ok': True,
                             **{k: stats[k] for k in ('turns', 'chars', 'images', 'docs')}})
-            print(f'[ok] {chat.title[:60]} -> {stats["turns"]}t, '
-                  f'{stats["chars"]:,} chars, {stats["images"]} img, {stats["docs"]} doc')
+            emit(None, 'chat_completed', PROVIDER, chat.title, message=stats_text(stats))
         except Exception as e:
             results.append({'id': stem, 'title': chat.title, 'ok': False, 'error': str(e)})
-            print(f'[FAIL] {chat.title[:60]}: {e}')
+            emit(None, 'error', PROVIDER, chat.title, message=str(e),
+                 detail=traceback.format_exc())
     return results
 
 
@@ -145,10 +147,7 @@ def main(argv=None):
     with offline_session(out_dir.parent, 'parse googleaistudio'):
         out_dir.mkdir(parents=True, exist_ok=True)
         results = run(Path(args.from_folder), out_dir, titles=titles)
-        manifest = write_manifest(out_dir, PROVIDER + '-offline', results, started)
-    ok = sum(1 for r in results if r.get('ok'))
-    print(f"\nDone: {ok}/{len(results)} ok. Manifest: {manifest}")
-    return 0 if ok == len(results) else 2
+        return finish_run(out_dir, PROVIDER + '-offline', results, started)
 
 
 if __name__ == '__main__':

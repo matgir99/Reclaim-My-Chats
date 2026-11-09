@@ -19,8 +19,7 @@ the GUI, `reclaim all` and single-provider commands. Before a browser opens
 it validates the settings (`config.SettingsError`), checks the database
 folder (`core/database.py`: the `.reclaim-database.json` marker, adopting
 older databases), takes lock files on the login data folder and the
-database (`core/locks.py`), and copies everything printed to the run log
-(`core/logs.py`). Imports and the offline AI Studio parser use the same
+database (`core/locks.py`), and opens the run log (`core/logs.py`). Imports and the offline AI Studio parser use the same
 checks through `offline_session`. An in-process lock also stops concurrent
 GUI clicks.
 
@@ -28,8 +27,8 @@ Every provider runs on `reclaim/core/engine.py`. A provider class supplies
 only what is specific to its service: `open` (log in and return a session),
 `listing`, `from_url` and `fetch`. The engine owns the command-line options,
 the title, `--skip` and `--limit` filters, `--list`, `--dry-run`, skipping
-unchanged chats, the download loop with its progress events and output,
-saving, the run manifest and the exit code. Requests made from the page go
+unchanged chats, the download loop with its progress events, saving, the
+run manifest and the exit code. Requests made from the page go
 through `reclaim/core/retry.py`, one policy for all providers: 401/403 stop
 at once, 429 waits as long as `Retry-After` asks, server errors and failed
 requests are retried briefly.
@@ -43,9 +42,18 @@ changed, or unchanged; they are saved after every chat and rebuilt from the
 `chat.json` files when missing or damaged. `reclaim/core/manifest.py` also
 records each run.
 
-Providers emit `ProgressEvent` callbacks for run, provider, and chat
-transitions. The Flet GUI receives these from a worker thread through an
-asyncio queue, then updates controls on its own event loop. Database status is
+Progress is reported only as events (`core/events.py`, which lists the
+kinds): the engine, the providers, the login helpers and the sync records
+emit a `ProgressEvent` and never print. The controller decides where a run's
+events go and sets that as the thread's route, so code deep in a provider
+needs no extra parameter. `core/render.py` renders them once per front end:
+`TerminalRenderer` for commands (a line per chat and tracebacks only with
+`--log`), `LogRenderer` for the log file (outcomes, warnings, and errors with
+their tracebacks), and the window's `_event`. The log and the window's
+Details share one wording, `render.describe`. Anything else printed during a
+run, such as a library warning, still reaches the log. The Flet GUI receives
+events from a worker thread through an asyncio queue, then updates controls
+on its own event loop. Database status is
 read from local manifests and files on another worker thread. Startup never
 guesses whether a remote chat changed; dry run or update must contact the
 provider to know that.

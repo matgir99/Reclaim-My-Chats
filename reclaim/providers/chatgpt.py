@@ -111,20 +111,13 @@ def ensure_logged_in(page):
         pass
     # Login may be an SPA flow (no reliable URL marker): show the window
     # and poll until a session token is available.
-    page.bring_to_front()
-    browser.set_window_bounds(page, state='normal', left=100, top=100)
-    print('\n' + '=' * 50)
-    print('  LOG IN to ChatGPT in the browser window.')
-    print('  Waiting (up to 15 minutes)...')
-    print('=' * 50 + '\n')
-    import os
-    deadline = time.time() + int(os.environ.get('RECLAIM_LOGIN_TIMEOUT', '900'))
+    timeout = browser.login_timeout()
+    browser.ask_for_login(page, PROVIDER, 'ChatGPT', timeout)
+    deadline = time.time() + timeout
     while time.time() < deadline:
         try:
             token = get_session_token(page)
-            print('Logged in! Hiding window...\n')
-            browser.set_window_bounds(page, state='minimized')
-            time.sleep(2)
+            browser.login_done(page, PROVIDER)
             return token
         except Exception:
             time.sleep(3)
@@ -377,12 +370,12 @@ class ChatGPT(engine.Provider):
     def open(self, page):
         return SimpleNamespace(page=page, token=ensure_logged_in(page), project_names=None)
 
-    def announce_listing(self) -> None:
-        print('Listing conversations (main list + projects)...')
+    def listing_text(self) -> str:
+        return 'Listing conversations (main list + projects)...'
 
-    def announce_found(self, refs) -> None:
+    def found_text(self, refs) -> str:
         in_projects = sum(1 for r in refs if (r.data or {}).get('_project'))
-        print(f'Found {len(refs)} conversations ({in_projects} in projects)')
+        return f'Found {len(refs)} conversations ({in_projects} in projects)'
 
     def listing(self, s) -> list[engine.ChatRef]:
         return [engine.ChatRef(id=item.get('id', ''), title=item.get('title') or '',

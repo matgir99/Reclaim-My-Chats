@@ -4,9 +4,9 @@ A provider knows only its service: how to log in, list its chats, turn a
 chat URL into a reference and fetch one chat (see `Provider`). The engine
 does the rest identically for all of them: command-line options, the title,
 `--skip` and `--limit` filters, `--list` and `--dry-run`, skipping unchanged
-chats, saving each chat (folder, raw.json, sync record), progress events and
-output, the run manifest and the exit code. A fix made here reaches every
-provider.
+chats, saving each chat (folder, raw.json, sync record), progress events
+(never printed output: see events.py), the run manifest and the exit code. A
+fix made here reaches every provider.
 """
 
 from __future__ import annotations
@@ -19,12 +19,9 @@ from pathlib import Path
 from typing import Any
 
 from . import config
-from .events import EventSink, emit
-from .manifest import SyncState, print_dry_run, save_chat, write_manifest
+from .events import EventSink, emit, resolve, routed
+from .manifest import SyncState, finish_run, report_dry_run, save_chat, stats_text
 from .model import Chat
-from .progress import progress
-
-RULE = '=' * 50
 
 
 @dataclass
@@ -68,11 +65,11 @@ class Provider:
     def fetch(self, session, ref: ChatRef, /) -> Fetched:
         raise NotImplementedError
 
-    def announce_listing(self) -> None:
-        print(f'Listing {self.noun}...')
+    def listing_text(self) -> str:
+        return f'Listing {self.noun}...'
 
-    def announce_found(self, refs: list[ChatRef], /) -> None:
-        print(f'Found {len(refs)} {self.noun}')
+    def found_text(self, refs: list[ChatRef], /) -> str:
+        return f'Found {len(refs)} {self.noun}'
 
 
 def build_parser(provider: Provider) -> argparse.ArgumentParser:
@@ -122,52 +119,55 @@ def select(refs: list[ChatRef], args) -> list[ChatRef]:
 
 def run_session(provider: Provider, page, args, sink: EventSink | None = None) -> int:
     """One provider on an already opened browser page. Returns the exit code:
-    0 all saved, 1 nothing matched, 2 some chats failed."""
+    0 all saved, 1 nothing matched, 2 some chats failed. Events go to `sink`,
+    else to the run's route, else to the terminal (verbose with --log)."""
+    sink = resolve(sink, verbose=args.log)
+    with routed(sink):  # the provider's own events (login, warnings) too
+        return _session(provider, page, args, sink)
+
+
+def _session(provider: Provider, page, args, sink: EventSink) -> int:
+    name = provider.name
     out_dir = Path(args.output_dir)
     started = time.time()
     session = provider.open(page)
     if args.url:
         refs = [provider.from_url(session, args.url)]
     else:
-        provider.announce_listing()
+        emit(sink, 'listing', name, message=provider.listing_text())
         refs = provider.listing(session)
-        provider.announce_found(refs)
+        emit(sink, 'listed', name, total=len(refs), message=provider.found_text(refs))
     refs = select(refs, args)
     if not refs:
-        print('No chats matched.')
+        emit(sink, 'nothing_matched', name, message='No chats matched.')
         return 1
     if args.list:
         for n, ref in enumerate(refs, 1):
-            print(f'{n}. {ref.title or ref.id}')
-        print(f'-- {len(refs)} chat(s)')
+            emit(sink, 'chat_listed', name, ref.title or ref.id, n, len(refs))
+        emit(sink, 'notice', name, message=f'-- {len(refs)} chat(s)')
         return 0
     skip_unchanged = not args.rebuild and not args.title
     if args.dry_run:
-        sync = SyncState(out_dir, provider.name, migrate=False)
-        return print_dry_run([{'id': r.id, 'title': r.title} for r in refs],
-                             {r.id: r.updated_at for r in refs}, sync, skip_unchanged,
-                             log=args.log, sink=sink, provider=provider.name)
+        sync = SyncState(out_dir, name, migrate=False)
+        return report_dry_run([{'id': r.id, 'title': r.title} for r in refs],
+                              {r.id: r.updated_at for r in refs}, sync, skip_unchanged,
+                              sink=sink, provider=name)
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    print(f'\n{RULE}\n  {len(refs)} {provider.noun}\n{RULE}\n')
+    emit(sink, 'downloading', name, total=len(refs), message=f'{len(refs)} {provider.noun}')
     results = download(provider, session, refs, out_dir, skip_unchanged=skip_unchanged,
-                       save_raw=not args.no_raw, log=args.log, sink=sink)
-    manifest = write_manifest(out_dir, provider.name, results, started)
-    ok = sum(1 for r in results if r.get('ok'))
-    print(f'\n{RULE}')
-    print(f'  Done: {ok} ok, {len(results) - ok} failed')
-    print(f'  Manifest: {manifest}')
-    print(RULE)
-    return 0 if ok == len(results) else 2
+                       save_raw=not args.no_raw, sink=sink)
+    return finish_run(out_dir, name, results, started, sink)
 
 
 def check(provider: Provider, page, sink: EventSink | None = None) -> int:
     """Live check for diagnostics: log in and list the chats, saving nothing."""
-    session = provider.open(page)
-    refs = provider.listing(session)
-    message = f'logged in · {len(refs)} {provider.noun} listed'
-    print(f'{provider.name}: {message}')
-    emit(sink, 'checked', provider.name, message=message)
+    sink = resolve(sink)
+    with routed(sink):
+        session = provider.open(page)
+        refs = provider.listing(session)
+    emit(sink, 'checked', provider.name,
+         message=f'logged in · {len(refs)} {provider.noun} listed')
     return 0
 
 
@@ -176,45 +176,36 @@ def download(provider: Provider, session, refs: list[ChatRef], out_dir: Path, *,
              sink: EventSink | None = None) -> list[dict]:
     """Fetch and save `refs`. Returns per-chat results for the manifest.
 
-    Per-chat lines print only with log=True (the default output is
-    summary-level); failures always print. One failing chat never stops the
-    others, and it keeps its previous sync record, so the next update
-    retries it."""
+    Reports a chat_started and then a chat_skipped, chat_completed or error
+    event per chat (`log`: a verbose terminal when no sink or route is set).
+    One failing chat never stops the others, and it keeps its previous sync
+    record, so the next update retries it."""
+    sink = resolve(sink, verbose=log)
+    name = provider.name
     out_dir = Path(out_dir)
-    sync = SyncState(out_dir, provider.name)
+    sync = SyncState(out_dir, name)
     results: list[dict] = []
-    started = time.time()
     total = len(refs)
     for i, ref in enumerate(refs, 1):
-        label = (ref.title or ref.id)[:55]
-        emit(sink, 'chat_started', provider.name, label, i, total)
-        if log:
-            print(progress(i, total, started))
+        label = ref.title or ref.id
+        emit(sink, 'chat_started', name, label, i, total)
         if skip_unchanged and sync.is_unchanged(ref.id, ref.updated_at):
-            if log:
-                print(f'[{i}/{total}] {label} -> skip (unchanged)')
-            emit(sink, 'chat_skipped', provider.name, label, i, total)
+            emit(sink, 'chat_skipped', name, label, i, total, 'skip (unchanged)')
             continue
         t0 = time.time()
         try:
             got = provider.fetch(session, ref)
             stats = save_chat(got.chat, out_dir, sync, ref.id, ref.updated_at,
-                              got.raw if save_raw else None, sink=sink, provider=provider.name)
+                              got.raw if save_raw else None, sink=sink, provider=name)
             results.append({'id': ref.id, 'title': got.chat.title, 'ok': True, **got.extra,
                             'duration_s': round(time.time() - t0, 1),
                             **{k: stats[k] for k in ('turns', 'chars', 'images', 'docs')}})
-            emit(sink, 'chat_completed', provider.name, got.chat.title, i, total)
-            if log:
-                media = f", {stats['images']} img" if stats['images'] else ''
-                media += f", {stats['docs']} doc" if stats['docs'] else ''
-                print(f'[{i}/{total}] {label} -> {stats["turns"]}t, {stats["chars"]:,} chars{media}')
-                detail = got.detail or f'assets: {stats["images"] + stats["docs"]}'
-                print(f'    {detail} · {time.time() - t0:.1f}s')
+            detail = got.detail or f'assets: {stats["images"] + stats["docs"]}'
+            emit(sink, 'chat_completed', name, got.chat.title or label, i, total,
+                 stats_text(stats), f'{detail} · {time.time() - t0:.1f}s')
         except Exception as exc:
-            print(f'[{i}/{total}] {label} -> FAILED: {exc}')
-            traceback.print_exc()
             results.append({'id': ref.id, 'title': label, 'ok': False, 'error': str(exc)})
-            emit(sink, 'error', provider.name, label, i, total, str(exc))
+            emit(sink, 'error', name, label, i, total, str(exc), traceback.format_exc())
         time.sleep(provider.pace)
     sync.save()
     return results

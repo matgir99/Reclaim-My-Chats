@@ -15,6 +15,7 @@ from collections.abc import Callable
 from urllib.parse import urlsplit
 
 from . import config
+from .events import emit
 
 LAUNCH_ARGS = [
     '--disable-blink-features=AutomationControlled',
@@ -67,7 +68,7 @@ def launch(p, headless: bool = False, profile_dir: Path | None = None):
     profile.mkdir(parents=True, exist_ok=True, mode=0o700)
     exe = find_chrome()
     if exe:
-        print(f'Using system browser: {exe}')
+        emit(None, 'notice', message=f'Using system browser: {exe}')
     else:
         bundled = Path(p.chromium.executable_path)
         if not bundled.exists():
@@ -75,7 +76,8 @@ def launch(p, headless: bool = False, profile_dir: Path | None = None):
                 'No Chrome or Chromium browser was found. Install Chrome or Chromium '
                 'for this computer, then retry. You can also set RECLAIM_CHROME_PATH '
                 'to an existing browser executable.')
-        print('No system Chrome/Chromium found — using Playwright bundled browser.')
+        emit(None, 'notice',
+             message='No system Chrome/Chromium found — using Playwright bundled browser.')
     kwargs = {'user_data_dir': str(profile), 'headless': headless,
               'args': LAUNCH_ARGS,
               'viewport': {'width': 1400, 'height': 900}}
@@ -110,22 +112,39 @@ def on_host(host: str) -> Callable[[str], bool]:
     return lambda url: urlsplit(url).hostname == host
 
 
+def login_timeout() -> int:
+    """Seconds to wait for a login in the browser window (RECLAIM_LOGIN_TIMEOUT)."""
+    return int(os.environ.get('RECLAIM_LOGIN_TIMEOUT', '900'))
+
+
+def ask_for_login(page, provider: str, service: str, seconds: int) -> None:
+    """Bring the browser window forward and ask the user to log in to
+    `service` (a login_needed event: the window and the terminal show it)."""
+    page.bring_to_front()
+    set_window_bounds(page, state='normal', left=100, top=100)
+    minutes = max(1, round(seconds / 60))
+    emit(None, 'login_needed', provider,
+         message=f'Log in to {service} in the browser window. '
+                 f'Waiting up to {minutes} minutes...')
+
+
+def login_done(page, provider: str) -> None:
+    """Report a completed login and hide the browser window again."""
+    emit(None, 'logged_in', provider, message='Logged in. Hiding the browser window.')
+    set_window_bounds(page, state='minimized')
+    time.sleep(2)
+
+
 def interactive_login(page, check_url_fragment: str, ready_url: str | Callable[[str], bool],
-                      provider_name: str, timeout_ms: int = 300000):
+                      provider_name: str, timeout_ms: int = 300000, provider: str = ''):
     """Bring the window forward for a human login, then hide it again.
 
     No-op when the session is already authenticated (current URL doesn't
-    contain check_url_fragment).
+    contain check_url_fragment). `provider_name` is the service shown to the
+    user ('Google'); `provider` the command the events belong to.
     """
     if check_url_fragment not in page.url:
         return
-    page.bring_to_front()
-    set_window_bounds(page, state='normal', left=100, top=100)
-    print('\n' + '=' * 50)
-    print(f'  LOG IN to {provider_name} in the browser window.')
-    print('  Waiting (up to 5 minutes)...')
-    print('=' * 50 + '\n')
+    ask_for_login(page, provider, provider_name, timeout_ms // 1000)
     page.wait_for_url(ready_url, timeout=timeout_ms)
-    print('Logged in! Hiding window...\n')
-    set_window_bounds(page, state='minimized')
-    time.sleep(2)
+    login_done(page, provider)

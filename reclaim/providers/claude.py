@@ -74,19 +74,12 @@ def ensure_logged_in(page) -> str:
             pass
         time.sleep(4)
     if not _cookies(page).get('sessionKey'):
-        page.bring_to_front()
-        browser.set_window_bounds(page, state='normal', left=100, top=100)
-        print('\n' + '=' * 50)
-        print('  LOG IN to Claude in the browser window.')
-        print('  Waiting (up to 15 minutes)...')
-        print('=' * 50 + '\n')
-        import os
-        deadline = time.time() + int(os.environ.get('RECLAIM_LOGIN_TIMEOUT', '900'))
+        timeout = browser.login_timeout()
+        browser.ask_for_login(page, PROVIDER, 'Claude', timeout)
+        deadline = time.time() + timeout
         while time.time() < deadline:
             if _cookies(page).get('sessionKey'):
-                print('Logged in! Hiding window...\n')
-                browser.set_window_bounds(page, state='minimized')
-                time.sleep(2)
+                browser.login_done(page, PROVIDER)
                 break
             time.sleep(3)
         else:

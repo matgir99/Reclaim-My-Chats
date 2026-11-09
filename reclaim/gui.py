@@ -17,7 +17,7 @@ else:
     except ImportError:  # The CLI intentionally has no GUI dependency.
         ft = None
 
-from .core import config, database, doctor, locks, logs, status
+from .core import config, database, doctor, locks, logs, render, status
 from .core.events import EventSink, ProgressEvent
 from .core.service import ALL_PROVIDERS, ArchiveController, BusyOperationError, RunSummary
 
@@ -349,46 +349,58 @@ class ReclaimWindow:
         self._log_lines = self._log_lines[-200:]
         self.log.value = '\n'.join(self._log_lines)
 
+    def _set_status(self, provider: str, text: str) -> None:
+        control = self.provider_status.get(provider)
+        if control is not None:
+            control.value = text
+
     def _event(self, event: ProgressEvent) -> None:
+        """The window's rendering of a run's events: the status line, the
+        progress bar, each provider's status, and Details (in the same words
+        as the log file, from render.describe)."""
         name = DISPLAY_NAMES.get(event.provider, event.provider)
-        if event.kind == 'run_started':
+        kind = event.kind
+        if kind == 'run_started':
             self.current.value = f'Starting {event.message}'
             self.progress.value = 0
-            self._append_log(f'Run started: {event.message}')
-        elif event.kind == 'provider_started':
+        elif kind == 'provider_started':
             self._provider_index = event.current
             self._provider_count = event.total
-            self.current.value = f'{name}: listing conversations or waiting for login'
-            self.provider_status[event.provider].value = 'Running'
-            self._append_log(f'{name}: started')
-        elif event.kind in ('chat_started', 'chat_skipped', 'chat_completed',
-                            'chat_planned', 'error'):
+            self.current.value = f'{name}: starting'
+            self._set_status(event.provider, 'Running')
+        elif kind == 'login_needed':
+            self.current.value = f'{name}: {event.message}'
+            self._set_status(event.provider, 'Waiting for login in the browser window')
+        elif kind == 'logged_in':
+            self._set_status(event.provider, 'Running')
+        elif kind in ('listing', 'listed'):
+            self.current.value = f'{name}: {event.message}'
+        elif kind in ('chat_started', 'chat_skipped', 'chat_completed',
+                      'chat_planned', 'error'):
             if event.title:
                 self.current.value = f'{name}: {event.title}'
             if event.total:
-                completed = event.current - (1 if event.kind == 'chat_started' else 0)
+                completed = event.current - (1 if kind == 'chat_started' else 0)
                 self.progress.value = min(1, ((self._provider_index - 1) +
                                           completed / event.total) / self._provider_count)
-            detail = event.message or event.kind.replace('_', ' ')
-            self._append_log(f'{name}: {event.title} — {detail}')
-            if event.kind == 'error':
-                self.provider_status[event.provider].value = f'Error: {event.message}'
-        elif event.kind == 'provider_completed':
+            if kind == 'error':
+                self._set_status(event.provider, f'Error: {event.message}')
+        elif kind == 'provider_completed':
             self.progress.value = event.current / event.total
+            status = self.provider_status.get(event.provider)
             if event.message == 'exit 0':
-                self.provider_status[event.provider].value = 'Completed'
-            elif not str(self.provider_status[event.provider].value).startswith('Error:'):
-                self.provider_status[event.provider].value = f'Failed ({event.message})'
-            self._append_log(f'{name}: {event.message}')
-        elif event.kind == 'checked':
-            self.provider_status[event.provider].value = f'Live check: {event.message}'
-            self._append_log(f'{name}: {event.message}')
-        elif event.kind == 'warning':
+                self._set_status(event.provider, 'Completed')
+            elif status is not None and not str(status.value).startswith('Error:'):
+                status.value = f'Failed ({event.message})'
+        elif kind == 'checked':
+            self._set_status(event.provider, f'Live check: {event.message}')
+        elif kind == 'warning':
             self._warnings += 1
-            self._append_log(f'{name}: warning: {event.title} — {event.message}')
-        elif event.kind == 'run_completed':
+        elif kind == 'run_completed':
             self.progress.value = 1
-            self._append_log(f'Run completed: {event.message}')
+        line = render.describe(event)
+        if line:
+            self._append_log(f'{name}: {line}' if event.provider else line)
         self.page.update()
 
     async def _run(self, providers: list[str], mode: str) -> None:

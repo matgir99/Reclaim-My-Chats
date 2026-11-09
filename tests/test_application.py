@@ -12,7 +12,7 @@ from unittest.mock import patch
 from reclaim.core import browser, config
 from reclaim.core import status
 from reclaim.core.events import ProgressEvent
-from reclaim.core.manifest import SyncState, print_dry_run
+from reclaim.core.manifest import SyncState, report_dry_run
 from reclaim.core.manifest import write_attempt, write_manifest
 from reclaim.core.service import ArchiveController, BusyOperationError, RunSummary
 
@@ -82,13 +82,16 @@ class TestProgressEvents(unittest.TestCase):
             events: list[ProgressEvent] = []
             chats = [{'id': 'one', 'title': 'Unchanged'},
                      {'id': 'two', 'title': 'New'}]
-            print_dry_run(chats, {'one': '1', 'two': '2'}, state, True,
-                          sink=events.append, provider='chatgpt')
+            report_dry_run(chats, {'one': '1', 'two': '2'}, state, True,
+                           sink=events.append, provider='chatgpt')
             self.assertEqual([(e.kind, e.message, e.current, e.total)
                               for e in events], [
                                   ('chat_planned', 'skip (unchanged)', 1, 2),
                                   ('chat_planned', 'fetch (new)', 2, 2),
+                                  ('plan', 'would fetch: 1 (1 new, 0 changed) · '
+                                           'would skip: 1 unchanged', 0, 1),
                               ])
+            self.assertEqual(events[-1].detail, '  - New')
             self.assertEqual(list(root.iterdir()), [])
 
 

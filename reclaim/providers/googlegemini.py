@@ -79,7 +79,8 @@ def ensure_logged_in(page):
         pass
     time.sleep(3)
     browser.interactive_login(page, 'accounts.google.com',
-                              browser.on_host('gemini.google.com'), 'Google')
+                              browser.on_host('gemini.google.com'), 'Google',
+                              provider=PROVIDER)
 
 
 def init_session(page) -> dict:

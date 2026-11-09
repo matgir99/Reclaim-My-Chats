@@ -14,14 +14,13 @@ from [citation:N] to [-N](url).
 from __future__ import annotations
 
 import json
-import os
 import re
 import time
 from types import SimpleNamespace
 from urllib.parse import urlencode
 
 from ..core import browser, engine, retry
-from ..core.events import EventSink
+from ..core.events import EventSink, emit
 from ..core.model import Attachment, Chat, Turn
 
 BASE_URL = 'https://chat.deepseek.com/'
@@ -57,13 +56,12 @@ def ensure_logged_in(page):
     time.sleep(3)
     if page.evaluate(_HAS_TOKEN_JS):
         return
-    page.bring_to_front()
-    browser.set_window_bounds(page, state='normal', left=100, top=100)
-    print('\nLog in to DeepSeek in the browser window. Waiting up to 15 minutes...')
-    deadline = time.time() + int(os.environ.get('RECLAIM_LOGIN_TIMEOUT', '900'))
+    timeout = browser.login_timeout()
+    browser.ask_for_login(page, PROVIDER, 'DeepSeek', timeout)
+    deadline = time.time() + timeout
     while time.time() < deadline:
         if page.evaluate(_HAS_TOKEN_JS):
-            browser.set_window_bounds(page, state='minimized')
+            browser.login_done(page, PROVIDER)
             return
         time.sleep(3)
     raise RuntimeError('DeepSeek login timeout')
@@ -284,7 +282,8 @@ def materialize_attachments(page, chat: Chat, timeout_ms: int = 60000) -> int:
                 att.data = body
                 ok += 1
             except Exception as e:
-                print(f'      attachment download error ({att.filename}): {e}')
+                emit(None, 'warning', PROVIDER,
+                     message=f'attachment {att.filename} was not downloaded: {e}')
     return ok
 
 
@@ -303,11 +302,11 @@ class DeepSeek(engine.Provider):
         ensure_logged_in(page)
         return SimpleNamespace(page=page)
 
-    def announce_listing(self) -> None:
-        print('Listing DeepSeek server history (older history may be limited by the service)...')
+    def listing_text(self) -> str:
+        return 'Listing DeepSeek server history (older history may be limited by the service)...'
 
-    def announce_found(self, refs) -> None:
-        print(f'Found {len(refs)} chats. Full messages are fetched only when selected.')
+    def found_text(self, refs) -> str:
+        return f'Found {len(refs)} chats. Full messages are fetched only when selected.'
 
     def listing(self, s) -> list[engine.ChatRef]:
         summaries = list_chats(s.page)
@@ -318,7 +317,8 @@ class DeepSeek(engine.Provider):
                     summaries.append(cached)
                     seen.add(cached['id'])
         except Exception:
-            print('Browser cache could not be read; only server-listed chats are available.')
+            emit(None, 'warning', PROVIDER, message='the browser cache could not be read; '
+                                                     'only server-listed chats are available.')
         return [engine.ChatRef(id=item['id'], title=item.get('title') or '',
                                updated_at=item.get('updated_at'), data=item) for item in summaries]
 

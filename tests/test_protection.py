@@ -109,9 +109,9 @@ class TestSaveChat(Temp):
             stats = save_chat(chat('d', 'Dee'), out, sync, 'd', 5, {'raw': True},
                               sink=events.append, provider='deepseek')
         self.assertEqual(stats['warnings'], ['raw.json was not saved: disk full'])
-        self.assertIn('warning: Dee: raw.json was not saved', printed.getvalue())
-        self.assertEqual([(e.kind, e.provider, e.title) for e in events],
-                         [('warning', 'deepseek', 'Dee')])
+        self.assertEqual(printed.getvalue(), '')  # the sink renders it; nothing prints
+        self.assertEqual([(e.kind, e.provider, e.title, e.message) for e in events],
+                         [('warning', 'deepseek', 'Dee', 'raw.json was not saved: disk full')])
         self.assertEqual(SyncState(out, 'deepseek').classify('d', 5), 'unchanged')
 
 

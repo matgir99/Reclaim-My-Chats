@@ -90,7 +90,6 @@ def get_token(page) -> str:
         try:
             _api(page, token, 'kimi.chat.v1.ChatService/ListChats',
                  {'project_id': '', 'page_size': 1, 'query': ''}, retries=1)
-            print(f"  token found ({cand['key']})")
             return token
         except Exception:
             continue
@@ -112,19 +111,13 @@ def ensure_logged_in(page):
         pass
     # Kimi login is an SPA modal (no URL change): show the window and poll
     # until a valid token appears in localStorage.
-    page.bring_to_front()
-    browser.set_window_bounds(page, state='normal', left=100, top=100)
-    print('\n' + '=' * 50)
-    print('  LOG IN to Kimi in the browser window.')
-    print('  Waiting (up to 15 minutes)...')
-    print('=' * 50 + '\n')
-    deadline = time.time() + int(os.environ.get('RECLAIM_LOGIN_TIMEOUT', '900'))
+    timeout = browser.login_timeout()
+    browser.ask_for_login(page, PROVIDER, 'Kimi', timeout)
+    deadline = time.time() + timeout
     while time.time() < deadline:
         try:
             token = get_token(page)
-            print('Logged in! Hiding window...\n')
-            browser.set_window_bounds(page, state='minimized')
-            time.sleep(2)
+            browser.login_done(page, PROVIDER)
             return token
         except Exception:
             time.sleep(3)

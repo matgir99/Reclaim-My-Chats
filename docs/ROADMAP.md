@@ -86,8 +86,10 @@ caught before users see them.
       (`core/retry.py`). Each provider supplies only how to log in, list
       its chats, read a chat URL and fetch one chat. The shared login
       check is part of Phase 3's login task.
-- [ ] Progress reported only as structured events, rendered once each for
-      the window, the terminal and the log file.
+- [x] Progress reported only as structured events, rendered once each for
+      the window, the terminal and the log file (`core/events.py`,
+      `core/render.py`). The window now shows when a provider waits for a
+      login.
 - [ ] A capture tool that records a real provider response with every
       text value replaced, so a format change becomes a test fixture.
 - [x] Diagnostics: offline checks (browser, settings, database, locks) and
