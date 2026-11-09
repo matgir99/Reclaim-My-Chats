@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 
 from .events import EventSink, emit
-from .writer import retire_previous
+from .writer import _same_chat, retire_previous
 
 
 def write_manifest(out_dir: Path, provider: str, results: list[dict],
@@ -93,19 +93,32 @@ class SyncState:
     def is_unchanged(self, chat_id: str, updated_at) -> bool:
         return self.classify(chat_id, updated_at) == 'unchanged'
 
-    def _resolve(self, md: str) -> Path:
-        """A recorded md path inside this provider folder. Older records are
-        absolute and break when the archive moves; rebase them by the
-        provider folder's name."""
+    def _resolve(self, md: str, chat_id: str | None = None) -> Path:
+        """A recorded md path inside this provider folder.
+
+        Records written since November 2026 are relative to the provider
+        folder. Older records are absolute, or relative to the working
+        directory of the run that wrote them (a relative `-o`); both contain
+        the provider folder's name and are rebased at it. When several
+        readings are possible, for example a project named like the provider
+        folder, the one whose chat.json belongs to `chat_id` wins, then one
+        that exists."""
         out_dir = self.path.parent
         path = Path(md)
-        if not path.is_absolute():
-            return out_dir / path
         parts = path.parts
-        if out_dir.name in parts[:-1]:
-            index = len(parts) - 1 - parts[::-1].index(out_dir.name)
-            return out_dir.joinpath(*parts[index + 1:])
-        return path
+        candidates = [] if path.is_absolute() else [out_dir / path]
+        candidates += [out_dir.joinpath(*parts[i + 1:])
+                       for i, part in enumerate(parts[:-1]) if part == out_dir.name]
+        if not candidates:
+            return path
+        if chat_id:
+            for candidate in candidates:
+                if _same_chat(candidate.parent, chat_id):
+                    return candidate
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
+        return candidates[-1] if path.is_absolute() else candidates[0]
 
     def mark(self, chat_id: str, updated_at, md_path: str):
         """Record a written chat; retire its previous folder if it moved."""
@@ -114,7 +127,7 @@ class SyncState:
         previous = (self._state.get(chat_id) or {}).get('md')
         if isinstance(previous, str) and previous:
             try:
-                retire_previous(out_dir, chat_id, self._resolve(previous), current)
+                retire_previous(out_dir, chat_id, self._resolve(previous, chat_id), current)
             except OSError as exc:
                 print(f'  note: could not remove previous folder of {chat_id}: {exc}')
         try:
