@@ -91,9 +91,9 @@ def get_session_token(page) -> str:
         raise RuntimeError(f'session fetch HTTP {data["status"]}')
     try:
         token = json.loads(data['text']).get('accessToken')
-    except Exception:
+    except Exception as exc:
         raise RuntimeError(
-            f'session not JSON (head: {data["text"][:80]!r}) — not logged in?')
+            f'session not JSON (head: {data["text"][:80]!r}) — not logged in?') from exc
     if not token:
         raise RuntimeError('no accessToken in session — not logged in?')
     return token

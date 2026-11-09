@@ -228,7 +228,7 @@ def resolve(text: str, metadata) -> str:
     # Citations of several passages in one file would repeat its name.
     for name in files:
         escaped = re.escape(name)
-        text = re.sub(f'{escaped}(?:\\s*{escaped})+', lambda _: name, text)
+        text = re.sub(f'{escaped}(?:\\s*{escaped})+', lambda _, name=name: name, text)
     text = _MARKER.sub(_unreferenced, text)
     return _PRIVATE_USE.sub('', text)
 

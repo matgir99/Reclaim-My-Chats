@@ -18,7 +18,7 @@ what happens next, the same way for every service:
 from __future__ import annotations
 
 import time
-from typing import Callable
+from collections.abc import Callable
 
 RATE_LIMIT_WAITS = (15, 30, 60, 120)
 MAX_RATE_LIMIT_WAIT = 300

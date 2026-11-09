@@ -351,7 +351,7 @@ class TestLogFailures(Temp):
                 print('first line')
                 print('second line')
         self.assertIn('second line', buffer.getvalue())
-        self.assertTrue(getattr(handler, 'broken'))
+        self.assertTrue(getattr(handler, 'broken'))  # noqa: B009 - not on logging.Handler
 
 
 class _Context:

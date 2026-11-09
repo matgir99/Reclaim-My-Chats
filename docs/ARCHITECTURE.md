@@ -24,8 +24,18 @@ database (`core/locks.py`), and copies everything printed to the run log
 checks through `offline_session`. An in-process lock also stops concurrent
 GUI clicks.
 
+Every provider runs on `reclaim/core/engine.py`. A provider class supplies
+only what is specific to its service: `open` (log in and return a session),
+`listing`, `from_url` and `fetch`. The engine owns the command-line options,
+the title, `--skip` and `--limit` filters, `--list`, `--dry-run`, skipping
+unchanged chats, the download loop with its progress events and output,
+saving, the run manifest and the exit code. Requests made from the page go
+through `reclaim/core/retry.py`, one policy for all providers: 401/403 stop
+at once, 429 waits as long as `Retry-After` asks, server errors and failed
+requests are retried briefly.
+
 Provider modules acquire conversations from each service, normalize them to
-the models in `reclaim/core/model.py`, and save each chat with
+the models in `reclaim/core/model.py`, and the engine saves each chat with
 `manifest.save_chat`: `reclaim/core/writer.py` writes the folder (Markdown,
 `chat.json`, media), then `raw.json`, then the sync record. All files are
 written atomically (`core/fsutil.py`). Sync records classify chats as new,

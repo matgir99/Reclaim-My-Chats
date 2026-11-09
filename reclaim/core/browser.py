@@ -11,7 +11,7 @@ import os
 import shutil
 import time
 from pathlib import Path
-from typing import Callable
+from collections.abc import Callable
 from urllib.parse import urlsplit
 
 from . import config
