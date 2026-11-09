@@ -10,6 +10,7 @@ Usage:
   reclaim <provider> --dry-run [options]   preview what would be fetched
   reclaim status [-o DIR]                  offline database overview
   reclaim init [DIR]                       create a database (default: the configured folder)
+  reclaim doctor [--live]                  check settings, database, locks, browser, logins
   reclaim unlock                           remove a lock left by a run that has ended
   reclaim gui                              launch the desktop application
   reclaim all [options]                    update all six providers, in order
@@ -196,6 +197,9 @@ def _dispatch(argv=None):
         return _run_single(cmd, rest)
     if cmd == 'init':
         return _init(rest)
+    if cmd == 'doctor':
+        from .core import doctor
+        return doctor.main(rest)
     if cmd == 'unlock':
         return _unlock(rest)
     if cmd == 'all':

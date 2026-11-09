@@ -84,7 +84,7 @@ class ArchiveController:
     def run(self, providers: list[str], mode: str = 'update',
             sink: EventSink | None = None, *, log: bool = False) -> RunSummary:
         """Run a selected set in one Playwright session, off the GUI loop."""
-        if mode not in ('update', 'rebuild', 'dry-run'):
+        if mode not in ('update', 'rebuild', 'dry-run', 'check'):
             raise ValueError(f'unknown mode: {mode}')
         chosen = list(dict.fromkeys(providers))
         if not chosen or any(p not in PROVIDER_DIRS for p in chosen):
@@ -93,7 +93,7 @@ class ArchiveController:
             raise BusyOperationError('another operation is running')
         try:
             flags = {'update': [], 'rebuild': ['--rebuild'],
-                     'dry-run': ['--dry-run']}[mode]
+                     'dry-run': ['--dry-run'], 'check': ['--dry-run']}[mode]
             archive = config.archive_root(self.root)
             parsed = {}
             for name in chosen:
@@ -101,7 +101,7 @@ class ArchiveController:
                 parsed[name] = provider_module(name).parse_args(
                     [*flags, '-o', str(out_dir), *(['--log'] if log else [])])
             return self._execute(chosen, parsed, mode, sink, {archive},
-                                 readonly=mode == 'dry-run')
+                                 readonly=mode in ('dry-run', 'check'))
         finally:
             self._lock.release()
 
@@ -166,7 +166,11 @@ class ArchiveController:
         emit(sink, 'provider_started', name, current=index, total=total)
         error = None
         try:
-            code = provider_module(name).run_session(page, args, sink=sink)
+            if mode == 'check':  # diagnostics: log in and list, nothing else
+                from . import engine
+                code = engine.check(provider_module(name).SPEC, page, sink)
+            else:
+                code = provider_module(name).run_session(page, args, sink=sink)
         except Exception as exc:
             traceback.print_exc()
             code = 2

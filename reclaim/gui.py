@@ -17,7 +17,7 @@ else:
     except ImportError:  # The CLI intentionally has no GUI dependency.
         ft = None
 
-from .core import config, database, locks, logs, status
+from .core import config, database, doctor, locks, logs, status
 from .core.events import EventSink, ProgressEvent
 from .core.service import ALL_PROVIDERS, ArchiveController, BusyOperationError, RunSummary
 
@@ -87,6 +87,8 @@ class ReclaimWindow:
             self.enabled = []
         self.blocked = False  # a settings or database problem stops runs
         self._warnings = 0
+        self._run_events: list[ProgressEvent] = []
+        self._live_results: list[doctor.Check] = []
         self._running = False
         self._log_lines: list[str] = []
         self._provider_index = 0
@@ -148,13 +150,15 @@ class ReclaimWindow:
             visible=False, key='notice')
         self.settings_button = ft.Button('Settings', on_click=self._settings,
                                          key='settings')
+        self.diagnostics_button = ft.Button('Diagnostics', on_click=self._diagnostics,
+                                            key='diagnostics')
 
         page.add(ft.Container(
             padding=20,
             content=ft.Column([
                 ft.Row([
                     ft.Text('Reclaim My Chats', size=28, weight=ft.FontWeight.BOLD),
-                    self.settings_button,
+                    ft.Row([self.diagnostics_button, self.settings_button], wrap=True),
                 ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, wrap=True),
                 ft.Text('Save and synchronize your AI conversations in a local database'),
                 self.notice,
@@ -376,6 +380,9 @@ class ReclaimWindow:
             elif not str(self.provider_status[event.provider].value).startswith('Error:'):
                 self.provider_status[event.provider].value = f'Failed ({event.message})'
             self._append_log(f'{name}: {event.message}')
+        elif event.kind == 'checked':
+            self.provider_status[event.provider].value = f'Live check: {event.message}'
+            self._append_log(f'{name}: {event.message}')
         elif event.kind == 'warning':
             self._warnings += 1
             self._append_log(f'{name}: warning: {event.title} — {event.message}')
@@ -397,6 +404,7 @@ class ReclaimWindow:
         self._set_running(True)
         self.summary.value = ''
         self._warnings = 0
+        self._run_events = []
         self._log_lines.clear()
         self.log.value = ''
         self._provider_count = len(providers)
@@ -417,12 +425,15 @@ class ReclaimWindow:
         try:
             task = asyncio.create_task(asyncio.to_thread(execute))
             while (event := await queue.get()) is not None:
+                self._run_events.append(event)
                 self._event(event)
             result = await task
             labels = ', '.join(f'{DISPLAY_NAMES[name]}: {"ok" if code == 0 else "failed"}'
                                for name, code in result.codes)
             action = {'update': 'Update', 'rebuild': 'Rebuild',
-                      'dry-run': 'Dry run'}[mode]
+                      'dry-run': 'Dry run', 'check': 'Live check'}[mode]
+            if mode == 'check':
+                self._live_results = doctor.checks_from_events(self._run_events)
             state = ('completed successfully' if result.exit_code == 0
                      else 'completed with errors')
             self.summary.value = f'{action} {state} · {labels}'
@@ -448,7 +459,7 @@ class ReclaimWindow:
             self._error(str(exc))
         finally:
             self._set_running(False)
-            if mode != 'dry-run':
+            if mode not in ('dry-run', 'check'):  # these write nothing
                 await self.refresh_archive()
             self.page.update()
 
@@ -477,6 +488,57 @@ class ReclaimWindow:
                      ft.FilledButton('Rebuild', on_click=confirm, key='confirm-rebuild')],
         )
         self.page.show_dialog(dialog)
+
+    # Diagnostics: the same checks as `reclaim doctor [--live]`
+
+    async def _diagnostics(self, _=None) -> None:
+        try:
+            checks = await asyncio.to_thread(doctor.run_checks, self.root)
+        except Exception as exc:
+            self._error(f'Could not run the diagnostics: {exc}')
+            return
+        colors = {doctor.OK: ft.Colors.PRIMARY, doctor.PROBLEM: ft.Colors.ERROR,
+                  doctor.WARNING: ft.Colors.TERTIARY, doctor.INFO: ft.Colors.ON_SURFACE_VARIANT}
+        rows: list[ft.Control] = []
+        for check in [*checks, *self._live_results]:
+            area = DISPLAY_NAMES.get(check.area, check.area)
+            lines: list[ft.Control] = [ft.Text(f'{area}: {check.detail}', selectable=True)]
+            if check.advice:
+                lines.append(ft.Text(check.advice, italic=True, selectable=True))
+            rows.append(ft.Row([
+                ft.Text(check.status.upper(), width=78, weight=ft.FontWeight.BOLD,
+                        color=colors[check.status]),
+                ft.Column(lines, spacing=2, expand=True)],
+                vertical_alignment=ft.CrossAxisAlignment.START))
+
+        async def live(_=None) -> None:
+            self.page.pop_dialog()
+            await self._run(list(self.enabled), 'check')
+            if self._live_results:
+                await self._diagnostics()
+
+        async def copy(_=None) -> None:
+            try:
+                await ft.Clipboard().set(doctor.report(checks, self._live_results))
+            except Exception as exc:
+                self._error(f'Could not copy to the clipboard: {exc}')
+                return
+            self.summary.value = 'Diagnostics copied. They contain folder paths but no chats.'
+            self.page.update()
+
+        self.page.show_dialog(ft.AlertDialog(
+            modal=True,
+            title='Diagnostics',
+            content=ft.Container(width=660, content=ft.Column(
+                [ft.Text('Run live check logs in to each enabled provider and lists its '
+                         'chats; it saves nothing.'), *rows],
+                spacing=10, scroll=ft.ScrollMode.AUTO, height=440)),
+            actions=[ft.Button('Run live check', on_click=live, key='diagnostics-live',
+                               disabled=self._running or self.blocked or not self.enabled),
+                     ft.Button('Copy diagnostics', on_click=copy, key='diagnostics-copy'),
+                     ft.Button('Open log folder', on_click=self._open_logs),
+                     ft.FilledButton('Close', on_click=lambda _: self.page.pop_dialog(),
+                                     key='diagnostics-close')]))
 
     def _open(self, path: Path) -> None:
         try:

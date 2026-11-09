@@ -30,6 +30,17 @@ Warnings during a run, such as a `raw.json` that could not be written, are
 counted in the summary and listed in Details. **Open log folder** shows the
 run log, which keeps the full output of every run, including errors.
 
+**Diagnostics** lists the state of this computer: version, settings,
+database (location, chat count, write access, free space), the database and
+login data locks, the browser, the login data folder (readable by other
+users, or inside a synced folder such as Dropbox or Syncthing) and the log
+file, each with advice when something is wrong. *Run live check* logs in to
+each enabled provider and lists its chats, writing nothing; each provider's
+row then shows "Live check: logged in · N chats listed" or the error.
+*Copy diagnostics* copies the results as text for a bug report. They contain
+folder paths, which can include your user name, but never chat content.
+`reclaim doctor [--live]` prints the same report.
+
 **Settings** writes the shared `.reclaim.json`. It can choose enabled
 providers, a database folder, and an existing browser profile. Choosing an
 empty or new database folder creates the database there after a

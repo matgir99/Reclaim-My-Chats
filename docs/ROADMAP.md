@@ -90,11 +90,12 @@ caught before users see them.
       the window, the terminal and the log file.
 - [ ] A capture tool that records a real provider response with every
       text value replaced, so a format change becomes a test fixture.
-- [ ] Diagnostics: offline checks (browser, settings, database, locks) and
+- [x] Diagnostics: offline checks (browser, settings, database, locks) and
       a read-only live check that lists every provider. **Window:** a
       Diagnostics panel with *Copy diagnostics*. **CLI:** `reclaim doctor`
       and `reclaim doctor --live`.
-- [ ] Release checklist: the live check runs before merging into `main`.
+- [x] Release checklist: the live check runs before merging into `main`
+      ([releasing](RELEASING.md)).
 - [ ] CI on Python 3.12 and 3.14, a lock file for builds, ruff's bugbear
       and pyupgrade rules, and a weekly workflow that reports new commits
       in the reference projects listed in the

@@ -236,6 +236,63 @@ class TestGuiSafeguards(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(window.archive_path.value, str(new_folder))
 
 
+class _CheckController(_Controller):
+    def run(self, providers, mode='update', sink=None, *, log=False):
+        self.calls.append((list(providers), mode))
+        assert sink is not None
+        for name in providers:
+            sink(ProgressEvent('checked', name, message='logged in · 3 chats listed'))
+        return RunSummary(tuple((name, 0) for name in providers))
+
+
+class _Clipboard:
+    copied: list[str] = []
+
+    async def set(self, value):
+        _Clipboard.copied.append(value)
+
+
+@unittest.skipUnless(gui.ft is not None, 'Flet GUI extra is not installed')
+class TestGuiDiagnostics(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.page = _Page()
+        self.controller = _CheckController()
+        self.window = gui.ReclaimWindow(self.page, self.root, self.controller)
+        await self.window.refresh_archive()
+
+    async def asyncTearDown(self):
+        self.temp.cleanup()
+
+    def dialog_text(self):
+        dialog = self.page.dialog
+        assert dialog is not None
+        texts = []
+        for row in dialog.content.content.controls[1:]:
+            texts.extend(c.value for c in row.controls[1].controls)
+        return ' '.join(texts)
+
+    async def test_panel_shows_checks_and_runs_the_live_check(self):
+        await self.window._diagnostics()
+        self.assertIn('Settings: defaults (no settings file)', self.dialog_text())
+        actions = {a.key: a for a in self.page.dialog.actions}
+        await actions['diagnostics-live'].on_click(None)
+        self.assertEqual(self.controller.calls[0][1], 'check')
+        self.assertIn('Live check completed successfully', self.window.summary.value)
+        self.assertIn('ChatGPT: logged in · 3 chats listed', self.dialog_text())
+        self.assertEqual(self.window.provider_status['kimi'].value,
+                         'Live check: logged in · 3 chats listed')
+
+    async def test_copy_diagnostics(self):
+        await self.window._diagnostics()
+        actions = {a.key: a for a in self.page.dialog.actions}
+        with patch.object(gui.ft, 'Clipboard', _Clipboard):
+            await actions['diagnostics-copy'].on_click(None)
+        self.assertIn('Reclaim My Chats diagnostics', _Clipboard.copied[-1])
+        self.assertIn('Diagnostics copied', self.window.summary.value)
+
+
 class TestOptionalGui(unittest.TestCase):
     def test_cli_entry_explains_missing_extra(self):
         stderr = StringIO()

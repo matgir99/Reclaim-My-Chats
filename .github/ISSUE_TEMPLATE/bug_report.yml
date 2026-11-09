@@ -47,6 +47,12 @@ body:
       label: Redacted error message
       description: Include the relevant error from Details or the terminal. Remove private information.
       render: text
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: In the window, open Diagnostics and use Copy diagnostics (or run reclaim doctor), then paste the result. It lists folder paths, which can include your user name, but no chat content.
+      render: text
   - type: checkboxes
     id: privacy
     attributes:

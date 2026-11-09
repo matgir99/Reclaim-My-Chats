@@ -79,6 +79,8 @@ reclaim import scrapemychats EXPORT_DIRECTORY
 reclaim export haevn-md . chats.zip
 reclaim init [FOLDER]                 # create a database (default: the configured folder)
 reclaim unlock                        # remove a lock left by a run that has ended
+reclaim doctor                        # check settings, database, locks, browser, login data
+reclaim doctor --live                 # also log in to each provider and list its chats
 ```
 
 Run `reclaim <provider> --help` for `--skip`, `--limit`, `--log`, `--no-raw`,
@@ -123,6 +125,13 @@ The app protects the database:
   file aside.
 - Each run is logged to `logs/reclaim.log` in the data folder. In the window,
   **Open log folder** shows it.
+
+When something does not work, **Diagnostics** in the window (or
+`reclaim doctor`) checks the settings, the database, locks, the browser and
+the login data folder, and says what to do about each problem. *Run live
+check* (`reclaim doctor --live`) also logs in to each enabled provider and
+lists its chats without saving anything. *Copy diagnostics* copies the
+results for a bug report: they contain folder paths, never chat content.
 
 The GUI and CLI use the same `.reclaim.json` settings. For a source checkout,
 the default database is `<checkout>/chats` and the default browser profile is

@@ -161,6 +161,16 @@ def run_session(provider: Provider, page, args, sink: EventSink | None = None) -
     return 0 if ok == len(results) else 2
 
 
+def check(provider: Provider, page, sink: EventSink | None = None) -> int:
+    """Live check for diagnostics: log in and list the chats, saving nothing."""
+    session = provider.open(page)
+    refs = provider.listing(session)
+    message = f'logged in · {len(refs)} {provider.noun} listed'
+    print(f'{provider.name}: {message}')
+    emit(sink, 'checked', provider.name, message=message)
+    return 0
+
+
 def download(provider: Provider, session, refs: list[ChatRef], out_dir: Path, *,
              skip_unchanged: bool = False, save_raw: bool = True, log: bool = False,
              sink: EventSink | None = None) -> list[dict]:
