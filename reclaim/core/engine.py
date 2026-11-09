@@ -12,6 +12,7 @@ fix made here reaches every provider.
 from __future__ import annotations
 
 import argparse
+import sys
 import time
 import traceback
 from dataclasses import dataclass, field
@@ -214,8 +215,10 @@ def download(provider: Provider, session, refs: list[ChatRef], out_dir: Path, *,
 
 
 def main(provider: Provider, argv=None) -> int:
-    """`python -m reclaim.providers.<name>`: the same path as `reclaim <name>`."""
+    """`python -m reclaim.providers.<name>`: the same path as `reclaim <name>`.
+    Without `argv`, the process arguments (an explicit [] means none)."""
     from .service import ArchiveController
-    summary = ArchiveController(config.default_root()).run_cli([provider.name], list(argv or []),
+    args = sys.argv[1:] if argv is None else list(argv)
+    summary = ArchiveController(config.default_root()).run_cli([provider.name], args,
                                                                headers=False)
     return summary.codes[0][1] if summary.codes else 2

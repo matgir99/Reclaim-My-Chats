@@ -7,6 +7,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -15,6 +16,7 @@ from unittest.mock import patch
 from reclaim.core import engine
 from reclaim.core.manifest import SyncState
 from reclaim.core.model import Chat, Turn
+from reclaim.core.service import ArchiveController, RunSummary
 
 
 class FakeProvider(engine.Provider):
@@ -122,6 +124,19 @@ class TestEngine(unittest.TestCase):
     def test_title_and_url_together_are_refused(self):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             engine.parse_args(self.provider, ['Alpha', '--url', 'https://fake.test/c/a'])
+
+    def test_module_entry_point_uses_the_process_arguments(self):
+        # `python -m reclaim.providers.<name> --dry-run` calls main() without argv.
+        calls = []
+
+        def run_cli(_controller, providers, argv, *, headers=True):
+            calls.append(argv)
+            return RunSummary(((providers[0], 0),))
+        with (patch.object(ArchiveController, 'run_cli', run_cli),
+              patch.object(sys, 'argv', ['chatgpt.py', '--dry-run', '--limit', '1'])):
+            self.assertEqual(engine.main(self.provider), 0)
+            self.assertEqual(engine.main(self.provider, []), 0)
+        self.assertEqual(calls, [['--dry-run', '--limit', '1'], []])
 
     def test_log_mode_and_pacing(self):
         self.provider.pace = 0.25
