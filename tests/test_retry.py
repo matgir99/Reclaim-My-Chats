@@ -82,6 +82,12 @@ class TestRetry(unittest.TestCase):
         result, _ = self.send(responses(status(401), ok()), auth_retries=1)
         self.assertEqual(result['status'], 200)
 
+    def test_a_service_that_keeps_rate_limiting_fails_even_for_callers_with_fallbacks(self):
+        call = responses(*[status(429)] * (len(retry.RATE_LIMIT_WAITS) + 1))
+        with patch.object(retry.time, 'sleep'):
+            with self.assertRaisesRegex(RuntimeError, 'HTTP 429'):
+                retry.send(call, what='Test GET', return_errors=True)
+
 
 if __name__ == '__main__':
     unittest.main()

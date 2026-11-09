@@ -40,7 +40,7 @@ from . import chatgpt_references
 PROVIDER = 'chatgpt'
 
 _SKIP_CONTENT_TYPES = {'thoughts', 'reasoning_recap', 'system_message'}
-_IMG_EXT = re.compile(r'\.(png|jpe?g|gif|webp)$', re.I)
+_IMG_EXT = re.compile(r'\.(png|jpe?g|gif|webp)$', re.IGNORECASE)
 
 
 def _linearize(mapping: dict, current_node: str | None) -> list[dict]:
@@ -103,26 +103,32 @@ def _content_parts(msg: dict) -> list:
     if not isinstance(parts, list):
         return []
     parts = [chatgpt_references.resolve(p, meta) if isinstance(p, str) else p for p in parts]
-    return parts + [sources] if sources and parts else parts
+    return [*parts, sources] if sources and parts else parts
 
 
-def _node_to_turn(node: dict) -> Turn | None:
+def _visible_message(node: dict) -> tuple[dict, str] | None:
+    """The node's message and its turn role ('user' or 'model') when ChatGPT
+    shows it: not hidden, not a reasoning step or a tool call, and written by
+    the user or the assistant. Shared by the live download and the export."""
     msg = node.get('message')
     if not msg:
         return None
     meta = msg.get('metadata') or {}
     if meta.get('is_visually_hidden_from_conversation') or meta.get('is_thinking_preamble_message'):
         return None
-    if _is_tool_call(msg):
-        return None
     role = (msg.get('author') or {}).get('role', '')
-    if role not in ('user', 'assistant'):
+    if _is_tool_call(msg) or role not in ('user', 'assistant'):
         return None
-    content = msg.get('content') or {}
-    ctype = content.get('content_type', '')
-    if ctype in _SKIP_CONTENT_TYPES:
+    if (msg.get('content') or {}).get('content_type', '') in _SKIP_CONTENT_TYPES:
         return None
+    return msg, 'user' if role == 'user' else 'model'
 
+
+def _node_to_turn(node: dict) -> Turn | None:
+    visible = _visible_message(node)
+    if visible is None:
+        return None
+    msg, role = visible
     texts, images_notes = [], []
     for part in _content_parts(msg):
         if isinstance(part, str):
@@ -141,7 +147,7 @@ def _node_to_turn(node: dict) -> Turn | None:
         text = (text + '\n\n' if text else '') + '\n\n'.join(images_notes)
     if not text.strip():
         return None
-    return Turn(role='user' if role == 'user' else 'model', text=text.strip())
+    return Turn(role=role, text=text.strip())
 
 
 def _export_preambles(nodes: list[dict]) -> set[int]:
@@ -227,9 +233,9 @@ def collect_conversations(path: Path) -> list[dict]:
     (chatgpt-exporter 023cf2b)."""
     found: dict[str, dict] = {}
     for data in _export_files(path):
-        if isinstance(data, dict):  # some exports wrap in {"conversations": [...]}
-            data = data.get('conversations', [])
-        for item in data if isinstance(data, list) else []:
+        # some exports wrap the list in {"conversations": [...]}
+        items = data.get('conversations', []) if isinstance(data, dict) else data
+        for item in items if isinstance(items, list) else []:
             if not isinstance(item, dict) or not isinstance(item.get('mapping'), dict):
                 continue
             cid = item.get('id') or item.get('conversation_id')
@@ -264,14 +270,10 @@ def run_scrapemychats(export_dir: Path, out_dir: Path) -> list[dict]:
         except Exception:
             continue
         files_dir = chat_dir / 'files'
-        atts = []
-        if files_dir.is_dir():
-            for f in sorted(files_dir.iterdir()):
-                if f.is_file():
-                    atts.append(Attachment(
-                        filename=f.name,
-                        kind='image' if _IMG_EXT.search(f.name) else 'document',
-                        data=f.read_bytes(), source_url='', description=f.name))
+        files = sorted(f for f in files_dir.iterdir() if f.is_file()) if files_dir.is_dir() else []
+        atts = [Attachment(filename=f.name, kind='image' if _IMG_EXT.search(f.name) else 'document',
+                           data=f.read_bytes(), source_url='', description=f.name)
+                for f in files]
         chat = parse_conversation(conv, attachments=atts)
         if chat:
             chats.append(chat)

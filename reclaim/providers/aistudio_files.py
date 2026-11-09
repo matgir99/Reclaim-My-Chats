@@ -36,50 +36,52 @@ PROVIDER = 'aistudio'
 _IMG_MIMES = ('image/png', 'image/jpeg', 'image/gif', 'image/webp')
 
 
+def _inline_image(part: dict) -> bytes | None:
+    """An image embedded in the prompt as base64 (inlineData)."""
+    inline = part.get('inlineData') or part.get('inline_data') or {}
+    if isinstance(inline, dict) and inline.get('data'):
+        try:
+            return base64.b64decode(inline['data'])
+        except Exception:
+            return None
+    return None
+
+
+def _drive_file(part: dict) -> Attachment | None:
+    """A Drive file attached to the prompt (fileData), linked, not downloaded."""
+    fdata = part.get('fileData') or part.get('file_data') or {}
+    if not isinstance(fdata, dict):
+        return None
+    fid = fdata.get('fileId') or fdata.get('file_id') or ''
+    uri = fdata.get('fileUri') or fdata.get('file_uri') or ''
+    if not fid and not uri:
+        return None
+    name = fdata.get('displayName') or fdata.get('name') or f'drive_file_{fid[:12]}'
+    return Attachment(filename=name, kind='document', data=None,
+                      source_url=uri or f'https://drive.google.com/file/d/{fid}/view',
+                      description=name)
+
+
+def _chunk_turn(chunk) -> Turn | None:
+    """One prompt chunk as a turn; None for other roles and empty chunks."""
+    if not isinstance(chunk, dict) or chunk.get('role', '') not in ('user', 'model'):
+        return None
+    parts = [p for p in chunk.get('parts', []) or [] if isinstance(p, dict)]
+    images = [image for image in map(_inline_image, parts) if image is not None]
+    attachments = [file for file in map(_drive_file, parts) if file is not None]
+    text = chunk.get('text', '') or ''
+    if not text.strip() and not images and not attachments:
+        return None
+    return Turn(role=chunk['role'], text=text, thought=bool(chunk.get('isThought')),
+                images=images, attachments=attachments)
+
+
 def parse_prompt_file(data: dict, chat_id: str = '', title: str = '') -> Chat | None:
     """Parse one makersuite.prompt JSON into a canonical Chat."""
     if not isinstance(data, dict) or 'chunkedPrompt' not in data:
         return None
     chunks = data.get('chunkedPrompt', {}).get('chunks', [])
-    turns = []
-    for ch in chunks:
-        if not isinstance(ch, dict):
-            continue
-        role = ch.get('role', '')
-        if role not in ('user', 'model'):
-            continue
-        text = ch.get('text', '') or ''
-        thought = bool(ch.get('isThought'))
-        images, atts = [], []
-
-        for part in ch.get('parts', []) or []:
-            if not isinstance(part, dict):
-                continue
-            inline = part.get('inlineData') or part.get('inline_data') or {}
-            if isinstance(inline, dict) and inline.get('data'):
-                try:
-                    images.append(base64.b64decode(inline['data']))
-                except Exception:
-                    pass
-            fdata = part.get('fileData') or part.get('file_data') or {}
-            if isinstance(fdata, dict):
-                fid = fdata.get('fileId') or fdata.get('file_id') or ''
-                uri = fdata.get('fileUri') or fdata.get('file_uri') or ''
-                name = fdata.get('displayName') or fdata.get('name') or f'drive_file_{fid[:12]}'
-                if fid or uri:
-                    atts.append(Attachment(
-                        filename=name,
-                        kind='document',
-                        data=None,
-                        source_url=uri or f'https://drive.google.com/file/d/{fid}/view',
-                        description=name,
-                    ))
-
-        if not text.strip() and not images and not atts:
-            continue
-        turns.append(Turn(role=role, text=text, thought=thought,
-                          images=images, attachments=atts))
-
+    turns = [turn for turn in map(_chunk_turn, chunks) if turn is not None]
     if not turns:
         return None
     return Chat(id=chat_id, title=title or chat_id, source_url='', turns=turns,

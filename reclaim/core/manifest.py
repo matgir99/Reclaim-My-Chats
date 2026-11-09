@@ -20,6 +20,7 @@ import json
 import os
 import time
 from pathlib import Path
+from typing import ClassVar
 
 from .events import EventSink, emit, resolve
 from .fsutil import atomic_write_text
@@ -30,6 +31,8 @@ from .writer import (CHAT_JSON, locate_recorded, read_chat_json, retire_previous
 
 def write_manifest(out_dir: Path, provider: str, results: list[dict],
                    started: float) -> Path:
+    """Record a run in `<provider folder>/.reclaim_manifest.json`: its totals
+    and one entry per chat. The status view reads it."""
     out_dir = Path(out_dir)
     manifest = {
         'provider': provider,
@@ -88,7 +91,7 @@ def rebuild_records(out_dir: Path) -> dict:
 class SyncState:
     # One-time renames for providers that changed names (prevents re-downloading
     # the whole archive on the first update run after the rename).
-    LEGACY = {'googleaistudio': 'aistudio'}
+    LEGACY: ClassVar[dict[str, str]] = {'googleaistudio': 'aistudio'}
 
     def __init__(self, out_dir: Path, provider: str, migrate: bool = True):
         """`migrate=False` opens the records read-only, for previews."""
@@ -104,6 +107,8 @@ class SyncState:
         self._state = self._load()
 
     def _load(self) -> dict:
+        """The records on disk; rebuilt from the chat folders when the file
+        is missing, unreadable or damaged (a damaged file is kept aside)."""
         try:
             text = self.path.read_text(encoding='utf-8')
         except FileNotFoundError:
@@ -119,6 +124,8 @@ class SyncState:
         return data
 
     def _rebuild(self, problem: str, *, move_aside: bool) -> dict:
+        """Records rebuilt from the chat.json files, reported as a warning.
+        Read-only states (previews) never write or move anything."""
         records = rebuild_records(self.path.parent)
         if not records and not move_aside:
             return records  # a provider folder without saved chats yet

@@ -17,6 +17,7 @@ images and citations are v1 gaps (documented below).
 
 from __future__ import annotations
 
+import contextlib
 import re
 import time
 from types import SimpleNamespace
@@ -73,10 +74,8 @@ def extract_tokens(html: str) -> dict:
 
 
 def ensure_logged_in(page):
-    try:
+    with contextlib.suppress(Exception):
         page.goto(APP_URL, wait_until='domcontentloaded', timeout=60000)
-    except Exception:
-        pass
     time.sleep(3)
     browser.interactive_login(page, 'accounts.google.com',
                               browser.on_host('gemini.google.com'), 'Google',
@@ -89,10 +88,8 @@ def init_session(page) -> dict:
     time.sleep(2)
     tokens = extract_tokens(page.content())
     if 'SNlM0e' not in tokens:
-        try:
+        with contextlib.suppress(Exception):
             page.reload(wait_until='domcontentloaded', timeout=60000)
-        except Exception:
-            pass
         time.sleep(3)
         tokens = extract_tokens(page.content())
     if 'SNlM0e' not in tokens:
@@ -128,58 +125,52 @@ def rpc_call(page, tokens: dict, rpcid: str, payload, reqid: int,
 # ---------------------------------------------------------------------------
 # Parsing (pure, fixture-tested; defensive against field drift)
 # ---------------------------------------------------------------------------
+def _is_list_row(row: list) -> bool:
+    """A chat in the chat list: [chatId, title, ...]."""
+    return len(row) > 1 and isinstance(row[0], str) and bool(row[0]) and isinstance(row[1], str)
+
+
+def _is_turn_row(row: list) -> bool:
+    """A turn of a chat: [ids, ?, user prompt section, answer candidates, ...]."""
+    return (isinstance(row[0], (str, list)) and len(row) > 3
+            and isinstance(row[2], list) and isinstance(row[3], list))
+
+
+def _known_places(data) -> list:
+    """Where the rows usually are: data[2], data[0], then data[0][1] and
+    data[0][0] (older nested layouts)."""
+    if not isinstance(data, list) or not data:
+        return []
+    places = [data[2]] if len(data) > 2 else []
+    places.append(data[0])
+    if isinstance(data[0], list):
+        places += [data[0][i] for i in (1, 0) if len(data[0]) > i]
+    return places
+
+
+def _lists_within(value):
+    """Every list inside `value`, depth first, the outer one first."""
+    if isinstance(value, list):
+        yield value
+        for item in value:
+            yield from _lists_within(item)
+
+
 def _find_rows(data, want_user: bool = False):
     """Locate the rows/turns array in a decoded batchexecute payload.
 
-    Documented candidate paths first (data[2], data[0], legacy nested rows),
-    then a recursive search for the deepest array whose elements look
-    like the expected rows. Returns the best candidate or [].
+    Looks in the known places first, then everywhere, and returns the array
+    with the most elements shaped like the wanted rows (the first one found
+    on a tie), or [] when none is.
     """
-    candidates = []
-    if isinstance(data, list):
-        if len(data) > 2:
-            candidates.append(data[2])
-        if data:
-            candidates.append(data[0])
-    if isinstance(data, list) and data and isinstance(data[0], list):
-        for i in (1, 0):
-            if len(data[0]) > i:
-                candidates.append(data[0][i])
-
-    def score(cand):
-        if not isinstance(cand, list) or not cand:
-            return -1
-        n_ok = 0
-        for el in cand:
-            if not isinstance(el, list) or not el:
-                continue
-            if want_user:
-                # read rows: turn[2] user prompt array + turn[3] candidates
-                if (isinstance(el[0], (str, list)) and len(el) > 3
-                        and isinstance(el[2], list)
-                        and isinstance(el[3], list)):
-                    n_ok += 1
-            else:
-                # list rows: [chatId, title, ...]
-                if (len(el) > 1 and isinstance(el[0], str) and el[0]
-                        and isinstance(el[1], str)):
-                    n_ok += 1
-        return n_ok
-
-    best, best_n = None, 0
-
-    def walk(o):
-        nonlocal best, best_n
-        if isinstance(o, list):
-            n = score(o)
-            if n > best_n:
-                best, best_n = o, n
-            for el in o:
-                walk(el)
-
-    for c in [*candidates, data]:
-        walk(c)
-    return best if best is not None else []
+    looks_like = _is_turn_row if want_user else _is_list_row
+    best, best_count = [], 0
+    for place in [*_known_places(data), data]:
+        for candidate in _lists_within(place):
+            count = sum(1 for row in candidate if isinstance(row, list) and row and looks_like(row))
+            if count > best_count:
+                best, best_count = candidate, count
+    return best
 
 
 def parse_list(data) -> list[dict]:
@@ -206,6 +197,57 @@ def parse_list(data) -> list[dict]:
     return out
 
 
+def _unwrap(value) -> str:
+    """The text inside list wrappers: ['...'] or [['...']]."""
+    while isinstance(value, list) and value:
+        value = value[0]
+    return value if isinstance(value, str) else ''
+
+
+def _turn_time(row):
+    """A turn's epoch seconds, when the row carries them (at [1] or [4])."""
+    for index in (1, 4):
+        if len(row) > index and isinstance(row[index], list) and row[index]:
+            value = row[index][0]
+            if isinstance(value, (int, float)) and value > 1e9:
+                return value
+    return None
+
+
+def _oldest_first(rows: list) -> list:
+    """Turns in reading order: by time when every turn has one; otherwise the
+    current API, whose ids are [conversation_id, reply_id], lists the newest
+    first."""
+    if rows and all(_turn_time(row) is not None for row in rows):
+        return sorted(rows, key=lambda row: _turn_time(row) or 0)
+    if rows and all(isinstance(row[0], list) for row in rows):
+        return list(reversed(rows))
+    return rows
+
+
+def _turn_entries(turn: list) -> list[dict]:
+    """A turn's user prompt and the model's answer (its first candidate)."""
+    user_text = _unwrap(turn[2][0]) if isinstance(turn[2], list) and turn[2] else ''
+    answers = turn[3]
+    candidate = (answers[0][0] if isinstance(answers, list) and answers
+                 and isinstance(answers[0], list) and answers[0] else None)
+    model_text, thought = '', False
+    if isinstance(candidate, list):
+        model_text = _unwrap(candidate[1]) if len(candidate) > 1 else ''
+        # the thoughts section: candidate[37], in some captures turn[37]
+        thought = bool(candidate[37]) if len(candidate) > 37 else (
+            len(turn) > 37 and bool(turn[37]))
+    entries = []
+    if user_text.strip():
+        entries.append({'role': 'user', 'text': user_text, 'thought': False})
+    if model_text.strip():
+        entries.append({'role': 'model', 'text': model_text,
+                        'thought': False, 'had_thoughts': thought})
+    elif thought:
+        entries.append({'role': 'model', 'text': '', 'thought': True})
+    return entries
+
+
 def parse_read(data) -> list[dict]:
     """hNvQHb result -> [{role, text, thought}] pairs.
 
@@ -215,49 +257,10 @@ def parse_read(data) -> list[dict]:
     list-wrapped (['...']); unwrapped defensively. Citations
     (candidate[2]) and generated/uploaded images are v1 gaps.
     """
-    def _unwrap(v) -> str:
-        while isinstance(v, list) and v:
-            v = v[0]
-        return v if isinstance(v, str) else ''
-
-    rows = _find_rows(data, want_user=True)
-    def timestamp(row):
-        for index in (1, 4):
-            if len(row) > index and isinstance(row[index], list) and row[index]:
-                value = row[index][0]
-                if isinstance(value, (int, float)) and value > 1e9:
-                    return value
-        return None
-
-    if rows and all(timestamp(row) is not None for row in rows):
-        rows = sorted(rows, key=lambda row: timestamp(row) or 0)
-    elif rows and all(isinstance(row[0], list) for row in rows):
-        rows = list(reversed(rows))  # current API metadata [conversation_id, reply_id]
     out = []
-    for t in rows:
-        if not isinstance(t, list) or len(t) < 4:
-            continue
-        user_text = _unwrap(t[2][0]) if isinstance(t[2], list) and t[2] else ''
-        cand = None
-        if isinstance(t[3], list) and t[3] and isinstance(t[3][0], list) \
-                and t[3][0]:
-            cand = t[3][0][0]
-        model_text = ''
-        thought = False
-        if isinstance(cand, list):
-            if len(cand) > 1:
-                model_text = _unwrap(cand[1])
-            if len(cand) > 37:
-                thought = bool(cand[37])
-            elif len(t) > 37:
-                thought = bool(t[37])
-        if user_text.strip():
-            out.append({'role': 'user', 'text': user_text, 'thought': False})
-        if model_text.strip():
-            out.append({'role': 'model', 'text': model_text,
-                        'thought': False, 'had_thoughts': thought})
-        elif thought:
-            out.append({'role': 'model', 'text': '', 'thought': True})
+    for turn in _oldest_first(_find_rows(data, want_user=True)):
+        if isinstance(turn, list) and len(turn) >= 4:
+            out += _turn_entries(turn)
     return out
 
 
@@ -274,6 +277,8 @@ def read_to_chat(parsed: list[dict], chat_id: str, source_url: str,
 # Listing + fetching
 # ---------------------------------------------------------------------------
 def list_chats(page, tokens: dict, reqid: int) -> tuple[list[dict], int]:
+    """Every chat through the list RPC, paged with its cursor. Returns the
+    chats and the next request id (Gemini expects increasing ids)."""
     chats, cursor = [], None
     seen_ids, seen_cursors = set(), set()
     while True:
@@ -301,6 +306,9 @@ def list_chats(page, tokens: dict, reqid: int) -> tuple[list[dict], int]:
 
 def fetch_chat(page, tokens: dict, chat_id: str, reqid: int,
                title: str = '') -> tuple[Chat, list, int]:
+    """One chat through the read RPC: (chat, raw payload, next request id).
+    A reply with MAX_TURNS turns may be cut short, so it is refused rather
+    than saved incomplete."""
     payload = [chat_id, MAX_TURNS]
     status, text = rpc_call(page, tokens, READ_RPC, payload, reqid)
     if status != 200:

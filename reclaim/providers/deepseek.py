@@ -25,7 +25,7 @@ from ..core.model import Attachment, Chat, Turn
 
 BASE_URL = 'https://chat.deepseek.com/'
 PROVIDER = 'deepseek'
-_IMG_EXTS = re.compile(r'\.(png|jpe?g|gif|webp)$', re.I)
+_IMG_EXTS = re.compile(r'\.(png|jpe?g|gif|webp)$', re.IGNORECASE)
 
 
 # ---------------------------------------------------------------------------
@@ -52,6 +52,8 @@ _GET_JS = """async (args) => {
 
 
 def ensure_logged_in(page):
+    """Open DeepSeek and, when the page holds no login token, ask the user to
+    log in in the browser window and wait for one."""
     page.goto(BASE_URL, wait_until='domcontentloaded', timeout=60000)
     time.sleep(3)
     if page.evaluate(_HAS_TOKEN_JS):
@@ -68,6 +70,8 @@ def ensure_logged_in(page):
 
 
 def _api_get(page, path: str, params: dict | None = None) -> dict:
+    """GET a history API path from the page and return its biz_data, raising
+    when the envelope reports an error (code or biz_code other than 0)."""
     url = BASE_URL + 'api/v0/' + path
     if params:
         url += '?' + urlencode(params)
@@ -187,6 +191,66 @@ def replace_citations(text: str, citemap: dict) -> str:
     return re.sub(r'\[citation:(\d+)\]', replacer, text)
 
 
+def _active_chain(messages: list[dict], leaf) -> list[dict]:
+    """The branch the user sees: from the current message back to the root
+    through parent ids, oldest first. All messages when the leaf is unknown."""
+    by_id = {m['message_id']: m for m in messages if m.get('message_id') is not None}
+    if leaf is None or leaf not in by_id:
+        return messages
+    chain, seen = [], set()
+    while leaf is not None and leaf in by_id:
+        if leaf in seen:
+            raise RuntimeError('DeepSeek message tree contains a cycle')
+        seen.add(leaf)
+        chain.append(by_id[leaf])
+        leaf = by_id[leaf].get('parent_id')
+    return list(reversed(chain))
+
+
+def _uploads(fragment: dict) -> list[Attachment]:
+    """A FILE fragment's uploads, to download later from their signed path."""
+    attachments = []
+    for info in fragment.get('files', []) or []:
+        name = info.get('file_name') or 'file'
+        signed = info.get('signed_path', '')
+        size = info.get('file_size')
+        attachments.append(Attachment(
+            filename=name,
+            kind='image' if _IMG_EXTS.search(name) else 'document',
+            data=None,
+            source_url=((signed if signed.startswith('http')
+                         else BASE_URL.rstrip('/') + signed) if signed else ''),
+            description=name + (f' ({size:,} bytes)' if size else ''),
+        ))
+    return attachments
+
+
+def _user_turn(msg: dict) -> Turn | None:
+    text, attachments = '', []
+    for fragment in msg.get('fragments') or []:
+        if fragment.get('type') == 'REQUEST' and fragment.get('content'):
+            text = fragment['content'].strip()
+        elif fragment.get('type') == 'FILE':
+            attachments += _uploads(fragment)
+    if not text and isinstance(msg.get('content'), str):
+        text = msg['content']  # legacy cached records
+    return Turn(role='user', text=text, attachments=attachments) if text or attachments else None
+
+
+def _assistant_turn(msg: dict, citemap: dict) -> Turn | None:
+    fragments = msg.get('fragments') or []
+    text = '\n\n'.join(fragment.get('content') or '' for fragment in fragments
+                        if fragment.get('type') == 'RESPONSE').strip()
+    if not text and isinstance(msg.get('content'), str):
+        text = msg['content']
+    thought = bool(msg.get('thinking_content')) or any(
+        fragment.get('type') == 'THINK' for fragment in fragments)
+    if not text and not thought:
+        return None
+    return Turn(role='model', text=replace_citations(text, citemap),
+                thought=thought and not text, had_thoughts=thought)
+
+
 def record_to_chat(record: dict) -> Chat:
     """Convert a history response or legacy cached record into a canonical Chat.
 
@@ -196,63 +260,17 @@ def record_to_chat(record: dict) -> Chat:
     data = record.get('data', record)
     data = data.get('biz_data', data)
     session = data.get('chat_session', {})
-    messages = data.get('chat_messages', [])
-    leaf = session.get('current_message_id')
-    by_id = {m['message_id']: m for m in messages if m.get('message_id') is not None}
-    if leaf is not None and leaf in by_id:
-        chain, seen = [], set()
-        while leaf is not None and leaf in by_id:
-            if leaf in seen:
-                raise RuntimeError('DeepSeek message tree contains a cycle')
-            seen.add(leaf)
-            message = by_id[leaf]
-            chain.append(message)
-            leaf = message.get('parent_id')
-        messages = list(reversed(chain))
-
-    all_fragments = []
-    for msg in messages:
-        all_fragments.extend(msg.get('fragments') or [])
-    citemap = build_citation_map(all_fragments)
-
+    messages = _active_chain(data.get('chat_messages', []), session.get('current_message_id'))
+    # citations are numbered across the whole chat
+    citemap = build_citation_map([fragment for msg in messages
+                                  for fragment in msg.get('fragments') or []])
     turns = []
     for msg in messages:
         role = msg.get('role', '').upper()
-        fragments = msg.get('fragments') or []
-        if role == 'USER':
-            text, atts = '', []
-            for frag in fragments:
-                if frag.get('type') == 'REQUEST' and frag.get('content'):
-                    text = frag['content'].strip()
-                elif frag.get('type') == 'FILE':
-                    for finfo in frag.get('files', []) or []:
-                        name = finfo.get('file_name') or 'file'
-                        signed = finfo.get('signed_path', '')
-                        size = finfo.get('file_size')
-                        desc = name + (f' ({size:,} bytes)' if size else '')
-                        atts.append(Attachment(
-                            filename=name,
-                            kind='image' if _IMG_EXTS.search(name) else 'document',
-                            data=None,
-                            source_url=((signed if signed.startswith('http')
-                                         else BASE_URL.rstrip('/') + signed) if signed else ''),
-                            description=desc,
-                        ))
-            if not text and isinstance(msg.get('content'), str):
-                text = msg['content']
-            if text or atts:
-                turns.append(Turn(role='user', text=text, attachments=atts))
-        elif role == 'ASSISTANT':
-            text = '\n\n'.join(frag.get('content') or '' for frag in fragments
-                                 if frag.get('type') == 'RESPONSE').strip()
-            if not text and isinstance(msg.get('content'), str):
-                text = msg['content']
-            thought = bool(msg.get('thinking_content')) or any(
-                frag.get('type') == 'THINK' for frag in fragments)
-            if text or thought:
-                turns.append(Turn(role='model', text=replace_citations(text, citemap),
-                                  thought=thought and not text, had_thoughts=thought))
-
+        turn = (_user_turn(msg) if role == 'USER' else
+                _assistant_turn(msg, citemap) if role == 'ASSISTANT' else None)
+        if turn is not None:
+            turns.append(turn)
     chat_id = session.get('id', '')
     return Chat(id=chat_id,
                 title=session.get('title', ''),
@@ -323,7 +341,7 @@ class DeepSeek(engine.Provider):
                                updated_at=item.get('updated_at'), data=item) for item in summaries]
 
     def from_url(self, s, url: str) -> engine.ChatRef:
-        return engine.ChatRef(id=url.split('/a/chat/s/')[-1].split('?')[0][:40])
+        return engine.ChatRef(id=url.rsplit('/a/chat/s/', maxsplit=1)[-1].split('?', maxsplit=1)[0][:40])
 
     def fetch(self, s, ref: engine.ChatRef) -> engine.Fetched:
         record = fetch_record(s.page, ref.id)

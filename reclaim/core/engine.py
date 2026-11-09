@@ -73,6 +73,7 @@ class Provider:
 
 
 def build_parser(provider: Provider) -> argparse.ArgumentParser:
+    """The options every provider command accepts (`reclaim <provider> --help`)."""
     ap = argparse.ArgumentParser(prog=f'reclaim {provider.name}',
                                  description=provider.description)
     ap.add_argument('title', nargs='?',
@@ -127,6 +128,7 @@ def run_session(provider: Provider, page, args, sink: EventSink | None = None) -
 
 
 def _session(provider: Provider, page, args, sink: EventSink) -> int:
+    """Log in, list or take the URL, filter, then list, preview or download."""
     name = provider.name
     out_dir = Path(args.output_dir)
     started = time.time()

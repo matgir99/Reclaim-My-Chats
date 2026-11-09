@@ -138,6 +138,10 @@ class ArchiveController:
 
     def _execute(self, chosen: list[str], parsed: dict, mode: str,
                  sink: EventSink | None, roots: set[Path], *, readonly: bool) -> RunSummary:
+        """The checks every run passes, in this order: open the log and route
+        the events; check each database folder; lock the login data folder
+        (one browser per profile); for runs that write, lock each database
+        and only then mark one made by an earlier version. Then run."""
         label = f'{mode} {", ".join(chosen)}'
         with ExitStack() as stack:
             sink = stack.enter_context(_reporting(self.root, label, sink))
@@ -157,7 +161,8 @@ class ArchiveController:
 
     def _run_providers(self, chosen: list[str], parsed: dict, mode: str,
                        sink: EventSink, profile: Path) -> RunSummary:
-        from playwright.sync_api import sync_playwright
+        """All chosen providers in one browser window, one after another."""
+        from playwright.sync_api import sync_playwright  # imported only when a run starts
 
         emit(sink, 'run_started', total=len(chosen), message=mode)
         codes: list[tuple[str, int]] = []
@@ -176,6 +181,9 @@ class ArchiveController:
 
     def _run_one(self, name: str, args, mode: str, sink: EventSink,
                  page, index: int, total: int) -> int:
+        """One provider. Its failure is reported and becomes its exit code (2),
+        so the next provider still runs; a run that may write also records
+        this attempt for the status view (`.reclaim_last_attempt.json`)."""
         started = time.time()
         emit(sink, 'provider_started', name, current=index, total=total)
         error = None

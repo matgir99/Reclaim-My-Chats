@@ -12,6 +12,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from typing import ClassVar
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -554,7 +555,7 @@ class TestStatus(unittest.TestCase):
 class TestConfig(unittest.TestCase):
     """core/config.py — .reclaim.json provider selection (offline)."""
 
-    ALL = ['googleaistudio', 'deepseek', 'kimi', 'chatgpt']
+    ALL: ClassVar[list[str]] = ['googleaistudio', 'deepseek', 'kimi', 'chatgpt']
 
     def setUp(self):
         self.root = Path(tempfile.mkdtemp())

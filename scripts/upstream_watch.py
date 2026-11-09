@@ -29,10 +29,7 @@ PIN = re.compile(r'https://github\.com/([\w.-]+/[\w.-]+)/(?:tree|blob)/([0-9a-f]
 def pinned(text: str) -> dict[str, str]:
     """The last reviewed revision of each project. A later mention (a newer
     review section) replaces an earlier one."""
-    found: dict[str, str] = {}
-    for repo, sha in PIN.findall(text):
-        found[repo] = sha
-    return found
+    return dict(PIN.findall(text))
 
 
 def _api(path: str, token: str | None) -> dict:
@@ -60,9 +57,9 @@ def changes(pins: dict[str, str], token: str | None) -> list[dict]:
 
 
 def report(rows: list[dict]) -> str:
-    lines = ['These reference projects have commits after the revision last reviewed in '
-             '`docs/UPSTREAM_REVIEW.md`. Check the changes for new formats, endpoints or '
-             'fixes that apply here, then record the reviewed revisions in that document.',
+    lines = [('These reference projects have commits after the revision last reviewed in '
+              '`docs/UPSTREAM_REVIEW.md`. Check the changes for new formats, endpoints or '
+              'fixes that apply here, then record the reviewed revisions in that document.'),
              '', '| Project | Reviewed | New commits | Latest | Changes |',
              '|:--|:--|--:|:--|:--|']
     for row in rows:

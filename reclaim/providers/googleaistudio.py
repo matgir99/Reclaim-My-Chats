@@ -12,6 +12,7 @@ Turn field map (validated against raw dumps):
 
 from __future__ import annotations
 
+import contextlib
 import base64
 import json
 import re
@@ -73,10 +74,8 @@ def init_replay(page):
         if url.scheme == 'https' and url.hostname == 'alkalimakersuite-pa.clients6.google.com':
             k = req.headers.get('x-goog-api-key')
             if k:
-                try:
+                with contextlib.suppress(Exception):
                     page.evaluate("(k) => { window.__msApiKey = k; }", k)
-                except Exception:
-                    pass
     page.on('request', grab_key)
     page.goto(LIBRARY_URL, wait_until='domcontentloaded', timeout=60000)
     time.sleep(2)
@@ -119,6 +118,7 @@ class DriveClient:
 
     @staticmethod
     def _find_token(o):
+        """The first OAuth access token (ya29.…) anywhere in a JSON value."""
         if isinstance(o, str) and o.startswith('ya29.') and 50 < len(o) < 600:
             return o
         if isinstance(o, list):
@@ -169,44 +169,38 @@ class DriveClient:
 # ---------------------------------------------------------------------------
 # RPC parsing (raw JSON -> entries; also used by offline mode and tests)
 # ---------------------------------------------------------------------------
+def _rpc_entry(turn: list) -> dict | None:
+    """One turn of a ResolveDriveResource response; None for other roles
+    and empty turns. Positions: text [0], Drive file ids [1], an inline
+    image [12][1] (base64), role [8], thought flag [19], error [28]."""
+    role = turn[8] if isinstance(turn[8], str) else 'unknown'
+    if role not in ('user', 'model'):
+        return None
+    text = turn[0] if isinstance(turn[0], str) else ''
+    images = []
+    inline = turn[12] if len(turn) > 12 else None
+    if isinstance(inline, list) and len(inline) > 1 and isinstance(inline[1], str) \
+            and len(inline[1]) > 500:
+        with contextlib.suppress(Exception):
+            images.append(base64.b64decode(inline[1]))
+    files = turn[1] if isinstance(turn[1], list) else []
+    attachments = [v for v in files if isinstance(v, str) and len(v) > 20]
+    if not text.strip() and not images and not attachments:
+        return None
+    error = turn[28] if len(turn) > 28 and isinstance(turn[28], str) else ''
+    return {'role': role, 'text': text, 'thought': bool(turn[19]),
+            'images': images, 'attachments': attachments, 'error': error or None}
+
+
 def parse_rpc(data) -> dict:
     """Parse ResolveDriveResource JSON into title + raw entries."""
     try:
         inner = data[0]
         title = inner[4][0] if len(inner) > 4 and inner[4] and inner[4][0] else ''
-        entries = []
-        for group in inner[13] if len(inner) > 13 else []:
-            if not isinstance(group, list):
-                continue
-            for turn in group:
-                if not isinstance(turn, list) or len(turn) < 20:
-                    continue
-                role = turn[8] if isinstance(turn[8], str) else 'unknown'
-                if role not in ('user', 'model'):
-                    continue
-                text = turn[0] if isinstance(turn[0], str) else ''
-                thought = bool(turn[19]) if len(turn) > 19 else False
-                error = turn[28] if len(turn) > 28 and isinstance(turn[28], str) else ''
-
-                images = []
-                f12 = turn[12] if len(turn) > 12 else None
-                if isinstance(f12, list) and len(f12) > 1 and isinstance(f12[1], str) \
-                        and len(f12[1]) > 500:
-                    try:
-                        images.append(base64.b64decode(f12[1]))
-                    except Exception:
-                        pass
-
-                attachments = []
-                f1 = turn[1] if len(turn) > 1 else None
-                if isinstance(f1, list):
-                    attachments = [v for v in f1 if isinstance(v, str) and len(v) > 20]
-
-                if not text.strip() and not images and not attachments:
-                    continue
-                entries.append({'role': role, 'text': text, 'thought': thought,
-                                'images': images, 'attachments': attachments,
-                                'error': error or None})
+        turns = [turn for group in (inner[13] if len(inner) > 13 else [])
+                 if isinstance(group, list)
+                 for turn in group if isinstance(turn, list) and len(turn) >= 20]
+        entries = [entry for entry in map(_rpc_entry, turns) if entry is not None]
         return {'title': title, 'entries': entries}
     except Exception as e:
         return {'title': '', 'entries': [], 'error': str(e)}
@@ -227,7 +221,7 @@ def entries_to_chat(parsed: dict, chat_id: str, source_url: str,
                 data = drive.fetch(fid)
             atts.append(Attachment(
                 filename=name,
-                kind='image' if re.search(r'\.(png|jpe?g|gif|webp)$', name, re.I) else 'document',
+                kind='image' if re.search(r'\.(png|jpe?g|gif|webp)$', name, re.IGNORECASE) else 'document',
                 data=data,
                 source_url=f'https://drive.google.com/file/d/{fid}/view',
             ))
@@ -249,6 +243,8 @@ def ensure_logged_in(page):
 
 
 def get_chat_list(page) -> list[dict]:
+    """Fallback listing: scroll the library page to load every row, then
+    read the chat links from it."""
     emit(None, 'listing', PROVIDER, message='Scanning the library page...')
     for _ in range(35):
         page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
@@ -305,6 +301,8 @@ def list_prompts(page) -> list[dict]:
 # Fallbacks: response interception, then DOM scrape
 # ---------------------------------------------------------------------------
 def intercept_rpc(page, chat_url: str):
+    """Open the chat and capture the ResolveDriveResource response the page
+    itself requests; its parsed entries, or None."""
     rinfo = {}
 
     def _on_response(response):
@@ -335,8 +333,22 @@ def intercept_rpc(page, chat_url: str):
         page.remove_listener('response', _on_response)
 
 
+# Markdown written for tags that only open or close with fixed text.
+_HEADINGS = {f'h{n}': '\n\n' + '#' * n + ' ' for n in range(1, 7)}
+_EMPHASIS = {'b': '**', 'strong': '**', 'i': '*', 'em': '*', 's': '~~', 'del': '~~',
+             'strike': '~~'}
+_OPEN_TEXT = {'p': '\n\n', 'br': '\n', 'blockquote': '\n\n> ', 'hr': '\n\n---\n\n',
+              **_HEADINGS, **_EMPHASIS}
+_CLOSE_TEXT = {**dict.fromkeys(('p', 'blockquote', *_HEADINGS), '\n\n'), **_EMPHASIS}
+
+
 class _HtmlToMd:
-    """Minimal HTML -> Markdown converter for the DOM fallback path."""
+    """Minimal HTML -> Markdown converter for the DOM fallback path.
+
+    Links and <pre> blocks are written as \\x00-delimited markers first and
+    turned into Markdown at the end, once their whole content is known.
+    Unknown tags (including AI Studio's ms-cmark-node wrappers) add nothing.
+    """
     def __init__(self):
         self._r = []
         self._lists = []
@@ -371,24 +383,11 @@ class _HtmlToMd:
 
     def start(self, tag, attrs):
         attrs = dict(attrs)
-        if tag == 'ms-cmark-node':
-            return
-        if tag == 'p':
-            self._o('\n\n')
-        elif tag == 'br':
-            self._o('\n')
-        elif tag in ('h1', 'h2', 'h3', 'h4', 'h5', 'h6'):
-            self._o('\n\n' + '#' * int(tag[1]) + ' ')
-        elif tag in ('b', 'strong'):
-            self._o('**')
-        elif tag in ('i', 'em'):
-            self._o('*')
-        elif tag in ('s', 'del', 'strike'):
-            self._o('~~')
-        elif tag == 'code':
-            if not self._pre:
-                self._code = True
-                self._o('`')
+        if tag in _OPEN_TEXT:
+            self._o(_OPEN_TEXT[tag])
+        elif tag == 'code' and not self._pre:  # inline code; <pre><code> stays raw
+            self._code = True
+            self._o('`')
         elif tag == 'pre':
             self._pre = True
             self._o('\x00P\x00')
@@ -396,38 +395,28 @@ class _HtmlToMd:
             self._o('\x00L\x00' + attrs.get('href', '') + '\x00T\x00')
         elif tag == 'img':
             self._o(f"![{attrs.get('alt', '')}]({attrs.get('src', '')})")
-        elif tag == 'ul':
-            self._lists.append(('ul', 0))
+        elif tag in ('ul', 'ol'):
+            # ('ol', n): n is the number of the last item written
+            first = int(attrs.get('start', '1')) if tag == 'ol' else 1
+            self._lists.append((tag, first - 1))
             self._o('\n\n')
-        elif tag == 'ol':
-            self._lists.append(('ol', int(attrs.get('start', '1')) - 1))
-            self._o('\n\n')
-        elif tag == 'li':
-            if self._lists:
-                kind, idx = self._lists[-1]
-                if kind == 'ul':
-                    self._o('\n- ')
-                else:
-                    self._lists[-1] = (kind, idx + 1)
-                    self._o(f'\n{idx + 1}. ')
-        elif tag == 'blockquote':
-            self._o('\n\n> ')
-        elif tag == 'hr':
-            self._o('\n\n---\n\n')
+        elif tag == 'li' and self._lists:
+            self._list_item()
+
+    def _list_item(self):
+        kind, number = self._lists[-1]
+        if kind == 'ul':
+            self._o('\n- ')
+        else:
+            self._lists[-1] = (kind, number + 1)
+            self._o(f'\n{number + 1}. ')
 
     def end(self, tag):
-        if tag == 'ms-cmark-node':
-            return
-        if tag in ('b', 'strong'):
-            self._o('**')
-        elif tag in ('i', 'em'):
-            self._o('*')
-        elif tag in ('s', 'del', 'strike'):
-            self._o('~~')
-        elif tag == 'code':
-            if not self._pre:
-                self._code = False
-                self._o('`')
+        if tag in _CLOSE_TEXT:
+            self._o(_CLOSE_TEXT[tag])
+        elif tag == 'code' and not self._pre:
+            self._code = False
+            self._o('`')
         elif tag == 'pre':
             self._pre = False
             self._o('\x00Q\x00')
@@ -436,8 +425,6 @@ class _HtmlToMd:
         elif tag in ('ul', 'ol'):
             if self._lists:
                 self._lists.pop()
-            self._o('\n\n')
-        elif tag in ('p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote'):
             self._o('\n\n')
 
     def data(self, d):
@@ -462,10 +449,8 @@ class _P(HTMLParser):
 def extract_dom_fallback(page) -> dict:
     """Last-resort DOM scrape -> entries (text via cmark HTML, images as
     screenshot bytes). Thought flags via positional heuristic."""
-    try:
+    with contextlib.suppress(Exception):
         page.wait_for_selector('.chat-session-content .chat-turn-container', timeout=30000)
-    except Exception:
-        pass
     time.sleep(3)
     n = page.evaluate("""() => {
         const s = document.querySelector('.chat-session-content');
@@ -502,10 +487,8 @@ def extract_dom_fallback(page) -> dict:
                 return t?.querySelector('ms-image-chunk');
             }""", i)
             if handle:
-                try:
+                with contextlib.suppress(Exception):
                     images.append(handle.screenshot())
-                except Exception:
-                    pass
                 handle.dispose()
         md = _HtmlToMd().convert(r.get('html', ''))
         if (md and len(md) > 5) or images:
@@ -550,10 +533,14 @@ class GoogleAIStudio(engine.Provider):
                                updated_at=c.get('updated_at'), data=c) for c in chats]
 
     def from_url(self, s, url: str) -> engine.ChatRef:
-        cid = url.split('/prompts/')[-1].split('?')[0].split('#')[0]
-        return engine.ChatRef(id=cid, data={'id': cid, 'url': url.split('?')[0], 'title': ''})
+        cid = url.rsplit('/prompts/', maxsplit=1)[-1].split('?', maxsplit=1)[0].split('#', maxsplit=1)[0]
+        return engine.ChatRef(id=cid, data={'id': cid, 'url': url.split('?', maxsplit=1)[0], 'title': ''})
 
     def fetch(self, s, ref: engine.ChatRef) -> engine.Fetched:
+        """Three ways to read a chat, each tried when the previous one returns
+        nothing: the RPC called directly ('rpc', also saved as raw.json), the
+        RPC captured while the page loads the chat ('intercept'), and the page
+        itself ('dom'). The manifest records which one worked."""
         url = (ref.data or {}).get('url') or f'https://aistudio.google.com/prompts/{ref.id}'
         status, text = rpc_call(s.page, 'ResolveDriveResource', [ref.id])
         parsed = parse_rpc(json.loads(text)) if status == 200 else None

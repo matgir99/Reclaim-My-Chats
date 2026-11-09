@@ -38,6 +38,12 @@ def rate_limit_wait(retry_after, index: int) -> float:
     return min(max(seconds, 1.0), MAX_RATE_LIMIT_WAIT)
 
 
+def _backoff(attempt: int, retries: int) -> None:
+    """A short pause before the next attempt (2 s, then 4 s...), none after the last."""
+    if attempt < retries:
+        time.sleep(2 * attempt)
+
+
 def send(call: Callable[[], dict], *, what: str, retries: int = 3,
          give_back: tuple[int, ...] = (), return_errors: bool = False,
          auth_retries: int = 0) -> dict:
@@ -45,9 +51,13 @@ def send(call: Callable[[], dict], *, what: str, retries: int = 3,
 
     `give_back` lists statuses the caller handles itself (for example a 404
     meaning "deleted"). `return_errors` returns every final response instead
-    of raising, for callers that fall back to another method. `auth_retries`
+    of raising, for callers that fall back to another method; a service that
+    keeps rate limiting still raises, since a fallback would be limited too. `auth_retries`
     allows a few retries of 401/403 after a short pause, for services whose
-    page finishes setting up its credentials after loading."""
+    page finishes setting up its credentials after loading.
+
+    Three separate budgets: `retries` for failed requests and server errors,
+    RATE_LIMIT_WAITS for 429s, and `auth_retries` for 401/403."""
     last = 'no response'
     attempt = limited = auth = 0
     while attempt < retries:
@@ -56,36 +66,31 @@ def send(call: Callable[[], dict], *, what: str, retries: int = 3,
         except Exception as exc:  # a request that failed inside the page
             last = str(exc)
             attempt += 1
-            if attempt < retries:
-                time.sleep(2 * attempt)
+            _backoff(attempt, retries)
             continue
         status = response.get('status')
         if status == 200 or status in give_back:
             return response
-        if status in (401, 403):
-            if auth < auth_retries:
-                auth += 1
-                time.sleep(2)
-                continue
-            if return_errors:
-                return response
-            raise AuthError(f'{what}: HTTP {status}, the login was refused. '
-                            'Log in again and retry.')
-        if status == 429:
-            last = 'HTTP 429: rate limited by the service; retry later'
-            if limited == len(RATE_LIMIT_WAITS):
-                break
+        if status in (401, 403) and auth < auth_retries:
+            auth += 1
+            time.sleep(2)
+            continue
+        if status == 429 and limited < len(RATE_LIMIT_WAITS):
             time.sleep(rate_limit_wait(response.get('retryAfter'), limited))
             limited += 1
             continue
+        if status == 429:  # every rate-limit wait is used up
+            last = 'HTTP 429: rate limited by the service; retry later'
+            break
+        final = status in (401, 403) or status not in TRANSIENT or attempt + 1 >= retries
+        if final and return_errors:
+            return response
+        if status in (401, 403):
+            raise AuthError(f'{what}: HTTP {status}, the login was refused. '
+                            'Log in again and retry.')
         last = f'HTTP {status}: {str(response.get("text", ""))[:120]}'
-        if status not in TRANSIENT:
-            if return_errors:
-                return response
+        if final:
             break
         attempt += 1
-        if attempt < retries:
-            time.sleep(2 * attempt)
-        elif return_errors:
-            return response
+        _backoff(attempt, retries)
     raise RuntimeError(f'{what} failed: {last}')

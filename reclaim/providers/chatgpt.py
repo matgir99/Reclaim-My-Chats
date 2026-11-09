@@ -18,6 +18,7 @@ are excluded per project policy.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import time
@@ -27,8 +28,7 @@ from urllib.parse import urlencode
 from ..core import browser, engine, retry
 from ..core.events import EventSink
 from ..core.model import Attachment, Chat, Turn
-from .chatgpt_import import (_SKIP_CONTENT_TYPES, _IMG_EXT, _content_parts, _is_tool_call,
-                             _linearize)
+from .chatgpt_import import _IMG_EXT, _content_parts, _linearize, _visible_message
 
 BASE_URL = 'https://chatgpt.com'
 PROVIDER = 'chatgpt'
@@ -81,6 +81,8 @@ def _get(page, token: str, url: str, retries: int = 3) -> dict:
 
 
 def get_session_token(page) -> str:
+    """The API access token of the logged-in browser session (from the page's
+    own /api/auth/session). Raises when there is no logged-in session."""
     data = page.evaluate("""async () => {
         try {
             const r = await fetch('/api/auth/session', {credentials: 'include'});
@@ -100,10 +102,10 @@ def get_session_token(page) -> str:
 
 
 def ensure_logged_in(page):
-    try:
+    """Return an access token, asking the user to log in in the browser
+    window first when the session has none."""
+    with contextlib.suppress(Exception):  # navigation quirks are fine; the token probe decides
         page.goto(BASE_URL, wait_until='domcontentloaded', timeout=60000)
-    except Exception:
-        pass  # navigation quirks are fine; token probe decides
     time.sleep(4)
     try:
         return get_session_token(page)
@@ -125,6 +127,8 @@ def ensure_logged_in(page):
 
 
 def list_conversations(page, token: str) -> list[dict]:
+    """Every conversation outside projects, most recently updated first,
+    paged by offset until an empty page."""
     items, offset = [], 0
     seen = set()
     while True:
@@ -246,24 +250,19 @@ def list_all_conversations(page, token: str) -> list[dict]:
 _ASSET_RE = re.compile(r'(?:file-service|sediment)://(file[-_][A-Za-z0-9-]+)')
 
 
+def _uploaded_ids(meta: dict) -> list[str]:
+    """Files the user attached to the message (metadata.attachments)."""
+    return [a['id'] for a in meta.get('attachments') or []
+            if isinstance(a, dict) and isinstance(a.get('id'), str)
+            and re.fullmatch(r'file[-_][A-Za-z0-9-]+', a['id'])]
+
+
 def _node_to_turn(node: dict) -> tuple[Turn | None, list[str]]:
     """Convert one mapping node. Returns (turn, [asset file ids])."""
-    msg = node.get('message')
-    if not msg:
+    visible = _visible_message(node)
+    if visible is None:
         return None, []
-    meta = msg.get('metadata') or {}
-    if meta.get('is_visually_hidden_from_conversation') or meta.get('is_thinking_preamble_message'):
-        return None, []
-    if _is_tool_call(msg):
-        return None, []
-    role = (msg.get('author') or {}).get('role', '')
-    if role not in ('user', 'assistant'):
-        return None, []
-    content = msg.get('content') or {}
-    ctype = content.get('content_type', '')
-    if ctype in _SKIP_CONTENT_TYPES:
-        return None, []
-
+    msg, role = visible
     texts, asset_ids = [], []
     for part in _content_parts(msg):
         if isinstance(part, str):
@@ -276,17 +275,11 @@ def _node_to_turn(node: dict) -> tuple[Turn | None, list[str]]:
             elif part.get('text'):
                 texts.append(part['text'])
 
-    for attachment in meta.get('attachments') or []:
-        if isinstance(attachment, dict):
-            fid = attachment.get('id')
-            if isinstance(fid, str) and re.fullmatch(r'file[-_][A-Za-z0-9-]+', fid):
-                asset_ids.append(fid)
-    asset_ids = list(dict.fromkeys(asset_ids))
+    asset_ids = list(dict.fromkeys(asset_ids + _uploaded_ids(msg.get('metadata') or {})))
     text = '\n\n'.join(t for t in texts if t and t.strip())
     if not text.strip() and not asset_ids:
         return None, []
-    turn = Turn(role='user' if role == 'user' else 'model', text=text.strip())
-    return turn, asset_ids
+    return Turn(role=role, text=text.strip()), asset_ids
 
 
 def _download_asset(page, token: str, file_id: str) -> tuple[bytes | None, dict]:
@@ -311,33 +304,38 @@ def _download_asset(page, token: str, file_id: str) -> tuple[bytes | None, dict]
     return None, meta
 
 
+def _add_files(page, token: str, turn: Turn, node: dict, asset_ids: list[str]) -> None:
+    """Download the turn's files: images into turn.images, others as
+    attachments. A file that cannot be downloaded leaves a note in the text."""
+    meta = (node.get('message') or {}).get('metadata') or {}
+    uploads = {a['id']: a for a in meta.get('attachments') or []
+               if isinstance(a, dict) and a.get('id')}
+    for fid in asset_ids:
+        blob, info = _download_asset(page, token, fid)
+        if blob is None:
+            turn.text += '\n\n*[attachment could not be downloaded]*'
+            continue
+        mime = (info.get('mime_type') or '').split(';', 1)[0]
+        if mime.startswith('image/'):
+            turn.images.append(blob)
+            continue
+        # the download's name, else the name the user uploaded it with
+        name = info.get('file_name') or uploads.get(fid, {}).get('name') or f'file_{fid[:12]}'
+        if '.' not in name:
+            name += {'application/pdf': '.pdf'}.get(mime, '')
+        turn.attachments.append(Attachment(
+            filename=name, kind='image' if _IMG_EXT.search(name) else 'document',
+            data=blob, description=name))
+
+
 def fetch_conversation(page, token: str, conv_id: str, title: str = '') -> tuple[Chat, dict]:
     data = _get(page, token, f'{BASE_URL}/backend-api/conversation/{conv_id}')
-    nodes = _linearize(data.get('mapping') or {}, data.get('current_node'))
     turns = []
-    for node in nodes:
+    for node in _linearize(data.get('mapping') or {}, data.get('current_node')):
         turn, asset_ids = _node_to_turn(node)
-        if turn is None:
-            continue
-        uploads = {a['id']: a for a in (((node.get('message') or {}).get('metadata') or {}).get('attachments') or [])
-                   if isinstance(a, dict) and a.get('id')}
-        for fid in asset_ids:
-            blob, meta = _download_asset(page, token, fid)
-            if blob is None:
-                turn.text += '\n\n*[attachment could not be downloaded]*'
-                continue
-            mime = (meta.get('mime_type') or '').split(';')[0]
-            name = meta.get('file_name') or uploads.get(fid, {}).get('name') or f'file_{fid[:12]}'
-            if mime.startswith('image/'):
-                turn.images.append(blob)
-            else:
-                if '.' not in name:
-                    name += {'application/pdf': '.pdf'}.get(mime, '')
-                turn.attachments.append(Attachment(
-                    filename=name,
-                    kind='image' if _IMG_EXT.search(name) else 'document',
-                    data=blob, description=name))
-        turns.append(turn)
+        if turn is not None:
+            _add_files(page, token, turn, node, asset_ids)
+            turns.append(turn)
     chat = Chat(id=conv_id, title=title or data.get('title', '') or '(untitled)',
                 source_url=f'{BASE_URL}/c/{conv_id}', turns=turns, provider=PROVIDER)
     if not chat.visible_turns():

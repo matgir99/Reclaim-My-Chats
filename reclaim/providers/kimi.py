@@ -22,6 +22,7 @@ become thought turns and are omitted from the archive).
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -37,7 +38,7 @@ API = f'{BASE_URL}/apiv2'
 PROVIDER = 'kimi'
 PAGE_SIZE = 50
 MSG_PAGE_SIZE = 1000
-_THINK_HINT = re.compile(r'think|reason', re.I)
+_THINK_HINT = re.compile(r'think|reason', re.IGNORECASE)
 
 _FETCH_JS = """async (args) => {
     const resp = await fetch(args.url, {
@@ -84,7 +85,7 @@ def get_token(page) -> str:
         if len(token) < 30 or ' ' in token or '\n' in token:
             continue
         if not (cand['jwt'] or re.search(r'token|access|jwt|session|auth',
-                                         cand['key'], re.I)):
+                                         cand['key'], re.IGNORECASE)):
             continue
         tried += 1
         try:
@@ -100,10 +101,8 @@ def get_token(page) -> str:
 
 
 def ensure_logged_in(page):
-    try:
+    with contextlib.suppress(Exception):  # navigation quirks are fine; the token probe decides
         page.goto(BASE_URL, wait_until='domcontentloaded', timeout=60000)
-    except Exception:
-        pass  # navigation quirks are fine; token probe decides
     time.sleep(4)
     try:
         return get_token(page)
@@ -125,6 +124,9 @@ def ensure_logged_in(page):
 
 
 def list_chats(page, token: str) -> list[dict]:
+    """Every chat, paged with nextPageToken until a page has none. A
+    repeated token is an error rather than a loop; a chat listed twice is
+    kept once."""
     chats, page_token = [], ''
     seen_tokens, seen_ids = set(), set()
     while True:
@@ -162,39 +164,44 @@ def list_messages(page, token: str, chat_id: str) -> list[dict]:
     return list(reversed(msgs))  # API returns newest-first
 
 
+def _block_text(block: dict) -> str:
+    """A block's text: block.text (a string or {'content': ...}) or block.content."""
+    text = block.get('text')
+    text = (text.get('content') if isinstance(text, dict) else text) or block.get('content') or ''
+    return text if isinstance(text, str) else ''
+
+
+def _block_images(block: dict) -> list[str]:
+    """Best-effort image URLs of a block, whatever key and shape it uses."""
+    urls = []
+    for key in ('image', 'image_url', 'img', 'url'):
+        value = block.get(key)
+        if isinstance(value, dict) and isinstance(value.get('url'), str):
+            urls.append(value['url'])
+        elif isinstance(value, str) and value.startswith('http'):
+            urls.append(value)
+    return urls
+
+
 def _msg_to_turn(msg: dict) -> tuple[Turn | None, list[str]]:
     """Convert one API message. Returns (turn, [image urls])."""
     role_raw = (msg.get('role') or msg.get('sender') or '').lower()
-    role = 'user' if role_raw in ('user', 'human') else 'model'
     if role_raw not in ('user', 'human', 'assistant', 'model'):
         return None, []
-
+    role = 'user' if role_raw in ('user', 'human') else 'model'
     texts, images, thought = [], [], False
-    content = msg.get('content')
-    if isinstance(content, str):
-        texts.append(content)
+    if isinstance(msg.get('content'), str):
+        texts.append(msg['content'])
     elif isinstance(msg.get('text'), str):
         texts.append(msg['text'])
     for block in msg.get('blocks', []) or []:
         if not isinstance(block, dict):
             continue
-        btype = str(block.get('type') or '')
-        if _THINK_HINT.search(btype):
-            thought = True
+        if _THINK_HINT.search(str(block.get('type') or '')):
+            thought = True  # reasoning is not saved, only noted
             continue
-        block_text = block.get('text')
-        text = (block_text.get('content') if isinstance(block_text, dict) else block_text)
-        text = text or block.get('content') or ''
-        if isinstance(text, str) and text:
-            texts.append(text)
-        # best-effort image blocks (url or base64 payloads, various shapes)
-        for key in ('image', 'image_url', 'img', 'url'):
-            v = block.get(key)
-            if isinstance(v, dict) and isinstance(v.get('url'), str):
-                images.append(v['url'])
-            elif isinstance(v, str) and v.startswith('http'):
-                images.append(v)
-
+        texts.append(_block_text(block))
+        images += _block_images(block)
     text = '\n'.join(t for t in texts if t and t.strip()).strip()
     if not text and not images and not thought:
         return None, []

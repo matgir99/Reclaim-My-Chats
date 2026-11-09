@@ -88,8 +88,8 @@ class TestProgressEvents(unittest.TestCase):
                               for e in events], [
                                   ('chat_planned', 'skip (unchanged)', 1, 2),
                                   ('chat_planned', 'fetch (new)', 2, 2),
-                                  ('plan', 'would fetch: 1 (1 new, 0 changed) · '
-                                           'would skip: 1 unchanged', 0, 1),
+                                  ('plan', ('would fetch: 1 (1 new, 0 changed) · '
+                                            'would skip: 1 unchanged'), 0, 1),
                               ])
             self.assertEqual(events[-1].detail, '  - New')
             self.assertEqual(list(root.iterdir()), [])

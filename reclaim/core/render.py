@@ -78,44 +78,62 @@ class TerminalRenderer:
             print(text, file=self.stream or sys.stdout, flush=True)
 
     def text(self, event: ProgressEvent) -> str | None:
-        kind, message = event.kind, event.message
-        title = event.title[:TITLE_WIDTH]
-        if kind == 'provider_started':
-            return f'\n========== {event.provider} ==========' if self.headers else None
+        """The lines for one event, or None when the terminal skips it."""
+        kind = event.kind
         if kind in ('run_started', 'run_completed', 'provider_completed'):
-            return None
-        if kind == 'login_needed':
-            return f'\n{RULE}\n  {message}\n{RULE}\n'
-        if kind == 'downloading':
-            self._started = time.time()
-            return f'\n{RULE}\n  {message}\n{RULE}\n'
-        if kind == 'downloaded':
-            return '\n'.join((f'\n{RULE}', f'  {message}',
-                              *([f'  {event.detail}'] if event.detail else []), RULE))
-        if kind == 'chat_listed':
+            return None  # the command prints its own summary
+        if kind in PER_CHAT or kind == 'chat_completed':
+            return self._chat_line(event)
+        special = {'provider_started': self._heading, 'login_needed': self._banner,
+                   'downloading': self._download_start, 'downloaded': self._download_end,
+                   'error': self._failure, 'warning': self._warning, 'plan': self._plan,
+                   'checked': lambda e: f'{e.provider}: {e.message}'}.get(kind)
+        return special(event) if special else event.message or None
+
+    def _heading(self, event: ProgressEvent) -> str | None:
+        return f'\n========== {event.provider} ==========' if self.headers else None
+
+    @staticmethod
+    def _banner(event: ProgressEvent) -> str:
+        return f'\n{RULE}\n  {event.message}\n{RULE}\n'
+
+    def _download_start(self, event: ProgressEvent) -> str:
+        self._started = time.time()  # for the elapsed time and ETA of --log
+        return self._banner(event)
+
+    @staticmethod
+    def _download_end(event: ProgressEvent) -> str:
+        detail = [f'  {event.detail}'] if event.detail else []
+        return '\n'.join((f'\n{RULE}', f'  {event.message}', *detail, RULE))
+
+    def _chat_line(self, event: ProgressEvent) -> str | None:
+        if event.kind == 'chat_listed':  # --list prints titles in any mode
             return f'{event.current}. {event.title}'
-        if kind == 'chat_started':
-            return (progress(event.current, event.total, self._started)
-                    if self.verbose and event.total else None)
-        if kind in ('chat_skipped', 'chat_planned', 'chat_completed'):
-            if not self.verbose:
-                return None
-            line = f'{_position(event)}{title} -> {message}'
-            return f'{line}\n    {event.detail}' if event.detail else line
-        if kind == 'error':
-            where = (f'{_position(event)}{title} -> ' if event.title
-                     else f'{event.provider}: ' if event.provider else '')
-            line = f'{where}FAILED: {message}'
-            if self.verbose and event.detail:
-                line += '\n' + event.detail.rstrip()
-            return line
-        if kind == 'warning':
-            return f'  warning: {title}: {message}' if title else f'warning: {message}'
-        if kind == 'plan':
-            return message if self.verbose or not event.detail else f'{message}\n{event.detail}'
-        if kind == 'checked':
-            return f'{event.provider}: {message}'
-        return message or None
+        if not self.verbose:
+            return None
+        if event.kind == 'chat_started':
+            return progress(event.current, event.total, self._started) if event.total else None
+        line = f'{_position(event)}{event.title[:TITLE_WIDTH]} -> {event.message}'
+        return f'{line}\n    {event.detail}' if event.detail else line
+
+    def _failure(self, event: ProgressEvent) -> str:
+        where = (f'{_position(event)}{event.title[:TITLE_WIDTH]} -> ' if event.title
+                 else f'{event.provider}: ' if event.provider else '')
+        line = f'{where}FAILED: {event.message}'
+        if self.verbose and event.detail:  # the traceback
+            line += '\n' + event.detail.rstrip()
+        return line
+
+    @staticmethod
+    def _warning(event: ProgressEvent) -> str:
+        title = event.title[:TITLE_WIDTH]
+        return f'  warning: {title}: {event.message}' if title else f'warning: {event.message}'
+
+    def _plan(self, event: ProgressEvent) -> str:
+        # with --log the per-chat lines already show what would be fetched
+        if self.verbose or not event.detail:
+            return event.message
+        return f'{event.message}\n{event.detail}'
 
 
 class LogRenderer:

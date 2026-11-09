@@ -20,6 +20,7 @@ skipped in v1 (known gap — artifacts/research reports live there).
 
 from __future__ import annotations
 
+import contextlib
 import json
 import time
 from types import SimpleNamespace
@@ -68,10 +69,8 @@ def ensure_logged_in(page) -> str:
     # already exists: from about:blank or another provider's page in
     # `reclaim all`, every request fails with "Failed to fetch".
     if urlsplit(page.url).hostname != urlsplit(BASE_URL).hostname:
-        try:
+        with contextlib.suppress(Exception):
             page.goto(BASE_URL, wait_until='domcontentloaded', timeout=60000)
-        except Exception:
-            pass
         time.sleep(4)
     if not _cookies(page).get('sessionKey'):
         timeout = browser.login_timeout()
@@ -97,49 +96,59 @@ def ensure_logged_in(page) -> str:
     return org
 
 
+def _page_rows(data) -> list:
+    """The conversations of one list page: the response itself (offset
+    paging) or its conversations/items/data field (cursor paging)."""
+    rows = data
+    if isinstance(data, dict):
+        rows = next((data[key] for key in ('conversations', 'items', 'data') if key in data), None)
+    if not isinstance(rows, list):
+        raise RuntimeError('unexpected Claude conversation list shape')
+    return rows
+
+
+def _next_cursor(data, seen: set[str]) -> str | None:
+    """The cursor of the next page, None after the last one."""
+    cursor = data.get('nextCursor') or data.get('cursor')
+    if not cursor:
+        return None
+    if not isinstance(cursor, str) or cursor in seen:
+        raise RuntimeError('Claude returned an invalid or repeated conversation cursor')
+    seen.add(cursor)
+    return cursor
+
+
 def list_chats(page, org: str) -> list[dict]:
-    """GET .../chat_conversations, offset-paginated. Normalized items:
-    {'id': uuid, 'title': name, 'updated_at': <ISO string>}."""
-    items, offset, cursor = [], 0, None
-    seen_ids, seen_cursors = set(), set()
+    """GET .../chat_conversations, offset- or cursor-paginated. Normalized
+    items: {'id': uuid, 'title': name, 'updated_at': <ISO string>}.
+
+    Stops with an error rather than looping when a page adds nothing new or
+    a cursor repeats."""
+    items: dict[str, dict] = {}  # by uuid, in listing order
+    offset, cursor, seen_cursors = 0, None, set()
     while True:
         query: dict[str, str | int] = {'limit': LIST_LIMIT}
         query['cursor' if cursor is not None else 'offset'] = cursor if cursor is not None else offset
         data = _get(page, f'{BASE_URL}/api/organizations/{org}'
                           f'/chat_conversations?{urlencode(query)}')
+        rows = _page_rows(data)
+        before = len(items)
+        for row in rows:
+            if not isinstance(row, dict) or not row.get('uuid'):
+                raise RuntimeError('unexpected Claude conversation row')
+            items.setdefault(row['uuid'], {'id': row['uuid'], 'title': row.get('name') or '',
+                                           'updated_at': row.get('updated_at')})
+        if rows and len(items) == before:
+            raise RuntimeError('Claude conversation pagination made no progress')
         cursor_mode = isinstance(data, dict) and any(
             key in data for key in ('conversations', 'items', 'cursor', 'nextCursor'))
-        if isinstance(data, list):
-            batch = data
-        elif isinstance(data, dict):
-            batch = next((data[key] for key in ('conversations', 'items', 'data')
-                          if key in data), None)
-        else:
-            batch = None
-        if not isinstance(batch, list):
-            raise RuntimeError('unexpected Claude conversation list shape')
-        added = 0
-        for it in batch:
-            if not isinstance(it, dict) or not it.get('uuid'):
-                raise RuntimeError('unexpected Claude conversation row')
-            if it['uuid'] in seen_ids:
-                continue
-            seen_ids.add(it['uuid'])
-            items.append({'id': it['uuid'], 'title': it.get('name') or '',
-                          'updated_at': it.get('updated_at')})
-            added += 1
-        if batch and not added:
-            raise RuntimeError('Claude conversation pagination made no progress')
         if cursor_mode:
-            cursor = data.get('nextCursor') or data.get('cursor')
-            if not cursor:
-                return items
-            if not isinstance(cursor, str) or cursor in seen_cursors:
-                raise RuntimeError('Claude returned an invalid or repeated conversation cursor')
-            seen_cursors.add(cursor)
-        elif not batch:
-            return items
-        offset += len(batch)
+            cursor = _next_cursor(data, seen_cursors)
+            if cursor is None:
+                return list(items.values())
+        elif not rows:
+            return list(items.values())
+        offset += len(rows)
 
 
 # ---------------------------------------------------------------------------
@@ -168,44 +177,37 @@ def active_lineage(messages: list[dict], leaf_uuid) -> list[dict]:
     return list(messages)
 
 
+def _uploads(m: dict) -> list[Attachment]:
+    """Pasted or uploaded files (their extracted text is kept) and uploaded
+    images (downloaded later from their preview URL)."""
+    attachments = []
+    for a in m.get('attachments') or []:
+        if isinstance(a, dict):
+            name = a.get('file_name') or 'file'
+            text = a.get('extracted_content') or ''
+            attachments.append(Attachment(filename=name, kind='document',
+                                          data=text.encode('utf-8') if text else None,
+                                          description=name, source_url=a.get('file_url') or ''))
+    for f in m.get('files') or []:
+        if isinstance(f, dict):
+            url = (f.get('preview_asset') or {}).get('url') or f.get('preview_url') or ''
+            name = f.get('file_name') or 'image'
+            attachments.append(Attachment(filename=name, kind='image', data=None,
+                                          source_url=url, description=name))
+    return attachments
+
+
 def _block_turn(m: dict) -> tuple[str, bool, list[Attachment]]:
     """One message -> (text, had_thinking, attachments)."""
-    sender = m.get('sender')
-    if sender not in ('human', 'assistant'):
+    if m.get('sender') not in ('human', 'assistant'):
         return '', False, []
-    texts, thought = [], False
-    for block in m.get('content') or []:
-        if not isinstance(block, dict):
-            continue
-        btype = block.get('type')
-        if btype == 'text':
-            t = block.get('text') or ''
-            if t:
-                texts.append(t)
-        elif btype == 'thinking':
-            thought = True
-        # tool_use / tool_result / image blocks: skipped in v1 (documented gap)
+    blocks = [b for b in m.get('content') or [] if isinstance(b, dict)]
+    # tool_use / tool_result / image blocks: skipped in v1 (documented gap)
+    texts: list[str] = [b['text'] for b in blocks if b.get('type') == 'text' and b.get('text')]
+    thought = any(b.get('type') == 'thinking' for b in blocks)
     if not texts and isinstance(m.get('text'), str):
-        texts.append(m['text'])
-    atts: list[Attachment] = []
-    for a in m.get('attachments') or []:  # pasted/uploaded files
-        if not isinstance(a, dict):
-            continue
-        fname = a.get('file_name') or 'file'
-        text = a.get('extracted_content') or ''
-        atts.append(Attachment(filename=fname, kind='document',
-                               data=text.encode('utf-8') if text else None,
-                               description=fname,
-                               source_url=a.get('file_url') or ''))
-    for f in m.get('files') or []:  # image uploads (downloaded later)
-        if not isinstance(f, dict):
-            continue
-        url = ((f.get('preview_asset') or {}).get('url')
-               or f.get('preview_url') or '')
-        fname = f.get('file_name') or 'image'
-        atts.append(Attachment(filename=fname, kind='image', data=None,
-                               source_url=url, description=fname))
-    return '\n\n'.join(texts).strip(), thought, atts
+        texts.append(m['text'])  # older messages without content blocks
+    return '\n\n'.join(texts).strip(), thought, _uploads(m)
 
 
 def parse_chat(data: dict, chat_id: str, source_url: str,

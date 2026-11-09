@@ -15,7 +15,7 @@ import logging
 import logging.handlers
 import sys
 import threading
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import Path
 
 from . import config
@@ -89,10 +89,8 @@ class _Tee(io.TextIOBase):
     def write(self, text) -> int:
         text = str(text)
         if self._stream is not None:
-            try:
+            with suppress(OSError, ValueError):
                 self._stream.write(text)
-            except (OSError, ValueError):
-                pass
         with self._lock:
             *lines, self._pending = (self._pending + text).split('\n')
         for line in lines:
@@ -111,10 +109,8 @@ class _Tee(io.TextIOBase):
 
     def flush(self) -> None:
         if self._stream is not None:
-            try:
+            with suppress(OSError, ValueError):
                 self._stream.flush()
-            except (OSError, ValueError):
-                pass
 
     def isatty(self) -> bool:
         return bool(self._stream is not None and self._stream.isatty())

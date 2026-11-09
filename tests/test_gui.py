@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from io import StringIO
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 from unittest.mock import patch
 
 from reclaim.core.events import ProgressEvent
@@ -246,7 +246,7 @@ class _CheckController(_Controller):
 
 
 class _Clipboard:
-    copied: list[str] = []
+    copied: ClassVar[list[str]] = []  # what the fake clipboard received
 
     async def set(self, value):
         _Clipboard.copied.append(value)
@@ -265,6 +265,11 @@ class TestGuiDiagnostics(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         self.temp.cleanup()
 
+    def dialog_actions(self):
+        dialog = self.page.dialog
+        assert dialog is not None
+        return {a.key: a for a in dialog.actions}
+
     def dialog_text(self):
         dialog = self.page.dialog
         assert dialog is not None
@@ -276,7 +281,7 @@ class TestGuiDiagnostics(unittest.IsolatedAsyncioTestCase):
     async def test_panel_shows_checks_and_runs_the_live_check(self):
         await self.window._diagnostics()
         self.assertIn('Settings: defaults (no settings file)', self.dialog_text())
-        actions = {a.key: a for a in self.page.dialog.actions}
+        actions = self.dialog_actions()
         await actions['diagnostics-live'].on_click(None)
         self.assertEqual(self.controller.calls[0][1], 'check')
         self.assertIn('Live check completed successfully', self.window.summary.value)
@@ -286,7 +291,7 @@ class TestGuiDiagnostics(unittest.IsolatedAsyncioTestCase):
 
     async def test_copy_diagnostics(self):
         await self.window._diagnostics()
-        actions = {a.key: a for a in self.page.dialog.actions}
+        actions = self.dialog_actions()
         with patch.object(gui.ft, 'Clipboard', _Clipboard):
             await actions['diagnostics-copy'].on_click(None)
         self.assertIn('Reclaim My Chats diagnostics', _Clipboard.copied[-1])

@@ -35,6 +35,27 @@ would then cover every administrator. Give contributors write or maintain
 access unless they need to manage settings, and reconsider the broad bypass
 before granting administrator access. Administrators can change the rules.
 
+## Code health
+
+CI runs `ruff` and `pyright` (see the commands in the README). Besides
+errors and likely bugs, the ruff rules in `pyproject.toml` flag code that
+has a simpler form, and a function whose complexity passes 12 (each branch,
+loop and condition adds one). Split such a function into named steps rather
+than raising the limit; a provider parser usually splits into "what one row
+or turn looks like" and the loop over them.
+
+When changing a parser without a test fixture for every shape it accepts,
+compare the old and the new version on many generated inputs before
+committing; offline fixtures only cover the shapes already seen.
+
+Occasional checks, not part of CI:
+
+```bash
+uvx radon cc -s -n D reclaim                  # the most complex functions
+uvx vulture reclaim scripts --min-confidence 60   # unused code (framework hooks are false alarms)
+uvx pip-audit --path .venv/lib/python3.*/site-packages   # known vulnerabilities
+```
+
 ## Free automation and reports
 
 The workflows use standard GitHub-hosted runners, which are free for public
