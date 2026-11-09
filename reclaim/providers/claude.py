@@ -29,10 +29,9 @@ from urllib.parse import urlencode, urlsplit
 
 from ..core import browser, config
 from ..core.events import EventSink, emit
-from ..core.manifest import SyncState, print_dry_run, write_manifest
+from ..core.manifest import SyncState, print_dry_run, save_chat, write_manifest
 from ..core.model import Attachment, Chat, Turn
 from ..core.progress import progress
-from ..core.writer import write_chat, write_raw
 
 BASE_URL = 'https://claude.ai'
 PROVIDER = 'claude'
@@ -298,13 +297,8 @@ def run(page, org: str, items: list[dict], out_dir: Path,
         t0 = time.time()
         try:
             chat, raw = fetch_conversation(page, org, cid, item.get('title', ''))
-            stats = write_chat(chat, out_dir)
-            if save_raw:
-                try:
-                    write_raw(stats['dir'], raw)
-                except Exception:
-                    pass
-            sync.mark(cid, updated, str(stats['md']))
+            stats = save_chat(chat, out_dir, sync, cid, updated, raw if save_raw else None,
+                              sink=sink, provider=PROVIDER)
             results.append({'id': cid, 'title': chat.title, 'ok': True,
                             'duration_s': round(time.time() - t0, 1),
                             **{k: stats[k] for k in ('turns', 'chars', 'images', 'docs')}})

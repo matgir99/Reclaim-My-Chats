@@ -26,10 +26,9 @@ from pathlib import Path
 from ..core import browser, config
 from ..core.events import EventSink, emit
 from ..core.batchexecute import build_f_req, decode_response, error_message
-from ..core.manifest import SyncState, print_dry_run, write_manifest
+from ..core.manifest import SyncState, print_dry_run, save_chat, write_manifest
 from ..core.model import Chat, Turn
 from ..core.progress import progress
-from ..core.writer import write_chat, write_raw
 
 APP_URL = 'https://gemini.google.com/app'
 BATCH_URL = 'https://gemini.google.com/_/BardChatUi/data/batchexecute'
@@ -368,13 +367,8 @@ def run(page, tokens: dict, chats: list[dict], out_dir: Path,
         try:
             canonical, raw, reqid = fetch_chat(page, tokens, chat['id'],
                                                reqid, chat.get('title', ''))
-            stats = write_chat(canonical, out_dir)
-            if save_raw:
-                try:
-                    write_raw(stats['dir'], raw)
-                except Exception:
-                    pass
-            sync.mark(chat['id'], updated_map.get(chat['id']), str(stats['md']))
+            stats = save_chat(canonical, out_dir, sync, chat['id'], updated_map.get(chat['id']),
+                              raw if save_raw else None, sink=sink, provider=PROVIDER)
             results.append({'id': chat['id'], 'title': canonical.title,
                             'ok': True,
                             'duration_s': round(time.time() - t0, 1),

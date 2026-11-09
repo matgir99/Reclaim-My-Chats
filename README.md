@@ -77,6 +77,8 @@ reclaim import chatgpt conversations.json
 reclaim import kept VAULT --providers kimi,claude
 reclaim import scrapemychats EXPORT_DIRECTORY
 reclaim export haevn-md . chats.zip
+reclaim init [FOLDER]                 # create a database (default: the configured folder)
+reclaim unlock                        # remove a lock left by a run that has ended
 ```
 
 Run `reclaim <provider> --help` for `--skip`, `--limit`, `--log`, `--no-raw`,
@@ -100,6 +102,27 @@ readable Markdown, `chat.json`, optional `raw.json`, and downloaded media.
 ChatGPT Projects become subfolders. A run manifest and sync record in each
 provider folder support incremental updates and the offline status view.
 See [the output contract](docs/OUTPUT.md) for details.
+
+The app protects the database:
+
+- A file named `.reclaim-database.json` marks the database folder. If the
+  folder is missing, for example on a drive that is not connected, the app
+  stops and says so instead of starting a new, empty database. Only the
+  default location is created on first use. Create a database elsewhere
+  with **Create database here** in the window or `reclaim init FOLDER`.
+  Databases made by earlier versions are recognised and marked
+  automatically.
+- One run at a time: a lock file in the database and in the login data
+  folder names the computer and process using them. A lock left by a crash
+  on the same computer is cleared automatically; remove one left by another
+  computer with **Remove lock** in the window or `reclaim unlock`.
+- Progress is saved after every chat and every file is written atomically,
+  so closing the window or a crash mid-run loses nothing already saved.
+- An invalid settings file stops the app with an explanation instead of
+  silently using the defaults. **Reset settings** in the window moves the
+  file aside.
+- Each run is logged to `logs/reclaim.log` in the data folder. In the window,
+  **Open log folder** shows it.
 
 The GUI and CLI use the same `.reclaim.json` settings. For a source checkout,
 the default database is `<checkout>/chats` and the default browser profile is

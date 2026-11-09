@@ -46,6 +46,7 @@ import time
 from pathlib import Path
 
 from ..core import config
+from ..core.service import offline_session
 from ..core.manifest import SyncState, write_manifest
 from ..core.model import Chat, Turn
 from ..core.writer import write_chat
@@ -197,12 +198,13 @@ def main(argv=None):
     providers = [s.strip() for s in args.providers.split(',')] if args.providers else None
 
     started = time.time()
-    results = run(Path(args.vault), Path(args.output_dir), providers=providers)
-    if results:
-        manifest = write_manifest(Path(args.output_dir), PROVIDER, results, started)
-        ok = sum(1 for r in results if r.get('ok'))
-        print(f"\nDone: {ok}/{len(results)} ok. Manifest: {manifest}")
-        return 0 if ok == len(results) else 2
+    with offline_session(Path(args.output_dir), 'import kept'):
+        results = run(Path(args.vault), Path(args.output_dir), providers=providers)
+        if results:
+            manifest = write_manifest(Path(args.output_dir), PROVIDER, results, started)
+            ok = sum(1 for r in results if r.get('ok'))
+            print(f"\nDone: {ok}/{len(results)} ok. Manifest: {manifest}")
+            return 0 if ok == len(results) else 2
     print('No vault conversations found.')
     return 1
 

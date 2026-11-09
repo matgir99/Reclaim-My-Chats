@@ -28,10 +28,9 @@ from urllib.parse import urlencode
 
 from ..core import browser, config
 from ..core.events import EventSink, emit
-from ..core.manifest import SyncState, print_dry_run, write_manifest
+from ..core.manifest import SyncState, print_dry_run, save_chat, write_manifest
 from ..core.model import Attachment, Chat, Turn
 from ..core.progress import progress
-from ..core.writer import write_chat, write_raw
 from .chatgpt_import import (_SKIP_CONTENT_TYPES, _IMG_EXT, _content_parts, _is_tool_call,
                              _linearize)
 
@@ -428,13 +427,8 @@ def run(page, token: str, items: list[dict], out_dir: Path,
         try:
             chat, raw = fetch_conversation(page, token, cid, item.get('title', ''))
             chat.project = _project_name(item, raw, project_names)
-            stats = write_chat(chat, out_dir)
-            if save_raw:
-                try:
-                    write_raw(stats['dir'], raw)
-                except Exception:
-                    pass
-            sync.mark(cid, updated, str(stats['md']))
+            stats = save_chat(chat, out_dir, sync, cid, updated, raw if save_raw else None,
+                              sink=sink, provider=PROVIDER)
             results.append({'id': cid, 'title': chat.title, 'ok': True,
                             'duration_s': round(time.time() - t0, 1),
                             **{k: stats[k] for k in ('turns', 'chars', 'images', 'docs')}})

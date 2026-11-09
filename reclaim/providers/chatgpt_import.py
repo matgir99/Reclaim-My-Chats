@@ -28,6 +28,7 @@ import time
 from pathlib import Path
 
 from ..core import config
+from ..core.service import offline_session
 from ..core.manifest import SyncState, write_manifest
 from ..core.model import Attachment, Chat, Turn
 from ..core.writer import write_chat
@@ -226,11 +227,12 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     started = time.time()
-    if args.source == 'chatgpt':
-        results = run_official(Path(args.path), Path(args.output_dir))
-    else:
-        results = run_scrapemychats(Path(args.path), Path(args.output_dir))
-    manifest = write_manifest(Path(args.output_dir), PROVIDER, results, started)
+    with offline_session(Path(args.output_dir).parent, f'import {args.source}'):
+        if args.source == 'chatgpt':
+            results = run_official(Path(args.path), Path(args.output_dir))
+        else:
+            results = run_scrapemychats(Path(args.path), Path(args.output_dir))
+        manifest = write_manifest(Path(args.output_dir), PROVIDER, results, started)
     ok = sum(1 for r in results if r.get('ok'))
     print(f"\nDone: {ok}/{len(results)} ok. Manifest: {manifest}")
     return 0 if ok == len(results) else 2

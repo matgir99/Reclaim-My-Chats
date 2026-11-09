@@ -13,13 +13,33 @@ Details panel show the operation; provider errors appear in the summary and
 details. Playwright work runs in a worker thread, keeping the window
 responsive while login or downloads take time.
 
+Problems that would make a run unsafe appear in a banner under the title,
+and the update buttons stay disabled until they are solved:
+
+- **Invalid settings file:** the banner explains what is wrong, with
+  *Open settings folder* and *Reset settings* (which keeps the old file as
+  `.reclaim.json.invalid-<time>`).
+- **Database folder missing or unusable:** *Retry* (after connecting a
+  drive or synced folder), *Choose folder*, and *Create database here*,
+  which asks for confirmation first.
+- **Another run in progress:** a dialog names the computer and process
+  holding the lock. When that run cannot be running here, *Remove lock*
+  clears it.
+
+Warnings during a run, such as a `raw.json` that could not be written, are
+counted in the summary and listed in Details. **Open log folder** shows the
+run log, which keeps the full output of every run, including errors.
+
 **Settings** writes the shared `.reclaim.json`. It can choose enabled
-providers, a database folder, and an existing browser profile. The profile
-field is useful when a standalone download should reuse a checkout's
+providers, a database folder, and an existing browser profile. Choosing an
+empty or new database folder creates the database there after a
+confirmation; a folder with unrelated files is refused. The profile field
+is useful when a standalone download should reuse a checkout's
 `.playwright-profile`; point it at that folder. The field stores a path, not
-account passwords. Close any other Reclaim process using that profile before
-running the GUI. A newly installed desktop download otherwise creates its
-own profile in the operating system data folder described in the README.
+account passwords. Only one run uses a profile at a time: a second run, from
+the window or the command line, is refused and told which process holds it.
+A newly installed desktop download otherwise creates its own profile in the
+operating system data folder described in the README.
 
 ## Run from source
 

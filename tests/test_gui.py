@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from io import StringIO
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 from reclaim.core.events import ProgressEvent
@@ -121,6 +122,118 @@ class TestGui(unittest.IsolatedAsyncioTestCase):
         await self.window._update_selected()
         self.assertIn('completed with errors', self.window.summary.value)
         self.assertIn('Synthetic failure', self.window.log.value)
+
+
+class _RaisingController(_Controller):
+    def __init__(self, exc):
+        super().__init__()
+        self.exc = exc
+
+    def run(self, providers, mode='update', sink=None, *, log=False):
+        self.calls.append((list(providers), mode))
+        raise self.exc
+
+
+class _WarningController(_Controller):
+    def run(self, providers, mode='update', sink=None, *, log=False):
+        assert sink is not None
+        sink(ProgressEvent('warning', providers[0], 'Example', message='raw.json was not saved'))
+        return super().run(providers, mode, sink, log=log)
+
+
+@unittest.skipUnless(gui.ft is not None, 'Flet GUI extra is not installed')
+class TestGuiSafeguards(unittest.IsolatedAsyncioTestCase):
+    """Phase 1 problems are explained in the window, with a way to fix them."""
+
+    async def asyncSetUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.page = _Page()
+
+    async def asyncTearDown(self):
+        self.temp.cleanup()
+
+    async def open(self, controller=None):
+        window = gui.ReclaimWindow(self.page, self.root, controller or _Controller())
+        await window.refresh_archive()
+        return window
+
+    def actions(self, window) -> dict[str, Any]:
+        return {str(control.key): control for control in window.notice_actions.controls}
+
+    async def test_invalid_settings_show_a_banner_and_can_be_reset(self):
+        (self.root / '.reclaim.json').write_text('{"providers": ["chatgpt"],}')
+        window = await self.open()
+        self.assertTrue(window.notice.visible)
+        self.assertIn('is not valid JSON', window.notice_text.value)
+        self.assertTrue(window.update_all.disabled)
+        self.assertTrue(window.settings_button.disabled)
+        await self.actions(window)['notice-reset-settings'].on_click(None)
+        self.assertFalse(window.notice.visible)
+        self.assertFalse(window.update_all.disabled)
+        self.assertEqual(len(window.enabled), 6)
+        self.assertIn('old file was kept', window.summary.value)
+        self.assertEqual(len(list(self.root.glob('.reclaim.json.invalid-*'))), 1)
+
+    async def test_missing_database_offers_retry_choose_and_create(self):
+        target = self.root / 'unmounted' / 'chats'
+        gui.config.save(self.root, providers=['chatgpt'], archive=str(target))
+        controller = _Controller()
+        window = await self.open(controller)
+        self.assertTrue(window.notice.visible)
+        self.assertIn('was not found', window.notice_text.value)
+        self.assertEqual(sorted(self.actions(window)), ['notice-choose-folder',
+                                                        'notice-create-database', 'notice-retry'])
+        await window._update_all()
+        self.assertEqual(controller.calls, [])  # blocked: no run starts
+        self.actions(window)['notice-create-database'].on_click(None)
+        assert self.page.dialog is not None and self.page.dialog.actions is not None
+        await self.page.dialog.actions[1].on_click(None)
+        self.assertTrue((target / gui.database.MARKER).exists())
+        self.assertFalse(window.notice.visible)
+
+    async def test_default_database_on_first_use_needs_no_banner(self):
+        window = await self.open()
+        self.assertFalse(window.notice.visible)
+        self.assertFalse(window.update_all.disabled)
+
+    async def test_locked_database_shows_who_holds_it_and_can_be_unlocked(self):
+        folder = self.root / 'chats'
+        gui.database.init(folder)
+        (folder / gui.locks.LOCK_NAME).write_text('{"host": "laptop-elsewhere", "pid": 1}')
+        holder = gui.locks.read_holder(folder) or {}
+        window = await self.open(_RaisingController(
+            gui.locks.LockedError(folder, holder, removable=True)))
+        await window._update_all()
+        dialog = self.page.dialog
+        assert dialog is not None and dialog.actions is not None
+        self.assertIn('laptop-elsewhere', dialog.content.value)
+        dialog.actions[1].on_click(None)  # Remove lock
+        self.assertIsNone(gui.locks.read_holder(folder))
+        self.assertIn('Lock removed', window.summary.value)
+
+    async def test_warnings_appear_in_the_summary(self):
+        window = await self.open(_WarningController())
+        await window._update_all()
+        self.assertIn('1 warning (see Details)', window.summary.value)
+        self.assertIn('raw.json was not saved', window.log.value)
+
+    async def test_choosing_an_empty_folder_creates_a_database_after_confirmation(self):
+        window = await self.open()
+        new_folder = self.root / 'synced' / 'Chats'
+        window._settings()
+        dialog = self.page.dialog
+        assert dialog is not None and dialog.actions is not None
+        archive_row = dialog.content.content.controls[7]
+        archive_row.controls[0].value = str(new_folder)
+        await dialog.actions[1].on_click(None)  # Save
+        confirm = self.page.dialog
+        assert confirm is not None and confirm.actions is not None
+        self.assertEqual(confirm.title, 'Create a new database?')
+        await confirm.actions[1].on_click(None)
+        self.assertTrue((new_folder / gui.database.MARKER).exists())
+        self.assertEqual(gui.config.load(self.root)['archive'], str(new_folder))
+        self.assertEqual(window.archive_path.value, str(new_folder))
 
 
 class TestOptionalGui(unittest.TestCase):
