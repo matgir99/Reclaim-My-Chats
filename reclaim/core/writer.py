@@ -138,26 +138,32 @@ def media_names(payload: dict) -> set[str]:
     return names
 
 
-def locate_recorded(out_dir: Path, md: str) -> Path:
+def locate_recorded(out_dir: Path, md: str, chat_id: str | None = None) -> Path:
     """A Markdown path from a sync record, inside this provider folder.
 
-    Records store paths relative to the provider folder. Older records are
-    absolute and break when the database moves; rebase them by the provider
-    folder's name."""
+    Records written since November 2026 are relative to the provider folder.
+    Older records are absolute, or relative to the working directory of the
+    run that wrote them (a relative `-o`); both contain the provider folder's
+    name and are rebased at it. The name can also recur below the folder (a
+    ChatGPT project named "ChatGPT") or above it in an old location, so
+    every reading is tried: the one whose chat.json belongs to `chat_id`
+    wins, then one that exists."""
     out_dir = Path(out_dir)
     path = Path(md)
-    if not path.is_absolute():
-        return out_dir / path
     parts = path.parts
-    # The provider folder's name can recur below it (a ChatGPT project named
-    # "ChatGPT"), or above it in the old location. Prefer the candidate that
-    # exists; otherwise cut at the last occurrence.
-    candidates = [out_dir.joinpath(*parts[i + 1:])
-                  for i, part in enumerate(parts[:-1]) if part == out_dir.name]
+    candidates = [] if path.is_absolute() else [out_dir / path]
+    candidates += [out_dir.joinpath(*parts[i + 1:])
+                   for i, part in enumerate(parts[:-1]) if part == out_dir.name]
+    if not candidates:
+        return path
+    if chat_id:
+        for candidate in candidates:
+            if _same_chat(candidate.parent, chat_id):
+                return candidate
     for candidate in candidates:
         if candidate.exists():
             return candidate
-    return candidates[-1] if candidates else path
+    return candidates[-1] if path.is_absolute() else candidates[0]
 
 
 def _chat_folder(parent: Path, slug: str, chat_id: str) -> Path:

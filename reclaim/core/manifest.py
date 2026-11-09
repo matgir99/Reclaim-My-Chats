@@ -152,8 +152,8 @@ class SyncState:
     def is_unchanged(self, chat_id: str, updated_at) -> bool:
         return self.classify(chat_id, updated_at) == 'unchanged'
 
-    def _resolve(self, md: str) -> Path:
-        return locate_recorded(self.path.parent, md)
+    def _resolve(self, md: str, chat_id: str | None = None) -> Path:
+        return locate_recorded(self.path.parent, md, chat_id)
 
     def mark(self, chat_id: str, updated_at, md_path: str):
         """Record a written chat and save at once; retire its previous
@@ -163,7 +163,7 @@ class SyncState:
         previous = (self._state.get(chat_id) or {}).get('md')
         if not self.readonly and isinstance(previous, str) and previous:
             try:
-                retire_previous(out_dir, chat_id, self._resolve(previous), current)
+                retire_previous(out_dir, chat_id, self._resolve(previous, chat_id), current)
             except OSError as exc:
                 print(f'  note: could not remove previous folder of {chat_id}: {exc}')
         try:

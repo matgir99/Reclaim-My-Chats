@@ -205,7 +205,7 @@ def backfill(path: Path) -> int:
         for chat_id, record in _sync_records(folder, provider).items():
             if not isinstance(record, dict) or not isinstance(record.get('md'), str):
                 continue
-            md = locate_recorded(folder, record['md'])
+            md = locate_recorded(folder, record['md'], chat_id)
             payload = read_chat_json(md.parent)
             if not payload or payload.get('id') != chat_id or 'provider_updated_at' in payload:
                 continue

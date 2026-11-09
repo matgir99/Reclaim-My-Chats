@@ -234,6 +234,27 @@ class TestMovedChats(unittest.TestCase):
         self.save(sync, 'New title')
         self.assertFalse(old.exists())
 
+    def test_record_relative_to_an_old_working_directory_is_rebased(self):
+        # Before November 2026 a relative -o stored paths such as
+        # chats/ChatGPT/Old title/Old title.md, relative to the working directory.
+        sync = SyncState(self.out, 'chatgpt')
+        old = self.save(sync, 'Old title')
+        sync._state['x1']['md'] = 'chats/ChatGPT/Old title/Old title.md'
+        self.save(sync, 'New title')
+        self.assertFalse(old.exists())
+
+    def test_project_named_like_the_provider_folder(self):
+        # A ChatGPT project called "ChatGPT" saves to ChatGPT/ChatGPT/<chat>.
+        sync = SyncState(self.out, 'chatgpt')
+        old = self.save(sync, 'Old title', project='ChatGPT')
+        self.assertEqual(sync.known('x1'), {'updated_at': 1, 'md': 'ChatGPT/Old title/Old title.md'})
+        self.save(sync, 'New title', project='ChatGPT')
+        self.assertFalse(old.exists())
+        sync._state['x1']['md'] = '/old/place/ChatGPT/ChatGPT/New title/New title.md'
+        newest = self.save(sync, 'Newest title', project='ChatGPT')
+        self.assertEqual(sorted(p.name for p in (self.out / 'ChatGPT').iterdir()), ['Newest title'])
+        self.assertTrue(newest.exists())
+
     def test_record_outside_archive_is_never_touched(self):
         outside = self.tmp / 'outside'
         outside.mkdir()
