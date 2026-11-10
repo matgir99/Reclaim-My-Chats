@@ -58,6 +58,13 @@ read from local manifests and files on another worker thread. Startup never
 guesses whether a remote chat changed; dry run or update must contact the
 provider to know that.
 
+`core/capture.py` turns a provider's real responses into a file that can be
+shared and kept as a test fixture: each letter and digit of the chats is
+replaced, while the structure, field names, numbers, dates and the words the
+parsers look for stay. Those words come from the provider code itself (its
+string constants, read from the loaded modules). Equal strings get equal
+replacements, so ids and citation markers still match up.
+
 Settings, database, and browser profile paths share one writable root. A Git
 checkout keeps its original root. Installed or frozen applications use the
 operating system's user data directory. `RECLAIM_HOME` overrides the root;

@@ -48,6 +48,12 @@ When changing a parser without a test fixture for every shape it accepts,
 compare the old and the new version on many generated inputs before
 committing; offline fixtures only cover the shapes already seen.
 
+A capture file (`core/capture.py`) is a real response with the chat's text
+replaced. To turn one into a test, put it in `tests/fixtures/` and read it
+with `capture.load(path)`: each `responses[i].text` is the body as the
+provider code reads it. Open the file before committing it: numbers, dates
+and field names are kept, so check that nothing private is left.
+
 Occasional checks, not part of CI:
 
 ```bash
