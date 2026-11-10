@@ -1,7 +1,21 @@
 version: 2
 updates:
+  # uv.lock pins every package the builds and checks install; Dependabot
+  # updates it and pyproject.toml together.
+  - package-ecosystem: uv
+    directory: "/"
+    target-branch: develop
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 2
+    groups:
+      python-updates:
+        patterns: ["*"]
+      python-security:
+        applies-to: security-updates
+        patterns: ["*"]
   - package-ecosystem: pip
-    directories: ["/", "/flet_integration"]
+    directory: "/flet_integration"
     target-branch: develop
     schedule:
       interval: monthly

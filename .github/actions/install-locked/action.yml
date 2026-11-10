@@ -1,0 +1,26 @@
+name: Install locked dependencies
+description: >-
+  Install the exact versions pinned in uv.lock, checked against their hashes,
+  then this package itself (editable, without dependencies).
+inputs:
+  dev:
+    description: Also install the development tools (the dev group in pyproject.toml).
+    default: 'false'
+runs:
+  using: composite
+  steps:
+    - name: Install locked dependencies
+      shell: bash
+      env:
+        WITH_DEV: ${{ inputs.dev }}
+      run: |
+        # uv only turns the lock into a requirements file; pip installs it.
+        # Any uv from 0.13.7 on reads the lock, also one Dependabot rewrote.
+        python -m pip install --disable-pip-version-check "uv>=0.13.7"
+        if [ "$WITH_DEV" = true ]; then groups=(--group dev); else groups=(--no-dev); fi
+        requirements="$RUNNER_TEMP/locked-requirements.txt"
+        # --locked fails when pyproject.toml changed without running `uv lock`.
+        python -m uv export --locked --extra gui-test "${groups[@]}" --no-emit-project \
+          --output-file "$requirements"
+        python -m pip install --disable-pip-version-check --require-hashes -r "$requirements"
+        python -m pip install --disable-pip-version-check --no-deps -e .

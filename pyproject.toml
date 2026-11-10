@@ -24,6 +24,10 @@ classifiers = [
 gui = ["flet==1.0.5", "flet-desktop==1.0.5"]
 gui-test = ["flet[test]==1.0.5", "flet-desktop==1.0.5", "flet-cli==1.0.5", "pyinstaller>=6"]
 
+[dependency-groups]
+# Tools for checks and builds, pinned in uv.lock with everything else.
+dev = ["build", "ruff", "pyright"]
+
 [project.scripts]
 reclaim = "reclaim.__main__:main"
 

@@ -32,7 +32,9 @@ jobs:
         run: |
           version=$(python scripts/next_version.py)
           echo "version=$version" >> "$GITHUB_OUTPUT"
-      - run: python -m pip install -e '.[gui-test]' build ruff pyright
+      - uses: ./.github/actions/install-locked
+        with:
+          dev: true
       - run: python -m unittest discover -s tests -q
       - name: Install isolated browser for protocol regression tests
         run: python -m playwright install --with-deps --only-shell chromium
@@ -79,9 +81,9 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install desktop dependencies
+        uses: ./.github/actions/install-locked
         env:
           SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RECLAIMMYCHATS: ${{ needs.prepare.outputs.version }}
-        run: python -m pip install -e '.[gui-test]'
       - name: Pack desktop application
         run: python scripts/pack_desktop.py --version "${{ needs.prepare.outputs.version }}"
       - name: Install Linux desktop dependencies
