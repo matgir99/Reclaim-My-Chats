@@ -33,9 +33,9 @@ command line offers (**CLI**) where the task is visible to users.
 
 ## Phase 0. Release the provider fixes
 
-- [ ] Merge `develop` into `main`. This publishes the fixes for ChatGPT,
+- [x] Merge `develop` into `main`. This publishes the fixes for ChatGPT,
       Claude, DeepSeek, Kimi and the Google logins to users of the
-      desktop download.
+      desktop download. (PR #12.)
 
 ## Phase 1. Protect the database
 
