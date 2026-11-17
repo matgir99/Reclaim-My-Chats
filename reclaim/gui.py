@@ -197,7 +197,7 @@ class ReclaimWindow:
                 self.setup_banner_text,
                 ft.FilledButton('First-run setup', on_click=self._setup_wizard,
                                 key='start-setup'),
-            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, wrap=True),
+            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
             bgcolor=ft.Colors.PRIMARY_CONTAINER, padding=12, border_radius=8,
             visible=False, key='setup-banner')
         self.notice_text = ft.Text('', selectable=True, key='notice-text',
@@ -214,7 +214,7 @@ class ReclaimWindow:
                                                     key='bring-browser-forward')
         self.login_banner = ft.Container(
             content=ft.Row([self.login_banner_text, self.bring_browser_button],
-                           alignment=ft.MainAxisAlignment.SPACE_BETWEEN, wrap=True),
+                           alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
             bgcolor=ft.Colors.TERTIARY_CONTAINER, padding=14, border_radius=8,
             visible=False, key='login-banner')
         self.setup_button = ft.Button('Setup', on_click=self._setup_wizard, key='setup-wizard')
