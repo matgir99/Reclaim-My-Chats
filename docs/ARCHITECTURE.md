@@ -38,11 +38,15 @@ the models in `reclaim/core/model.py`, and the engine saves each chat with
 `manifest.save_chat`: `reclaim/core/writer.py` writes the folder (Markdown,
 `chat.json`, media), then `raw.json`, then the sync record. All files are
 written atomically (`core/fsutil.py`). Sync records classify chats as new,
-changed, or unchanged; they are saved after every chat and rebuilt from the
-`chat.json` files when missing or damaged. `reclaim/core/manifest.py` also
-records each run.
+changed, restored, or unchanged; they are saved after every chat and rebuilt from the
+`chat.json` files when missing or damaged. `reclaim/core/lifecycle.py` plans
+and applies moves between active folders, `_Archived/`, and `_Deleted/` with
+completeness checks, absence confirmation, a mass-change brake, and
+`.reclaim_events.jsonl` logging; `reclaim/core/tidy.py` retires safe duplicate
+folders. `reclaim/core/manifest.py` also records each run.
 
-Progress is reported only as events (`core/events.py`, which lists the
+`reclaim/core/autostart.py` manages per-user login autostart entries and
+desktop completion notifications. Progress is reported only as events (`core/events.py`, which lists the
 kinds): the engine, the providers, the login helpers and the sync records
 emit a `ProgressEvent` and never print. The controller decides where a run's
 events go and sets that as the thread's route, so code deep in a provider

@@ -236,6 +236,13 @@ def _hand_over(entries: list[Path], new_dir: Path, *, generated: set[str]) -> No
             entry.unlink()
 
 
+def prune_empty_parents(out_dir: Path, parent: Path) -> None:
+    """Remove empty project or state parent folders strictly inside `out_dir`."""
+    while _inside(parent, out_dir) and not any(parent.iterdir()):
+        parent.rmdir()
+        parent = parent.parent
+
+
 def retire_previous(out_dir: Path, chat_id: str, previous_md: Path, current_md: Path) -> bool:
     """Remove the folder a chat was saved in before it moved.
 
@@ -262,9 +269,7 @@ def retire_previous(out_dir: Path, chat_id: str, previous_md: Path, current_md: 
     if any(old_dir.iterdir()):
         return False
     old_dir.rmdir()
-    parent = old_dir.parent
-    if _inside(parent, out_dir) and not any(parent.iterdir()):
-        parent.rmdir()  # an emptied project folder
+    prune_empty_parents(out_dir, old_dir.parent)
     return True
 
 
@@ -369,15 +374,25 @@ def _footer(chat: Chat) -> list[str]:
     return out
 
 
+_STATE_DIRS = {'archived': '_Archived', 'deleted': '_Deleted'}
+
+
+def _target_parent(out_dir: Path, state: str, project: str | None) -> Path:
+    parent = Path(out_dir)
+    if state_dir := _STATE_DIRS.get(state):
+        parent = parent / state_dir
+    if project:
+        parent = parent / (slugify(project) or 'Project')
+    return parent
+
+
 def write_chat(chat: Chat, out_dir: Path, *, updated_at=None, state: str = 'active') -> dict:
     """Write one chat folder. Returns stats dict.
 
     `updated_at` is the provider's own timestamp for this version of the
     chat; it is stored in chat.json so sync records can be rebuilt."""
     slug = slugify(chat.title) or slugify(chat.id)[:20] or 'chat'
-    parent = Path(out_dir)
-    if chat.project:
-        parent = parent / (slugify(chat.project) or 'Project')
+    parent = _target_parent(out_dir, state, chat.project)
     chat_dir = _chat_folder(parent, slug, chat.id)
     chat_dir.mkdir(parents=True, exist_ok=True)
     md = chat_dir / f'{chat_dir.name}.md'

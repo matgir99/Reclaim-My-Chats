@@ -191,6 +191,41 @@ class TestGui(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ctrl.calls[-1], (['googleaistudio', 'deepseek', 'kimi', 'chatgpt',
                                            'claude', 'googlegemini'], 'dry-run'))
 
+    async def test_review_dialog_shows_moves_pairs_restore_and_confirms_brake(self):
+        class _MoveController(_Controller):
+            def run(self, providers, mode='update', sink=None, *, log=False, only_ids=None):
+                self.calls.append((list(providers), mode))
+                if only_ids is not None:
+                    self.only_ids = list(only_ids)
+                assert sink is not None
+                if mode == 'dry-run':
+                    sink(ProgressEvent('chat_planned', 'chatgpt', 'Gone Chat', 1, 2,
+                                       'move (deleted)', detail='id-gone'))
+                    sink(ProgressEvent('chat_planned', 'chatgpt', 'Restored Chat', 2, 2,
+                                       'move (active)', detail='id-rest'))
+                    sink(ProgressEvent('chat_planned', 'chatgpt', 'Restored Chat', 1, 1,
+                                       'fetch (restored)', detail='id-rest'))
+                    sink(ProgressEvent('warning', 'chatgpt',
+                                       message='Mass-change brake: 1 of 5 chats would move to archived/deleted; review required.'))
+                return RunSummary(((providers[0], 0),))
+
+        ctrl = _MoveController()
+        self.window.controller = ctrl
+        for k, v in self.window.checks.items():
+            v.value = k == 'chatgpt'
+        await self.window._dry_run()
+        dialog = self.page.dialog
+        assert dialog is not None and dialog.actions is not None
+        controls = dialog.content.content.controls
+        self.assertEqual(controls[0].key, 'review-brake-0')
+        self.assertIn('Mass-change brake', controls[0].value)
+        # Three planned events collapse to two checkboxes (Gone Chat + combined Restored Chat).
+        self.assertEqual(len(controls), 3)
+        self.assertIn('move (deleted)', controls[1].label)
+        self.assertIn('move (active) + fetch (restored)', controls[2].label)
+        await dialog.actions[2].on_click(None)  # Merge all passes confirmed IDs past brake
+        self.assertEqual(ctrl.only_ids, ['id-gone', 'id-rest'])
+
     async def test_archived_deleted_dialog_restores_and_deletes(self):
         from reclaim.core import lifecycle
         from reclaim.core.model import Chat, Turn

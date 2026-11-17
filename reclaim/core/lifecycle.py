@@ -60,12 +60,6 @@ def _update_chat_json_state(chat_dir: Path, to_state: str) -> None:
     atomic_write_text(path, json.dumps(payload, indent=2, ensure_ascii=False, default=str))
 
 
-def _prune_empty_parents(out_dir: Path, parent: Path) -> None:
-    while writer._inside(parent, out_dir) and not any(parent.iterdir()):
-        parent.rmdir()
-        parent = parent.parent
-
-
 def _append_event(out_dir: Path, chat_id: str, old_rel: Path, new_rel: Path,
                   to_state: str, reason: str) -> None:
     entry = {
@@ -102,7 +96,7 @@ def move_chat_folder(out_dir: Path, sync: SyncState, chat_id: str, to_state: str
         if target_dir.exists():
             target_dir = writer._chat_folder(target_dir.parent, target_dir.name, chat_id)
         old_dir.rename(target_dir)
-        _prune_empty_parents(out_dir, old_dir.parent)
+        writer.prune_empty_parents(out_dir, old_dir.parent)
     _update_chat_json_state(target_dir, to_state)
     new_md = target_dir / old_md.name
     sync.mark(chat_id, record.get('updated_at'), str(new_md),
@@ -287,7 +281,7 @@ def delete_state_chat_permanently(db: Path, entry: StateChatEntry) -> bool:
     if not rel.parts or rel.parts[0] not in (ARCHIVED_DIR, DELETED_DIR):
         return False
     shutil.rmtree(entry.folder)
-    _prune_empty_parents(pdir, entry.folder.parent)
+    writer.prune_empty_parents(pdir, entry.folder.parent)
     SyncState(pdir, entry.provider).forget(entry.chat_id)
     _append_event(pdir, entry.chat_id, rel, rel, 'permanently_deleted',
                   'deleted permanently by user')

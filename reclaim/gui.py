@@ -91,6 +91,23 @@ def status_text(info: status.ProviderStatus) -> str:
     return summary
 
 
+def _review_items(events: list[ProgressEvent]) -> tuple[list[tuple[ProgressEvent, str]], list[str]]:
+    """Combine planned fetches and lifecycle moves per chat and collect brake warnings."""
+    by_key: dict[tuple[str, str], tuple[ProgressEvent, list[str]]] = {}
+    warnings: list[str] = []
+    for event in events:
+        if event.kind == 'warning' and 'Mass-change brake' in event.message:
+            name = DISPLAY_NAMES.get(event.provider, event.provider)
+            warnings.append(f'{name}: {event.message}' if name else event.message)
+        elif event.kind == 'chat_planned' and event.message.startswith(('fetch', 'move')):
+            key = (event.provider, event.detail or event.title)
+            if key in by_key:
+                by_key[key][1].append(event.message)
+            else:
+                by_key[key] = (event, [event.message])
+    return [(ev, ' + '.join(acts)) for ev, acts in by_key.values()], warnings
+
+
 class ReclaimWindow:
     def __init__(self, page, root: Path | None = None,
                  controller: Controller | None = None):
@@ -677,19 +694,20 @@ class ReclaimWindow:
         return await task
 
     def _maybe_show_review_dialog(self, providers: list[str]) -> None:
-        planned = [e for e in self._run_events
-                   if e.kind == 'chat_planned' and e.message.startswith('fetch')]
+        planned, warnings = _review_items(self._run_events)
         if planned:
-            self._review_plan_dialog(providers, planned)
+            self._review_plan_dialog(providers, planned, warnings)
 
     def _review_plan_dialog(self, providers: list[str],
-                            planned: list[ProgressEvent]) -> None:
-        """Show the planned downloads per provider with checkboxes to merge all, subset, or skip."""
+                            planned: list[tuple[ProgressEvent, str]],
+                            warnings: list[str] | None = None) -> None:
+        """Show the planned downloads and moves per provider to merge all, subset, or skip."""
+        brake_warnings = warnings or []
         items = [
             (e, ft.Checkbox(label=f'{DISPLAY_NAMES.get(e.provider, e.provider)}: '
-                                  f'{e.title} ({e.message})',
+                                  f'{e.title} ({action})',
                             value=True, key=f'plan-chat-{i}'))
-            for i, e in enumerate(planned)
+            for i, (e, action) in enumerate(planned)
         ]
 
         async def merge_selected(_=None) -> None:
@@ -701,15 +719,25 @@ class ReclaimWindow:
 
         async def merge_all(_=None) -> None:
             self.page.pop_dialog()
-            await self._run(providers, 'update')
+            if brake_warnings:
+                all_ids = [e.detail or e.title for e, _ in items]
+                await self._run(providers, 'update', only_ids=all_ids)
+            else:
+                await self._run(providers, 'update')
 
+        controls: list[ft.Control] = [
+            ft.Text(msg, color=ft.Colors.ERROR, weight=ft.FontWeight.BOLD,
+                    selectable=True, key=f'review-brake-{i}')
+            for i, msg in enumerate(brake_warnings)
+        ]
+        controls.extend(c for _, c in items)
         self.page.show_dialog(ft.AlertDialog(
             modal=True,
             key='review-plan-dialog',
             title='Review updates',
             content=ft.Container(
                 width=580,
-                content=ft.Column([c for _, c in items], spacing=6,
+                content=ft.Column(controls, spacing=6,
                                   scroll=ft.ScrollMode.AUTO, height=340),
             ),
             actions=[

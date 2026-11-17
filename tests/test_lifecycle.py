@@ -421,3 +421,68 @@ class TestAllProviderConfirmAndSubsetAndAutostart(unittest.TestCase):
             self.assertTrue(any(e.kind == 'warning' and 'Mass-change brake' in e.message
                                 for e in brake_events))
             self.assertFalse((braked_out / '_Deleted').exists())
+
+    def test_state_folders_dry_run_renames_empty_listing_and_approved_brake(self):
+        class _FakeStateProv(engine.Provider):
+            name = 'chatgpt'
+            folder = 'ChatGPT'
+            pace = 0.0
+
+            def __init__(self, active_refs, verdicts):
+                self._active = active_refs
+                self._verdicts = verdicts
+                self.fetched: list[str] = []
+
+            def open(self, page):
+                return {'page': page, 'listing_complete': True}
+
+            def listing(self, s):
+                return list(self._active)
+
+            def confirm_status(self, s, cid: str) -> str:
+                return self._verdicts.get(cid, 'unconfirmed')
+
+            def from_url(self, s, url):
+                return engine.ChatRef(id=url.rsplit('/', 1)[-1])
+
+            def fetch(self, s, ref):
+                self.fetched.append(ref.id)
+                return engine.Fetched(_chat(ref.id, ref.title, project=ref.project), raw={'id': ref.id})
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / 'chats'
+            database.init(db)
+            out = db / 'ChatGPT'
+            out.mkdir()
+            sync = SyncState(out, 'chatgpt')
+            for i in range(5):
+                save_chat(_chat(f'c{i}', f'Chat {i}', project='OldProj'), out, sync, f'c{i}', '1')
+            # Brand new archived chat lands under _Archived/ when written directly.
+            save_chat(_chat('arc0', 'Pre Archived', project='Work'), out, sync, 'arc0', '1',
+                      state='archived')
+            self.assertTrue((out / '_Archived' / 'Work' / 'Pre Archived').is_dir())
+
+            # Renamed chat with unchanged timestamp shows in dry-run + --only-id confirms braked move.
+            prov = _FakeStateProv(
+                active_refs=[engine.ChatRef('c0', 'Renamed Zero', '1', project='NewProj')],
+                verdicts={f'c{i}': 'deleted' for i in range(1, 5)},
+            )
+            events = []
+            dry = engine.parse_args(prov, ['--dry-run', '-o', str(out)])
+            self.assertEqual(engine.run_session(prov, None, dry, sink=events.append), 0)
+            self.assertIn(('c0', 'fetch (changed)'),
+                          [(e.detail, e.message) for e in events if e.kind == 'chat_planned'])
+            self.assertTrue(any(e.kind == 'plan' and 'would move:' in e.message for e in events))
+
+            approved = engine.parse_args(prov, ['--only-id', 'c0', '--only-id', 'c1', '-o', str(out)])
+            self.assertEqual(engine.run_session(prov, None, approved), 0)
+            self.assertTrue((out / '_Deleted' / 'OldProj' / 'Chat 1').is_dir())
+            self.assertTrue((out / 'NewProj' / 'Renamed Zero').is_dir())
+            self.assertTrue((out / 'OldProj' / 'Chat 2').is_dir())  # unapproved stays put
+
+            # Even when the server listing is completely empty, lifecycle runs instead of failing early.
+            empty_prov = _FakeStateProv(active_refs=[], verdicts={'c2': 'deleted', 'c3': 'deleted'})
+            empty_events = []
+            empty_dry = engine.parse_args(empty_prov, ['--dry-run', '-o', str(out)])
+            self.assertEqual(engine.run_session(empty_prov, None, empty_dry, sink=empty_events.append), 0)
+            self.assertTrue(any(e.kind == 'chat_planned' and e.detail == 'c2' for e in empty_events))
