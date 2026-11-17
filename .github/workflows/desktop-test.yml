@@ -32,15 +32,19 @@ jobs:
         include:
           - os: ubuntu-22.04
             python-arch: x64
+            arch: x86_64
             name: ubuntu-22.04
           - os: windows-latest
             python-arch: x64
+            arch: x86_64
             name: windows-latest
           - os: macos-latest
             python-arch: arm64
+            arch: arm64
             name: macos-arm64
           - os: macos-latest
             python-arch: x64
+            arch: x86_64
             name: macos-x86_64
     runs-on: ${{ matrix.os }}
     steps:
@@ -59,7 +63,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y xvfb $(flet --version --json | python -c "import json,sys; print(' '.join(json.load(sys.stdin)['linux_dependencies']))")
-      - run: python scripts/pack_desktop.py --version 0.0.0
+      - run: python scripts/pack_desktop.py --version 0.0.0 --arch "${{ matrix.arch }}"
       - name: Launch the extracted desktop application
         shell: bash
         run: |

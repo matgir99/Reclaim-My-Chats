@@ -96,6 +96,24 @@ def _icon_png_bytes(size: int = 256) -> bytes:
     )
 
 
+def _icon_ico_bytes(size: int = 32) -> bytes:
+    """Render an uncompressed 32-bit BGRA BMP icon wrapped in an `.ico` container."""
+    half = size / 2
+    xor_rows = bytearray()
+    for y in range(size - 1, -1, -1):  # BMP rows are bottom-to-top
+        ny = (y + 0.5 - half) / half
+        for x in range(size):
+            r, g, b, a = _icon_pixel((x + 0.5 - half) / half, ny)
+            xor_rows.extend((b, g, r, a))
+    and_mask = b'\x00' * (size * ((size + 31) // 32) * 4)
+    dib_header = struct.pack('<IiiHHIIiiII', 40, size, size * 2, 1, 32, 0,
+                             len(xor_rows), 0, 0, 0, 0)
+    dib = dib_header + bytes(xor_rows) + and_mask
+    ico_header = struct.pack('<HHH', 0, 1, 1)
+    ico_entry = struct.pack('<BBBBHHII', size, size, 0, 0, 1, 32, len(dib), 22)
+    return ico_header + ico_entry + dib
+
+
 def write_icons(stage: Path) -> dict[str, Path]:
     """Write `.png`, `.ico`, and `.icns` icon files derived from one RGBA image."""
     icon_dir = stage / 'icons'
@@ -105,9 +123,7 @@ def write_icons(stage: Path) -> dict[str, Path]:
     png_path.write_bytes(png_bytes)
 
     ico_path = icon_dir / f'{BUNDLE_ID}.ico'
-    ico_header = struct.pack('<HHH', 0, 1, 1)
-    ico_entry = struct.pack('<BBBBHHII', 0, 0, 0, 0, 1, 32, len(png_bytes), 22)
-    ico_path.write_bytes(ico_header + ico_entry + png_bytes)
+    ico_path.write_bytes(_icon_ico_bytes(32))
 
     icns_path = icon_dir / f'{BUNDLE_ID}.icns'
     ic08 = b'ic08' + struct.pack('>I', 8 + len(png_bytes)) + png_bytes
@@ -257,6 +273,7 @@ def build_linux_deb(
         icons_dir.mkdir(parents=True)
         shutil.copy2(icon, icons_dir / f'{BUNDLE_ID}.png')
 
+        _chmod_deb_tree(pkg_root)
         dpkg_deb = shutil.which('dpkg-deb')
         if dpkg_deb:
             subprocess.run([dpkg_deb, '--build', '--root-owner-group',
@@ -264,6 +281,13 @@ def build_linux_deb(
         else:
             _write_deb_ar(pkg_root, output_path)
     return output_path
+
+
+def _chmod_deb_tree(pkg_root: Path) -> None:
+    pkg_root.chmod(0o755)
+    for path in pkg_root.rglob('*'):
+        if not path.is_symlink() and path.is_dir():
+            path.chmod(0o755)
 
 
 def build_windows_zip(app_dir: Path, archive: Path) -> Path:
@@ -295,8 +319,6 @@ def write_inno_script(
         f'DefaultDirName={{localappdata}}\\Programs\\{PRODUCT_NAME}',
         f'DefaultGroupName={PRODUCT_NAME}',
         'PrivilegesRequired=lowest',
-        'ArchitecturesAllowed=x64compatible',
-        'ArchitecturesInstallIn64BitMode=x64compatible',
         f'OutputDir={output_exe.parent}',
         f'OutputBaseFilename={output_exe.stem}',
         f'SetupIconFile={icon_ico}',
@@ -371,8 +393,9 @@ def build_macos_dmg(app_bundle: Path, dmg_path: Path) -> Path:
     return dmg_path
 
 
-def _run_flet_pack(system: str, stage: Path, version: str, icon_path: Path) -> None:
-    flet = shutil.which('flet')
+def _run_flet_pack(system: str, stage: Path, version: str, icon_path: Path | None) -> None:
+    sibling = Path(sys.executable).with_name('flet.exe' if os.name == 'nt' else 'flet')
+    flet = str(sibling) if sibling.is_file() else shutil.which('flet')
     if flet is None:
         raise RuntimeError('flet CLI is missing; install the gui-pack or gui-test extra')
     launcher = [flet] if os.name == 'nt' else [sys.executable, flet]
@@ -384,8 +407,10 @@ def _run_flet_pack(system: str, stage: Path, version: str, icon_path: Path) -> N
         *launcher, 'pack', str(ROOT / 'desktop' / 'main.py'),
         '--name', APP_NAME, '--product-name', PRODUCT_NAME,
         '--product-version', version, '--bundle-id', BUNDLE_ID,
-        '--icon', str(icon_path), '--distpath', str(stage), '--yes',
+        '--distpath', str(stage), '--yes',
     ]
+    if icon_path is not None:
+        cmd.extend(['--icon', str(icon_path)])
     if system in ('linux', 'windows'):
         cmd.append('--onedir')
     cmd.extend(f'--pyinstaller-build-args=--exclude-module={mod}' for mod in EXCLUDED_MODULES)
@@ -432,45 +457,51 @@ def _package_macos(stage: Path, output: Path, stem: str) -> list[Path]:
     return [zip_path, build_macos_dmg(app, output / f'{stem}.dmg')]
 
 
-def build(version: str, output: Path) -> list[Path]:
+def build(version: str, output: Path, arch: str | None = None) -> list[Path]:
     """Build all desktop distribution artifacts for the current operating system."""
     system = platform.system().lower()
     if system not in ('linux', 'windows', 'darwin'):
         raise RuntimeError(f'unsupported desktop platform: {system}')
     label = {'darwin': 'macos', 'windows': 'windows', 'linux': 'linux'}[system]
     machine = platform.machine().lower()
-    arch = {'amd64': 'x86_64', 'x64': 'x86_64', 'aarch64': 'arm64'}.get(machine, machine)
+    target_arch = arch or {'amd64': 'x86_64', 'x64': 'x86_64', 'aarch64': 'arm64'}.get(
+        machine, machine)
     stage = ROOT / 'build' / 'desktop-pack'
     shutil.rmtree(stage, ignore_errors=True)
     stage.mkdir(parents=True, exist_ok=True)
 
-    icons = write_icons(stage)
-    icon_ext = {'linux': 'png', 'windows': 'ico', 'darwin': 'icns'}[system]
-    _run_flet_pack(system, stage, version, icons[icon_ext])
+    try:
+        with tempfile.TemporaryDirectory(prefix='reclaim-icons-') as icon_tmp:
+            icons = write_icons(Path(icon_tmp))
+            _run_flet_pack(system, stage, version,
+                           icons['png'] if system == 'linux' else None)
 
-    output.mkdir(parents=True, exist_ok=True)
-    stem = f'{ARCHIVE_NAME}-{version}-{label}-{arch}'
-    if system == 'linux':
-        artifacts = _package_linux(stage, icons, output, stem, version, arch)
-    elif system == 'windows':
-        artifacts = _package_windows(stage, icons, output, stem, version)
-    else:
-        artifacts = _package_macos(stage, output, stem)
+            output.mkdir(parents=True, exist_ok=True)
+            stem = f'{ARCHIVE_NAME}-{version}-{label}-{target_arch}'
+            if system == 'linux':
+                artifacts = _package_linux(stage, icons, output, stem, version, target_arch)
+            elif system == 'windows':
+                artifacts = _package_windows(stage, icons, output, stem, version)
+            else:
+                artifacts = _package_macos(stage, output, stem)
 
-    for artifact in artifacts:
-        if artifact.stat().st_size < 1_000_000:
-            raise RuntimeError(f'desktop archive is unexpectedly small: {artifact}')
-    return artifacts
+            for artifact in artifacts:
+                if artifact.stat().st_size < 1_000_000:
+                    raise RuntimeError(f'desktop archive is unexpectedly small: {artifact}')
+            return artifacts
+    finally:
+        shutil.rmtree(ROOT / 'build', ignore_errors=True)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--version', required=True)
     parser.add_argument('--output-dir', type=Path, default=ROOT / 'dist' / 'release')
+    parser.add_argument('--arch', default=None)
     args = parser.parse_args()
     if not re.fullmatch(r'\d+\.\d+\.\d+', args.version):
         parser.error('version must be X.Y.Z')
-    for path in build(args.version, args.output_dir.resolve()):
+    for path in build(args.version, args.output_dir.resolve(), arch=args.arch):
         print(path)
     return 0
 
