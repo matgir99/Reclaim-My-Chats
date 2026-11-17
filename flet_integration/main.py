@@ -49,6 +49,9 @@ class FakeController:
         sink(ProgressEvent('run_completed', current=1, total=1, message='exit 0'))
         return summary
 
+    def stop(self) -> None:
+        pass
+
 
 async def main(page: ft.Page) -> None:
     root = Path(tempfile.mkdtemp(prefix='reclaim-flet-test-'))

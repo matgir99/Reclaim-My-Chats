@@ -27,6 +27,7 @@ commands, the window for the app, and the log file for both. The kinds:
                                       traceback, for the log)
   checked                             the live check's result for a provider
   captured                            a capture file was saved (detail: the path)
+  stopped                             the user stopped the run after a chat
 
 Where events go is set per run with `routed()`. Without a route (a library
 call, a test), they are printed as a command would print them.

@@ -6,7 +6,8 @@ and the last run result. It shows live changes only after a dry run or update
 contacts a provider.
 
 Use **Update selected** for checked providers or **Update all** for every
-provider enabled in settings. **Dry run** lists current provider chats and
+provider enabled in settings, and **Stop** to end an active run cleanly after
+the current chat finishes saving. **Dry run** lists current provider chats and
 previews the work without writing to the database. **Rebuild selected** asks for
 confirmation, then fetches all selected chats again. The progress bar and
 Details panel show the operation; provider errors appear in the summary and
