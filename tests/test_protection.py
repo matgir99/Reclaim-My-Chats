@@ -71,7 +71,8 @@ class TestSyncRecords(Temp):
             sync = SyncState(out, 'chatgpt')
         self.assertIn('Rebuilt 2 records', printed.getvalue())
         self.assertEqual(sync.classify('a', 't1'), 'unchanged')
-        self.assertEqual(sync.known('b'), {'updated_at': None, 'md': 'Project/Beta/Beta.md'})
+        self.assertEqual(sync.known('b'), {'updated_at': None, 'md': 'Project/Beta/Beta.md',
+                                           'title': 'Beta', 'project': None, 'state': 'active'})
         backups = list(out.glob('.last_sync_chatgpt.json.damaged-*'))
         self.assertEqual(len(backups), 1)
         self.assertEqual(json.loads((out / '.last_sync_chatgpt.json').read_text())['a']['md'],
@@ -95,7 +96,8 @@ class TestSyncRecords(Temp):
         new = write_chat(chat('c', 'New name'), out, updated_at='2')
         os.utime(old['dir'] / 'chat.json', (1, 1))
         self.assertEqual(rebuild_records(out)['c'],
-                         {'updated_at': '2', 'md': 'New name/New name.md'})
+                         {'updated_at': '2', 'md': 'New name/New name.md',
+                          'title': 'New name', 'project': None, 'state': 'active'})
         self.assertTrue(new['md'].exists())
 
 

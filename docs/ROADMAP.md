@@ -212,16 +212,16 @@ one at a time with synthetic tests of each response shape.
 
 ### Tasks
 
-- [ ] Sync records with title, project and state.
-- [ ] A completeness flag returned by every provider listing.
-- [ ] A lifecycle planner shared by all providers: classify, confirm,
+- [x] Sync records with title, project and state.
+- [x] A completeness flag returned by every provider listing.
+- [x] A lifecycle planner shared by all providers: classify, confirm,
       apply the brake, report.
 - [ ] ChatGPT archived listing and deletion confirmation, then the other
       providers one at a time, including Claude, Kimi and Gemini grouping.
-- [ ] Moves into and out of `_Archived` and `_Deleted`, with the event
+- [x] Moves into and out of `_Archived` and `_Deleted`, with the event
       log. (The writer already reserves both names.)
 - [ ] Check without writing, and merge of an approved subset.
-- [ ] Tidy: find chats saved in more than one folder and retire stale
+- [x] Tidy: find chats saved in more than one folder and retire stale
       copies after a preview. Covers the duplicates created before
       November 2026. **Window:** a *Tidy* action with a preview.
       **CLI:** `reclaim tidy`.

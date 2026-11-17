@@ -17,7 +17,7 @@ else:
     except ImportError:  # The CLI intentionally has no GUI dependency.
         ft = None
 
-from .core import browser, config, database, doctor, locks, logs, releases, render, status
+from .core import browser, config, database, doctor, locks, logs, releases, render, status, tidy
 from .core.events import EventSink, ProgressEvent
 from .core.service import ALL_PROVIDERS, ArchiveController, BusyOperationError, RunSummary
 
@@ -70,8 +70,13 @@ def status_text(info: status.ProviderStatus) -> str:
         return (f'No chats saved yet · last checked {info.last_checked}'
                 if info.last_checked else 'No chats saved yet')
     summary = f'{info.chats} chats in database'
-    if info.chat_folders > info.chats:
-        summary += f' ({info.chat_folders - info.chats} older copies)'
+    total_distinct = info.chats + info.archived_chats + info.deleted_chats
+    if info.chat_folders > total_distinct:
+        summary += f' ({info.chat_folders - total_distinct} older copies)'
+    if info.archived_chats:
+        summary += f' · {info.archived_chats} archived'
+    if info.deleted_chats:
+        summary += f' · {info.deleted_chats} deleted'
     if info.last_sync:
         summary += f' · last download {info.last_sync}'
     if info.last_checked:
@@ -179,6 +184,8 @@ class ReclaimWindow:
                                       key='open-archive')
         self.open_logs = ft.Button('Open log folder', on_click=self._open_logs,
                                    key='open-logs')
+        self.tidy_button = ft.Button('Tidy duplicates', on_click=self._tidy_dialog,
+                                     key='tidy-database')
         ver = releases.app_version()
         self.version_text = ft.Text(ver if ver == 'dev' else f'v{ver}',
                                     color=ft.Colors.ON_SURFACE_VARIANT, key='app-version')
@@ -253,7 +260,7 @@ class ReclaimWindow:
                 ft.Text('Database', size=20, weight=ft.FontWeight.BOLD),
                 self.archive_total,
                 self.archive_path,
-                ft.Row([self.open_archive, self.open_logs], wrap=True),
+                ft.Row([self.open_archive, self.open_logs, self.tidy_button], wrap=True),
                 ft.ExpansionTile(title='Details', controls=[self.log],
                                  key='details'),
             ], spacing=12),
@@ -289,7 +296,9 @@ class ReclaimWindow:
         else:
             self._show_database_problem(state)
         self.setup_banner.visible = config.needs_first_run_setup(self.root) and not self.blocked
-        self.archive_total.value = f'{sum(i.chats for i in infos):,} chats in the database'
+        self.archive_total.value = (
+            f'{sum(i.chats + i.archived_chats + i.deleted_chats for i in infos):,} chats in the database'
+        )
         for info in infos:
             current = str(self.provider_status[info.provider].value or '')
             if preserve_prefixes and current.startswith(preserve_prefixes):
@@ -451,6 +460,7 @@ class ReclaimWindow:
         # Settings cannot be edited while the settings file itself is broken.
         self.settings_button.disabled = self._running or self.settings_error is not None
         self.setup_button.disabled = self._running
+        self.tidy_button.disabled = busy
         self.page.update()
 
     def _set_running(self, running: bool) -> None:
@@ -801,6 +811,59 @@ class ReclaimWindow:
             self._error(f'Could not open the log folder: {exc}')
             return
         self._open(folder)
+
+    @staticmethod
+    def _retire_locked(archive: Path) -> list[tidy.DuplicateCopy]:
+        with locks.hold(archive, 'update'):
+            return tidy.retire_duplicates(archive)
+
+    async def _tidy_dialog(self, _=None) -> None:
+        archive = self._database_path()
+        if archive is None:
+            return
+        state = await asyncio.to_thread(database.inspect, archive)
+        if not state.usable:
+            self._error(state.message())
+            return
+        copies = await asyncio.to_thread(tidy.find_duplicates, archive)
+        rows: list[ft.Control] = [
+            ft.Text(
+                f'{DISPLAY_NAMES.get(c.provider, c.provider)}: {c.title}'
+                + (' (kept: contains unique branch text)' if c.has_unique_turns
+                   else f' ({c.stale_dir.name} -> {c.keep_dir.name})'),
+                selectable=True,
+            )
+            for c in copies
+        ] or [ft.Text('No duplicate chat folders found.')]
+        safe_count = sum(1 for c in copies if not c.has_unique_turns)
+
+        async def confirm_tidy(_=None) -> None:
+            self.page.pop_dialog()
+            try:
+                retired = await asyncio.to_thread(self._retire_locked, archive)
+            except locks.LockedError as exc:
+                self._lock_dialog(exc)
+                return
+            except OSError as exc:
+                self._error(f'Could not tidy duplicates: {exc}')
+                return
+            self.summary.value = f'Retired {len(retired)} stale duplicate folder(s).'
+            await self.refresh_archive()
+
+        self.page.show_dialog(ft.AlertDialog(
+            modal=True,
+            key='tidy-dialog',
+            title='Tidy duplicates',
+            content=ft.Container(
+                width=580,
+                content=ft.Column(rows, spacing=8, scroll=ft.ScrollMode.AUTO, height=340),
+            ),
+            actions=[
+                ft.OutlinedButton('Close', on_click=lambda _: self.page.pop_dialog()),
+                ft.FilledButton('Retire duplicates', on_click=confirm_tidy,
+                                key='confirm-tidy', disabled=safe_count == 0),
+            ],
+        ))
 
     def _settings(self, _=None) -> None:
         try:

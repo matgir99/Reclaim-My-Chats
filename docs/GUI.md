@@ -37,7 +37,10 @@ and the update buttons stay disabled until they are solved:
 
 Warnings during a run, such as a `raw.json` that could not be written, are
 counted in the summary and listed in Details. **Open log folder** shows the
-run log, which keeps the full output of every run, including errors.
+run log, which keeps the full output of every run, including errors. **Tidy
+duplicates** scans for multiple folders belonging to the same chat, previews them,
+and retires safe duplicates while preserving copies that contain unique branch
+text (`reclaim tidy [--apply]`).
 
 **Diagnostics** lists the state of this computer: version, settings,
 database (location, chat count, write access, free space), the database and

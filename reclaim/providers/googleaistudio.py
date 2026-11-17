@@ -521,12 +521,14 @@ class GoogleAIStudio(engine.Provider):
     def open(self, page):
         ensure_logged_in(page)
         init_replay(page)
-        return SimpleNamespace(page=page, drive=DriveClient(page))
+        return SimpleNamespace(page=page, drive=DriveClient(page), listing_complete=True)
 
     def listing(self, s) -> list[engine.ChatRef]:
+        s.listing_complete = True
         try:
             chats = list_prompts(s.page)
         except Exception as e:
+            s.listing_complete = False
             emit(None, 'warning', PROVIDER,
                  message=f'ListPrompts failed ({e}); reading the library page instead')
             chats = get_chat_list(s.page)

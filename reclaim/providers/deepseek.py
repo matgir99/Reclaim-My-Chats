@@ -309,7 +309,7 @@ class DeepSeek(engine.Provider):
 
     def open(self, page):
         ensure_logged_in(page)
-        return SimpleNamespace(page=page)
+        return SimpleNamespace(page=page, listing_complete=True)
 
     def listing_text(self) -> str:
         return 'Listing DeepSeek server history (older history may be limited by the service)...'
@@ -318,6 +318,7 @@ class DeepSeek(engine.Provider):
         return f'Found {len(refs)} chats. Full messages are fetched only when selected.'
 
     def listing(self, s) -> list[engine.ChatRef]:
+        s.listing_complete = True
         summaries = list_chats(s.page)
         seen = {item['id'] for item in summaries}
         try:  # chats this browser cached locally that the server listing omits
@@ -326,10 +327,19 @@ class DeepSeek(engine.Provider):
                     summaries.append(cached)
                     seen.add(cached['id'])
         except Exception:
+            s.listing_complete = False
             emit(None, 'warning', PROVIDER, message='the browser cache could not be read; '
                                                      'only server-listed chats are available.')
         return [engine.ChatRef(id=item['id'], title=item.get('title') or '',
                                updated_at=item.get('updated_at'), data=item) for item in summaries]
+
+    def confirm_status(self, s, chat_id: str) -> str:
+        try:
+            fetch_record(s.page, chat_id)
+            return 'active'
+        except Exception as exc:
+            msg = str(exc).lower()
+            return 'deleted' if ('not found' in msg or '404' in msg) else 'unconfirmed'
 
     def from_url(self, s, url: str) -> engine.ChatRef:
         return engine.ChatRef(id=url.rsplit('/a/chat/s/', maxsplit=1)[-1].split('?', maxsplit=1)[0][:40])

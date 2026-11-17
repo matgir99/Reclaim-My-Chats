@@ -10,6 +10,7 @@ reclaim status [-o DIR]                  offline database overview
 reclaim init [DIR]                       create a database (default: the configured folder)
 reclaim doctor [--live]                  check settings, database, locks, browser, logins
 reclaim capture <provider> URL [-o FILE] record one chat's sanitized responses
+reclaim tidy [--apply] [-o DIR]          preview or retire duplicate chat folders
 reclaim unlock                           remove a lock left by a run that has ended
 reclaim gui                              launch the desktop application
 reclaim --version                        version derived from Git tags

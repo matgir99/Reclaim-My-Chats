@@ -54,6 +54,13 @@ class ChatRef:
     title: str = ''
     updated_at: Any = None  # the provider's own timestamp, if it has one
     data: Any = None       # the provider's listing entry, handed back to fetch()
+    project: str | None = None
+    state: str = 'active'
+
+
+def is_listing_complete(provider: Provider, session) -> bool:
+    """Whether `provider.listing(session)` covers every chat on the service."""
+    return bool(getattr(session, 'listing_complete', getattr(provider, 'listing_complete', True)))
 
 
 @dataclass
@@ -276,7 +283,9 @@ def download(provider: Provider, session, refs: list[ChatRef], out_dir: Path, *,
             break
         label = ref.title or ref.id
         emit(sink, 'chat_started', name, label, i, total)
-        if skip_unchanged and sync.is_unchanged(ref.id, ref.updated_at):
+        if skip_unchanged and sync.is_unchanged(
+                ref.id, ref.updated_at, title=ref.title or None,
+                project=ref.project, state=ref.state):
             emit(sink, 'chat_skipped', name, label, i, total, 'skip (unchanged)')
             continue
         results.append(_download_one(provider, session, ref, i, total, out_dir,

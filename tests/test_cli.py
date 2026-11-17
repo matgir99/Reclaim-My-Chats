@@ -223,7 +223,8 @@ class TestMovedChats(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in new.iterdir()),
                          ['New title.md', 'chat.json', 'image_1.png', 'notes.pdf'])
         self.assertEqual(sync.known('x1'), {'updated_at': 1,
-                                            'md': 'Research/New title/New title.md'})
+                                            'md': 'Research/New title/New title.md',
+                                            'state': 'active'})
         # Renaming the project removes the emptied project folder as well.
         newest = self.save(sync, 'New title', project='Research 2026')
         self.assertFalse((self.out / 'Research').exists())
@@ -262,7 +263,8 @@ class TestMovedChats(unittest.TestCase):
         # A ChatGPT project called "ChatGPT" saves to ChatGPT/ChatGPT/<chat>.
         sync = SyncState(self.out, 'chatgpt')
         old = self.save(sync, 'Old title', project='ChatGPT')
-        self.assertEqual(sync.known('x1'), {'updated_at': 1, 'md': 'ChatGPT/Old title/Old title.md'})
+        self.assertEqual(sync.known('x1'), {'updated_at': 1, 'md': 'ChatGPT/Old title/Old title.md',
+                                            'state': 'active'})
         self.save(sync, 'New title', project='ChatGPT')
         self.assertFalse(old.exists())
         sync._state['x1']['md'] = '/old/place/ChatGPT/ChatGPT/New title/New title.md'

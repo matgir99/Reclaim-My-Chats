@@ -25,7 +25,9 @@ class ProviderStatus:
     provider: str
     dir: str
     present: bool = False          # the provider folder exists in the database
-    chats: int = 0                 # distinct chats (chat.json ids) in the database
+    chats: int = 0                 # distinct active chats (chat.json ids) in the database
+    archived_chats: int = 0        # distinct chats under _Archived
+    deleted_chats: int = 0         # distinct chats under _Deleted
     chat_folders: int = 0          # chat dirs with a chat.json on disk
     synced_chats: int = 0          # distinct chats in the sync record
     last_sync: str | None = None   # manifest 'started' timestamp
@@ -50,6 +52,15 @@ def _count_chat_folders(pdir: Path) -> int:
     return sum(1 for p in pdir.rglob('chat.json') if p.is_file())
 
 
+def _bucket_state(payload: dict, rel_parts: tuple[str, ...]) -> str:
+    if '_Archived' in rel_parts:
+        return 'archived'
+    if '_Deleted' in rel_parts:
+        return 'deleted'
+    state = payload.get('state')
+    return state if state in ('archived', 'deleted') else 'active'
+
+
 def _archive_totals(pdir: Path) -> dict[str, int]:
     """Database totals from the chat.json files themselves.
 
@@ -59,12 +70,13 @@ def _archive_totals(pdir: Path) -> dict[str, int]:
     two folders (an older copy left by a rename) counts once.
     """
     images = docs = chars = 0
-    ids: set[str] = set()
+    buckets: dict[str, set[str]] = {'active': set(), 'archived': set(), 'deleted': set()}
     for cj in pdir.rglob('chat.json'):
         if not cj.is_file():
             continue
         payload = _read_json(cj)
-        ids.add(str(payload.get('id') or cj.parent))
+        cid = str(payload.get('id') or cj.parent)
+        buckets[_bucket_state(payload, cj.relative_to(pdir).parts)].add(cid)
         for turn in payload.get('turns') or []:
             if not isinstance(turn, dict):
                 continue
@@ -79,7 +91,8 @@ def _archive_totals(pdir: Path) -> dict[str, int]:
                     images += 1
                 else:
                     docs += 1
-    return {'images': images, 'docs': docs, 'chars': chars, 'chats': len(ids)}
+    return {'images': images, 'docs': docs, 'chars': chars, 'chats': len(buckets['active']),
+            'archived': len(buckets['archived']), 'deleted': len(buckets['deleted'])}
 
 
 def describe(provider: str, dirname: str, root: Path, *,
@@ -133,6 +146,8 @@ def describe(provider: str, dirname: str, root: Path, *,
     info.archive_docs = totals['docs']
     info.archive_chars = totals['chars']
     info.chats = totals['chats']
+    info.archived_chats = totals['archived']
+    info.deleted_chats = totals['deleted']
     return info
 
 
@@ -152,10 +167,14 @@ def format_status(info: ProviderStatus) -> str:
     lines = [info.dir]
     lines.append(f'  chats in database: {info.chats} '
                  f'(sync records: {info.synced_chats})')
-    if info.chat_folders > info.chats:
-        extra = info.chat_folders - info.chats
+    total_chats = info.chats + info.archived_chats + info.deleted_chats
+    if info.chat_folders > total_chats:
+        extra = info.chat_folders - total_chats
         lines.append(f'  older copies: {extra} extra folder{"s" if extra != 1 else ""} '
                      'of chats saved elsewhere')
+    if info.archived_chats or info.deleted_chats:
+        lines.append(f'  states: {info.chats} active · {info.archived_chats} archived · '
+                     f'{info.deleted_chats} deleted')
     img = (f'{info.archive_images} image' if info.archive_images == 1
            else f'{info.archive_images} images')
     doc = (f'{info.archive_docs} doc' if info.archive_docs == 1

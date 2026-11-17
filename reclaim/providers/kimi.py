@@ -242,6 +242,14 @@ def _materialize_images(page, chat: Chat, image_map: dict) -> int:
     return ok
 
 
+def _project_name(item: dict) -> str | None:
+    proj = item.get('project')
+    if isinstance(proj, dict) and isinstance(proj.get('name'), str):
+        return proj['name'] or None
+    name = item.get('project_name')
+    return name or None if isinstance(name, str) else None
+
+
 class Kimi(engine.Provider):
     """What only Kimi does; the engine does the rest."""
 
@@ -251,12 +259,14 @@ class Kimi(engine.Provider):
     pace = 0.3
 
     def open(self, page):
-        return SimpleNamespace(page=page, token=ensure_logged_in(page))
+        return SimpleNamespace(page=page, token=ensure_logged_in(page), listing_complete=True)
 
     def listing(self, s) -> list[engine.ChatRef]:
+        s.listing_complete = True
         return [engine.ChatRef(id=c.get('id') or c.get('chat_id') or '',
                                title=c.get('name') or c.get('title') or '',
-                               updated_at=c.get('updateTime') or c.get('updated_at'), data=c)
+                               updated_at=c.get('updateTime') or c.get('updated_at'),
+                               data=c, project=_project_name(c))
                 for c in list_chats(s.page, s.token)]
 
     def from_url(self, s, url: str) -> engine.ChatRef:
@@ -275,6 +285,8 @@ class Kimi(engine.Provider):
         chat, image_map = parse_chat(meta, messages)
         if not chat.visible_turns():
             raise RuntimeError('Kimi returned no readable messages; response shape may have changed')
+        if ref.project or _project_name(meta):
+            chat.project = ref.project or _project_name(meta)
         images = _materialize_images(s.page, chat, image_map)
         return engine.Fetched(chat, raw={'meta': meta, 'messages': messages},
                               detail=f'images: {images}')

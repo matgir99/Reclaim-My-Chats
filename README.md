@@ -87,6 +87,7 @@ reclaim unlock                        # remove a lock left by a run that has end
 reclaim doctor                        # check settings, database, locks, browser, login data
 reclaim doctor --live                 # also log in to each provider and list its chats
 reclaim capture PROVIDER URL [-o FILE]  # record sanitized responses for one chat
+reclaim tidy [--apply] [-o DIR]       # preview or retire duplicate chat folders
 ```
 
 Run `reclaim <provider> --help` for `--skip`, `--limit`, `--log`, `--no-raw`,
