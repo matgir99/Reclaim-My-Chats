@@ -33,6 +33,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from .fsutil import atomic_write_text
 
@@ -127,12 +128,17 @@ def profile_root(root: Path | None = None) -> Path:
     return base / '.playwright-profile'
 
 
+def _is_kimi_mainland(url: str) -> bool:
+    host = (urlsplit(url.strip()).hostname or '').lower()
+    return host == 'kimi.com' or host.endswith('.kimi.com')
+
+
 def migrate(data: dict) -> dict:
     """Upgrade validated settings to `SETTINGS_VERSION`."""
     migrated = dict(data)
     kimi_url = migrated.pop('kimi_url', None)
     if isinstance(kimi_url, str) and 'kimi_region' not in migrated:
-        migrated['kimi_region'] = 'mainland' if 'kimi.com' in kimi_url.lower() else 'international'
+        migrated['kimi_region'] = 'mainland' if _is_kimi_mainland(kimi_url) else 'international'
     migrated['version'] = SETTINGS_VERSION
     return migrated
 
