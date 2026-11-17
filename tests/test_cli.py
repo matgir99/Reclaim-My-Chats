@@ -6,6 +6,7 @@ No browser required. Run: ./run_tests.sh
 
 import io
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -13,6 +14,7 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 from typing import ClassVar
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -221,7 +223,8 @@ class TestMovedChats(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in new.iterdir()),
                          ['New title.md', 'chat.json', 'image_1.png', 'notes.pdf'])
         self.assertEqual(sync.known('x1'), {'updated_at': 1,
-                                            'md': 'Research/New title/New title.md'})
+                                            'md': 'Research/New title/New title.md',
+                                            'state': 'active'})
         # Renaming the project removes the emptied project folder as well.
         newest = self.save(sync, 'New title', project='Research 2026')
         self.assertFalse((self.out / 'Research').exists())
@@ -260,7 +263,8 @@ class TestMovedChats(unittest.TestCase):
         # A ChatGPT project called "ChatGPT" saves to ChatGPT/ChatGPT/<chat>.
         sync = SyncState(self.out, 'chatgpt')
         old = self.save(sync, 'Old title', project='ChatGPT')
-        self.assertEqual(sync.known('x1'), {'updated_at': 1, 'md': 'ChatGPT/Old title/Old title.md'})
+        self.assertEqual(sync.known('x1'), {'updated_at': 1, 'md': 'ChatGPT/Old title/Old title.md',
+                                            'state': 'active'})
         self.save(sync, 'New title', project='ChatGPT')
         self.assertFalse(old.exists())
         sync._state['x1']['md'] = '/old/place/ChatGPT/ChatGPT/New title/New title.md'
@@ -608,6 +612,9 @@ class TestConfig(unittest.TestCase):
         from reclaim.core import config
         for text, reason in (('{"providers": "chatgpt"}', 'providers'),
                              ('{"profile": 7}', 'profile'),
+                             ('{"chrome_path": 7}', 'chrome_path'),
+                             ('{"kimi_region": "mars"}', 'kimi_region'),
+                             ('{"login_timeout": 5}', 'login_timeout'),
                              ('["chatgpt"]', 'JSON object'),
                              ('{"version": 99}', 'newer version')):
             self._write(text)
@@ -619,6 +626,72 @@ class TestConfig(unittest.TestCase):
         self._write('{"providers": []}')
         chosen, _, _ = config.selected_providers(self.root, self.ALL)
         self.assertEqual(chosen, self.ALL)
+
+    def test_v1_migration_and_runtime_settings_with_env_overrides(self):
+        from reclaim.core import browser, config
+        from reclaim.providers import kimi
+        self._write(json.dumps({
+            'version': 1,
+            'providers': ['kimi'],
+            'kimi_url': 'https://www.kimi.com',
+        }))
+        loaded = config.load(self.root)
+        self.assertEqual(loaded['version'], config.SETTINGS_VERSION)
+        self.assertEqual(loaded['kimi_region'], 'mainland')
+        self.assertNotIn('kimi_url', loaded)
+
+        config.save(self.root, providers=['kimi'], archive=None,
+                    kimi_region='mainland', chrome_path='/opt/chrome/chrome',
+                    login_timeout=120)
+        with patch.dict(os.environ, {'RECLAIM_HOME': str(self.root)}, clear=False):
+            os.environ.pop('RECLAIM_KIMI_URL', None)
+            os.environ.pop('RECLAIM_CHROME_PATH', None)
+            os.environ.pop('RECLAIM_LOGIN_TIMEOUT', None)
+            self.assertEqual(config.kimi_base_url(self.root), 'https://www.kimi.com')
+            self.assertEqual(kimi.base_url(), 'https://www.kimi.com')
+            self.assertEqual(browser.find_chrome(self.root), '/opt/chrome/chrome')
+            self.assertEqual(browser.login_timeout(self.root), 120)
+            with patch.dict(os.environ, {
+                'RECLAIM_KIMI_URL': 'https://custom.kimi.example/',
+                'RECLAIM_CHROME_PATH': '/env/chromium',
+                'RECLAIM_LOGIN_TIMEOUT': '450',
+            }):
+                self.assertEqual(config.kimi_base_url(self.root), 'https://custom.kimi.example')
+                self.assertEqual(kimi.base_url(), 'https://custom.kimi.example')
+                self.assertEqual(browser.find_chrome(self.root), '/env/chromium')
+                self.assertEqual(browser.login_timeout(self.root), 450)
+
+
+class TestReleasesAndChecks(unittest.TestCase):
+    def test_version_parsing_and_update_notice(self):
+        from reclaim.core import releases
+        self.assertEqual(releases.parse_version('v3.3.4'), (3, 3, 4))
+        self.assertIsNone(releases.parse_version('dev'))
+        self.assertTrue(releases.is_newer('v3.4.0', '3.3.4'))
+        self.assertFalse(releases.is_newer('v3.3.4', '3.3.4'))
+        info = releases.check_for_update(
+            current='3.3.4',
+            fetcher=lambda _url: {'tag_name': 'v3.4.0',
+                                  'html_url': 'https://github.com/matgir99/Reclaim-My-Chats/releases/tag/v3.4.0'})
+        assert info is not None
+        self.assertEqual(info.version, '3.4.0')
+        self.assertIsNone(releases.check_for_update(current='dev', fetcher=lambda _u: {}))
+        self.assertIsNone(releases.check_for_update(
+            current='3.3.4',
+            fetcher=lambda _url: (_ for _ in ()).throw(OSError('offline'))))
+
+    def test_status_reports_last_checked_separately_from_last_sync(self):
+        from reclaim.core import manifest, status
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db = root / 'chats'
+            db.mkdir()
+            manifest.record_check(root, 'chatgpt', started=1700000000.0)
+            infos = status.scan(db, checks_root=root)
+            chatgpt = next(i for i in infos if i.provider == 'chatgpt')
+            self.assertIsNone(chatgpt.last_sync)
+            self.assertIsNotNone(chatgpt.last_checked)
+            self.assertIn('last checked:', status.format_status(chatgpt))
 
 
 class TestDispatch(unittest.TestCase):

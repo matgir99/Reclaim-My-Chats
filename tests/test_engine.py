@@ -14,7 +14,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from reclaim.core import engine
+from reclaim.core import browser, engine
 from reclaim.core.events import ProgressEvent
 from reclaim.core.manifest import SyncState
 from reclaim.core.model import Chat, Turn
@@ -226,6 +226,46 @@ class TestEngine(unittest.TestCase):
             self.assertEqual(modules['chatgpt']._spec.fetched, ['a'])
             self.assertTrue((root / 'chats' / 'ChatGPT' / 'Alpha' / 'Alpha.md').exists())
             self.assertTrue(any(e.kind == 'stopped' and e.provider == 'chatgpt' for e in events))
+
+    def test_wait_for_login_and_bring_browser_forward(self):
+        class _Page:
+            def __init__(self):
+                self.fronted = 0
+                self.context = self
+
+            def bring_to_front(self):
+                self.fronted += 1
+
+        page = _Page()
+        with patch.object(browser, 'set_window_bounds'):
+            self.assertTrue(browser.bring_browser_forward(page))
+        self.assertEqual(page.fronted, 1)
+
+        with patch.object(browser, 'ask_for_login') as ask:
+            self.assertEqual(browser.wait_for_login(page, 'chatgpt', 'ChatGPT', lambda: 'tok'), 'tok')
+        ask.assert_not_called()
+
+        attempts = iter([RuntimeError('not yet'), 'tok-2'])
+        events: list[ProgressEvent] = []
+
+        def probe():
+            val = next(attempts)
+            if isinstance(val, Exception):
+                raise val
+            return val
+
+        with (patch.object(browser, 'login_timeout', return_value=30),
+              patch.object(browser, 'set_window_bounds'),
+              patch.object(browser.time, 'sleep'),
+              patch('reclaim.core.browser.emit', side_effect=lambda _s, k, p='', message='':
+                    events.append(ProgressEvent(k, p, message=message)))):
+            self.assertEqual(browser.wait_for_login(page, 'kimi', 'Kimi', probe, interval=0), 'tok-2')
+        self.assertEqual([e.kind for e in events], ['login_needed', 'logged_in'])
+
+        with (patch.object(browser, 'login_timeout', return_value=-1),
+              patch.object(browser, 'ask_for_login'),
+              self.assertRaisesRegex(RuntimeError, 'Login timeout')):
+            browser.wait_for_login(page, 'kimi', 'Kimi', lambda: None)
 
 
 if __name__ == '__main__':

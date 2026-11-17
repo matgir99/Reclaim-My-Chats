@@ -79,7 +79,7 @@ retains a scrubbed provider response to help recover from parser errors.
 | `id`, `title`, `source_url`, `provider`, `project` | The chat and where it came from |
 | `provider_updated_at` | The provider's own timestamp for this version of the chat |
 | `saved_at` | When this copy was written (UTC) |
-| `state` | `active`; `archived` and `deleted` are planned (see the roadmap) |
+| `state` | `active`, `archived`, or `deleted` |
 | `markdown` | The file name of the chat's Markdown |
 | `had_thoughts`, `errors` | Whether reasoning was omitted; provider-side errors |
 | `turns` | Normalized turns with their saved images and attachments |
@@ -91,12 +91,17 @@ is saved again.
 ## Records
 
 Each provider's `.last_sync_<provider>.json` maps chat IDs to provider
-timestamps and saved Markdown paths, relative to the provider folder.
+timestamps, Markdown paths (relative to the provider folder), titles, project
+names, and states (`active`, `archived`, or `deleted`).
 Default update mode skips entries classified as unchanged. The record is
 saved after every chat, so an interrupted run keeps the records of the
 chats it saved. If the file is missing or damaged, it is rebuilt from the
 `chat.json` files; a damaged file is kept beside it as
 `.last_sync_<provider>.json.damaged-<time>`.
+
+Lifecycle moves into `_Archived/`, `_Deleted/`, or back to active folders are
+appended to `.reclaim_events.jsonl` in each provider folder (time, chat ID,
+previous path, target path, state, and reason).
 
 `.reclaim_manifest.json` records when the last run started, its duration,
 per-chat results, and totals such as chats, successes, failures, images,

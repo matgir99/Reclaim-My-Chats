@@ -16,9 +16,12 @@ install either to run the download.
 
 | System | Release asset | How to start |
 |:--|:--|:--|
-| Linux x86_64 | `Reclaim-My-Chats-*-linux-x86_64.tar.gz` | Extract it and run `ReclaimMyChats/ReclaimMyChats` |
-| Windows x86_64 | `Reclaim-My-Chats-*-windows-x86_64.zip` | Extract it and open `ReclaimMyChats.exe` |
-| macOS | `Reclaim-My-Chats-*-macos-*.zip` | Extract it and open `ReclaimMyChats.app` |
+| Linux (AppImage) | `Reclaim-My-Chats-*-linux-x86_64.AppImage` | Mark executable (`chmod +x`) and open or run it |
+| Linux (Debian/Ubuntu/Mint) | `Reclaim-My-Chats-*-linux-x86_64.deb` | Install with `sudo apt install ./Reclaim-My-Chats-*-linux-x86_64.deb` |
+| Linux (portable tarball) | `Reclaim-My-Chats-*-linux-x86_64.tar.gz` | Extract it and run `ReclaimMyChats/ReclaimMyChats` |
+| Windows (installer) | `Reclaim-My-Chats-*-windows-x86_64-setup.exe` | Run the per-user installer (no admin rights required) |
+| Windows (portable zip) | `Reclaim-My-Chats-*-windows-x86_64.zip` | Extract it and open `ReclaimMyChats/ReclaimMyChats.exe` |
+| macOS (Apple Silicon & Intel) | `Reclaim-My-Chats-*-macos-{arm64,x86_64}.dmg` (or `.zip`) | Open the `.dmg` and drag `ReclaimMyChats.app` to Applications |
 
 Install Chrome or Chromium if the application reports that no browser is
 available. The first update of each provider may show a browser window for
@@ -27,12 +30,16 @@ profile and uses it for subsequent updates. The desktop download does not
 contain a browser or account credentials. Unsigned Windows and macOS builds
 may show their usual security prompts.
 
-The main window lets you select providers, update selected or all enabled
-providers, stop an active run after the current chat, preview a dry run,
-rebuild selected providers, inspect progress and
-errors, and open or change the database folder. Rebuild fetches every selected
-conversation again and overwrites its copy in the database. A dry run contacts
-the providers to list conversations, but does not write to the database.
+The main window provides a **First-run setup** wizard (database and login
+folders, Chrome detection, enabled providers, and initial login) and a
+provider table with status chips and per-row **Log in** / **Review** buttons.
+It lets you select providers, update selected or all enabled providers, stop an
+active run after the current chat, check for updates without writing to the
+database, download everything again, bring a browser window awaiting login
+forward, inspect progress and errors, and open or change the database folder.
+**Download everything again** fetches every selected conversation again and
+overwrites its copy in the database. **Check for updates** contacts the
+providers to list conversations, but does not write to the database.
 
 See [GUI usage and testing](docs/GUI.md) for settings, profile migration,
 and development commands.
@@ -40,7 +47,15 @@ and development commands.
 ## Install and use the CLI
 
 The CLI requires Python 3.12 or newer and a Chrome or Chromium browser.
-Clone the repository and install the base package:
+Install from PyPI with `pipx`:
+
+```bash
+pipx install reclaimmychats
+reclaim --version
+reclaim status
+```
+
+Or clone the repository and install from source:
 
 ```bash
 git clone https://github.com/matgir99/Reclaim-My-Chats.git
@@ -83,23 +98,27 @@ reclaim unlock                        # remove a lock left by a run that has end
 reclaim doctor                        # check settings, database, locks, browser, login data
 reclaim doctor --live                 # also log in to each provider and list its chats
 reclaim capture PROVIDER URL [-o FILE]  # record sanitized responses for one chat
+reclaim tidy [--apply] [-o DIR]       # preview or retire duplicate chat folders
 ```
 
 Run `reclaim <provider> --help` for `--skip`, `--limit`, `--log`, `--no-raw`,
-and `-o/--output-dir`. Single provider commands run even if that provider is
-disabled in settings; `reclaim all` uses the configured provider list.
+`--only-id`, and `-o/--output-dir`. Single provider commands run even if that
+provider is disabled in settings; `reclaim all` uses the configured provider
+list.
 
 See the [provider compatibility review](docs/UPSTREAM_REVIEW.md) for current
-format support, upstream sources, and limits on older or very long histories.
-Planned work, including archived/deleted chat handling and update checks
-when the app starts, is in the [roadmap](docs/ROADMAP.md).
+format support, upstream sources, and limits on older or very long histories, and
+the [roadmap](docs/ROADMAP.md) for completed phases and remaining optional work.
 
 ## Database and settings
 
 The **database** is the folder where Reclaim My Chats saves every chat it
-downloads, whatever its state at the provider. **Archived** refers only to a
-provider's own archive feature, such as archiving a chat in ChatGPT; see the
-[roadmap](docs/ROADMAP.md) for how those chats will be kept apart.
+downloads. **Archived** and **deleted** refer only to states at the provider:
+when a provider archives or confirms deletion of a chat, Reclaim My Chats moves
+its saved folder into `_Archived/` or `_Deleted/` inside that provider's folder
+rather than deleting user files (recording moves in `.reclaim_events.jsonl` and
+halting large batches behind a confirmation brake). Use **Archived & deleted** in
+the window to inspect, restore, or explicitly remove them.
 
 Each provider writes to `<database>/<Provider>/<chat>/`. A chat folder contains
 readable Markdown, `chat.json`, optional `raw.json`, and downloaded media.
@@ -155,22 +174,31 @@ desktop downloads use an operating system data folder instead:
 
 The database is `chats/` and the browser profile is `.playwright-profile/`
 inside that data folder by default. Set `RECLAIM_HOME` to use an existing
-checkout or another data folder. In the GUI, **Settings** can choose a
-database folder and an existing browser profile. This lets a standalone download
-reuse the login sessions from a checkout without copying cookies. Do not open
-two Reclaim processes with the same profile simultaneously.
+checkout or another data folder. In the GUI, **Settings** configures enabled providers, the database folder, an
+optional login data folder (for reusing login sessions from a checkout without
+copying cookies), the Kimi region (`international` or `mainland`), an optional
+Chrome or Chromium executable path, the manual login wait time, whether to
+check for updates on startup without blocking on logins, and whether to start
+the app at system login (desktop notifications are sent when merges complete
+unless `RECLAIM_NO_NOTIFY=1` is set). Environment variables
+(`RECLAIM_KIMI_URL`, `RECLAIM_CHROME_PATH`, `RECLAIM_LOGIN_TIMEOUT`)
+remain available as overrides. Do not open two Reclaim processes with the same
+profile simultaneously.
 
-Kimi accounts outside mainland China use kimi.ai, which is the default. For
-a mainland China account, set `RECLAIM_KIMI_URL=https://www.kimi.com`.
-
-For manual configuration (the `archive` key names the database folder; its
-name is kept for compatibility):
+For manual configuration (settings version 2; the `archive` key names the
+database folder for compatibility):
 
 ```json
 {
+  "version": 2,
   "providers": ["chatgpt", "claude"],
   "archive": "/path/to/chats",
-  "profile": "/path/to/existing/.playwright-profile"
+  "profile": "/path/to/existing/.playwright-profile",
+  "kimi_region": "international",
+  "chrome_path": "/usr/bin/google-chrome",
+  "login_timeout": 900,
+  "check_on_startup": false,
+  "start_at_login": false
 }
 ```
 

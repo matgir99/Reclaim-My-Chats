@@ -521,12 +521,14 @@ class GoogleAIStudio(engine.Provider):
     def open(self, page):
         ensure_logged_in(page)
         init_replay(page)
-        return SimpleNamespace(page=page, drive=DriveClient(page))
+        return SimpleNamespace(page=page, drive=DriveClient(page), listing_complete=True)
 
     def listing(self, s) -> list[engine.ChatRef]:
+        s.listing_complete = True
         try:
             chats = list_prompts(s.page)
         except Exception as e:
+            s.listing_complete = False
             emit(None, 'warning', PROVIDER,
                  message=f'ListPrompts failed ({e}); reading the library page instead')
             chats = get_chat_list(s.page)
@@ -564,6 +566,21 @@ class GoogleAIStudio(engine.Provider):
                 emit(None, 'warning', PROVIDER, ref.title or ref.id,
                      message=f'raw.json was not saved: {e}')
         return engine.Fetched(chat, raw=raw, detail=f'path: {path}', extra={'path': path})
+
+    def confirm_status(self, s, chat_id: str) -> str:
+        try:
+            status, text = rpc_call(s.page, 'ResolveDriveResource', [chat_id], retries=1)
+        except Exception:
+            return 'unconfirmed'
+        if status == 404:
+            return 'deleted'
+        if status != 200:
+            return 'unconfirmed'
+        try:
+            parsed = parse_rpc(json.loads(text))
+        except Exception:
+            return 'unconfirmed'
+        return 'active' if parsed and parsed.get('entries') else 'unconfirmed'
 
 
 SPEC = GoogleAIStudio()

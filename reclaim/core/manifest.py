@@ -61,13 +61,47 @@ def write_attempt(out_dir: Path, started: float, code: int, error: str | None) -
     atomic_write_text(out_dir / '.reclaim_last_attempt.json', json.dumps(data, ensure_ascii=False))
 
 
+CHECKS_FILE = '.reclaim_checks.json'
+
+
+def read_checks(root: Path) -> dict[str, str]:
+    """Last successful check timestamp per provider stored under `root`."""
+    try:
+        data = json.loads((Path(root) / CHECKS_FILE).read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {k: v for k, v in data.items() if isinstance(k, str) and isinstance(v, str)}
+
+
+def record_check(root: Path, provider: str, started: float | None = None) -> None:
+    """Record when `provider` was last contacted successfully without touching the database."""
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+    data = read_checks(root)
+    ts = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(started or time.time()))
+    data[provider] = ts
+    atomic_write_text(root / CHECKS_FILE, json.dumps(data, indent=2, ensure_ascii=False) + '\n')
+
+
+def _inferred_state(payload: dict | None, rel_parts: tuple[str, ...]) -> str:
+    state = (payload or {}).get('state')
+    if isinstance(state, str) and state:
+        return state
+    if '_Archived' in rel_parts:
+        return 'archived'
+    if '_Deleted' in rel_parts:
+        return 'deleted'
+    return 'active'
+
+
 def rebuild_records(out_dir: Path) -> dict:
     """Sync records reconstructed from the chat folders under `out_dir`.
 
-    Uses each chat.json's id, provider timestamp and Markdown name. A chat
-    saved in two folders keeps the most recently written one. Chats saved
-    before chat.json recorded the timestamp get `updated_at: None`, so the
-    next update downloads them once more."""
+    Uses each chat.json's id, provider timestamp, Markdown name, title,
+    project and state. A chat saved in two folders keeps the most recently
+    written one."""
     out_dir = Path(out_dir)
     records: dict[str, dict] = {}
     newest: dict[str, float] = {}
@@ -83,8 +117,14 @@ def rebuild_records(out_dir: Path) -> dict:
             continue
         newest[cid] = written
         md = path.parent / str((payload or {}).get('markdown') or f'{path.parent.name}.md')
-        records[cid] = {'updated_at': (payload or {}).get('provider_updated_at'),
-                        'md': md.relative_to(out_dir).as_posix()}
+        rel_parts = md.relative_to(out_dir).parts
+        records[cid] = {
+            'updated_at': (payload or {}).get('provider_updated_at'),
+            'md': md.relative_to(out_dir).as_posix(),
+            'title': (payload or {}).get('title') or path.parent.name,
+            'project': (payload or {}).get('project'),
+            'state': _inferred_state(payload, rel_parts),
+        }
     return records
 
 
@@ -146,29 +186,53 @@ class SyncState:
     def known(self, chat_id: str) -> dict | None:
         return self._state.get(chat_id)
 
-    def classify(self, chat_id: str, updated_at) -> str:
-        """'new' (no local record), 'changed' (record, timestamp differs),
-        or 'unchanged' (record matches). Missing timestamps fall back to
-        presence: an existing record means 'unchanged'."""
+    def records(self) -> dict[str, dict]:
+        """Copy of all sync records keyed by chat id."""
+        return dict(self._state)
+
+    def forget(self, chat_id: str) -> None:
+        """Remove `chat_id` from the sync record after permanent deletion."""
+        if not self.readonly and self._state.pop(chat_id, None) is not None:
+            self.save()
+
+    @staticmethod
+    def _metadata_changed(prev: dict, title: str | None, project: str | None) -> bool:
+        if title is not None and prev.get('title') and prev.get('title') != title:
+            return True
+        return bool(project is not None and 'project' in prev and prev.get('project') != project)
+
+    def classify(self, chat_id: str, updated_at, *, title: str | None = None,
+                 project: str | None = None, state: str = 'active') -> str:
+        """'new', 'restored', 'archived', 'changed', or 'unchanged'."""
         prev = self._state.get(chat_id)
         if prev is None:
             return 'new'
+        prev_state = prev.get('state') or 'active'
+        if prev_state != state:
+            return 'restored' if state == 'active' else 'archived'
+        if self._metadata_changed(prev, title, project):
+            return 'changed'
         if updated_at is None:
             return 'unchanged'
         return 'changed' if prev.get('updated_at') != updated_at else 'unchanged'
 
-    def is_unchanged(self, chat_id: str, updated_at) -> bool:
-        return self.classify(chat_id, updated_at) == 'unchanged'
+    def is_unchanged(self, chat_id: str, updated_at, *, title: str | None = None,
+                     project: str | None = None, state: str = 'active') -> bool:
+        return self.classify(chat_id, updated_at, title=title, project=project,
+                             state=state) == 'unchanged'
 
     def _resolve(self, md: str, chat_id: str | None = None) -> Path:
         return locate_recorded(self.path.parent, md, chat_id)
 
-    def mark(self, chat_id: str, updated_at, md_path: str):
+    def mark(self, chat_id: str, updated_at, md_path: str, *,
+             title: str | None = None, project: str | None = None,
+             state: str = 'active'):
         """Record a written chat and save at once; retire its previous
         folder if it moved. Read-only states only update memory."""
         out_dir = self.path.parent
         current = Path(md_path)
-        previous = (self._state.get(chat_id) or {}).get('md')
+        prev = self._state.get(chat_id) or {}
+        previous = prev.get('md')
         if not self.readonly and isinstance(previous, str) and previous:
             try:
                 retire_previous(out_dir, chat_id, self._resolve(previous, chat_id), current)
@@ -179,7 +243,14 @@ class SyncState:
             stored = current.resolve().relative_to(out_dir.resolve()).as_posix()
         except ValueError:
             stored = str(current)
-        self._state[chat_id] = {'updated_at': updated_at, 'md': stored}
+        resolved_title = title if title is not None else prev.get('title')
+        resolved_project = project if project is not None else prev.get('project')
+        entry: dict = {'updated_at': updated_at, 'md': stored, 'state': state}
+        if resolved_title is not None:
+            entry['title'] = resolved_title
+        if resolved_project is not None:
+            entry['project'] = resolved_project
+        self._state[chat_id] = entry
         self.save()
 
     def save(self):
@@ -209,14 +280,15 @@ def finish_run(out_dir: Path, provider: str, results: list[dict], started: float
 
 
 def save_chat(chat: Chat, out_dir: Path, sync: SyncState, sync_id: str, updated_at,
-              raw=None, *, sink: EventSink | None = None, provider: str = '') -> dict:
+              raw=None, *, sink: EventSink | None = None, provider: str = '',
+              state: str = 'active') -> dict:
     """Save one downloaded chat: its folder, raw.json and sync record.
 
     Shared by every provider. A raw.json that cannot be written is reported
     as a warning event (terminal or window, and the log) instead of ignored;
     the chat itself still counts as saved. Returns write_chat's stats plus
     'warnings'."""
-    stats = write_chat(chat, out_dir, updated_at=updated_at)
+    stats = write_chat(chat, out_dir, updated_at=updated_at, state=state)
     warnings: list[str] = []
     if raw is not None:
         try:
@@ -225,7 +297,8 @@ def save_chat(chat: Chat, out_dir: Path, sync: SyncState, sync_id: str, updated_
             warnings.append(f'raw.json was not saved: {exc}')
     for warning in warnings:
         emit(sink, 'warning', provider, chat.title, message=warning)
-    sync.mark(sync_id, updated_at, str(stats['md']))
+    sync.mark(sync_id, updated_at, str(stats['md']),
+              title=chat.title, project=chat.project, state=state)
     stats['warnings'] = warnings
     return stats
 
@@ -284,7 +357,7 @@ def report_dry_run(chats: list[dict], updated_map: dict | None, sync: SyncState,
             action = f'fetch ({state})'
         emit(sink, 'chat_planned', provider,
              str(chat.get('title') or chat.get('name') or chat.get('id') or '?'),
-             i, len(chats), action)
+             i, len(chats), action, detail=str(chat.get('id') or ''))
     if skip_unchanged:
         counts = (f'would fetch: {plan["fetch"]} ({plan["new"]} new, {plan["changed"]} '
                   f'changed) · would skip: {plan["skip"]} unchanged')

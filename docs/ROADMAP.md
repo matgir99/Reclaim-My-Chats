@@ -109,24 +109,24 @@ caught before users see them.
 Goal: someone who never opens a terminal can set up the app, log in,
 update the database and solve common problems.
 
-- [ ] First-run setup: find an existing database and login data folder or
+- [x] First-run setup: find an existing database and login data folder or
       create new ones, choose providers, check that Chrome is installed,
       and log in to each provider.
-- [ ] Main window as a provider table: a status chip, chats in the
+- [x] Main window as a provider table: a status chip, chats in the
       database, last checked, and a *Log in* or *Review* button per row.
-- [ ] One shared login check for every provider (a real request, not
+- [x] One shared login check for every provider (a real request, not
       only a cookie or token), run by the engine, and the same login wait
       everywhere. A visible banner says which provider needs a login, with
       a button that brings the browser window forward.
 - [x] A *Stop* button that ends a run after the current chat.
-- [ ] Plain labels: *Check for updates*, *Download everything again*,
+- [x] Plain labels: *Check for updates*, *Download everything again*,
       *Login data folder*. Show "last checked" separately from "last
       download".
-- [ ] Every setting in the window, including the Kimi region, the Chrome
+- [x] Every setting in the window, including the Kimi region, the Chrome
       location and the login wait. Environment variables remain only as
       overrides.
-- [ ] Version number and a notice when a new release is available.
-- [ ] A version number in the settings file, with migrations.
+- [x] Version number and a notice when a new release is available.
+- [x] A version number in the settings file, with migrations.
 
 ## Phase 4. Follow chats at the provider
 
@@ -212,54 +212,54 @@ one at a time with synthetic tests of each response shape.
 
 ### Tasks
 
-- [ ] Sync records with title, project and state.
-- [ ] A completeness flag returned by every provider listing.
-- [ ] A lifecycle planner shared by all providers: classify, confirm,
+- [x] Sync records with title, project and state.
+- [x] A completeness flag returned by every provider listing.
+- [x] A lifecycle planner shared by all providers: classify, confirm,
       apply the brake, report.
-- [ ] ChatGPT archived listing and deletion confirmation, then the other
+- [x] ChatGPT archived listing and deletion confirmation, then the other
       providers one at a time, including Claude, Kimi and Gemini grouping.
-- [ ] Moves into and out of `_Archived` and `_Deleted`, with the event
+- [x] Moves into and out of `_Archived` and `_Deleted`, with the event
       log. (The writer already reserves both names.)
-- [ ] Check without writing, and merge of an approved subset.
-- [ ] Tidy: find chats saved in more than one folder and retire stale
+- [x] Check without writing, and merge of an approved subset.
+- [x] Tidy: find chats saved in more than one folder and retire stale
       copies after a preview. Covers the duplicates created before
       November 2026. **Window:** a *Tidy* action with a preview.
       **CLI:** `reclaim tidy`.
-- [ ] **Window:** the review dialog (per-provider lists with checkboxes,
+- [x] **Window:** the review dialog (per-provider lists with checkboxes,
       merge all, merge selected, skip); a review screen for `_Archived`
       and `_Deleted` to open, restore or permanently delete chats with
       confirmation; counts per state in the provider table.
       **CLI:** the same plan in `--dry-run`, and `reclaim status` counts
       per state.
-- [ ] **Window:** setting to check for updates when the app starts (off
+- [x] **Window:** setting to check for updates when the app starts (off
       by default). Opening the app then runs *Check* and shows *Review*
       when something was found. The automatic check never waits for a
       login; a provider that needs one shows *Log in*.
-- [ ] **Window:** setting to start the app at login (off by default),
+- [x] **Window:** setting to start the app at login (off by default),
       creating a per-user autostart entry: an XDG autostart `.desktop`
       file on Linux, a `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
       value on Windows, and a login item on macOS. Turning it off removes
       the entry.
-- [ ] A run summary after each merge, also as a desktop notification.
+- [x] A run summary after each merge, also as a desktop notification.
 
 ## Phase 5. Packaging and updates
 
 Goal: installing, updating and removing the app works the way people
 expect on each system, and fixes reach users quickly.
 
-- [ ] Build the desktop apps from the GUI dependencies only, removing
+- [x] Build the desktop apps from the GUI dependencies only, removing
       about 20 MB of unused libraries.
-- [ ] Linux: an AppImage with an unpacked folder inside (faster start) and
+- [x] Linux: an AppImage with an unpacked folder inside (faster start) and
       a `.deb` for Debian, Ubuntu and Mint, both with a menu entry and
       icon. Build on an older base (glibc 2.35 or lower) so Ubuntu 22.04,
       Debian 12 and Mint 21 can run it; v3.3.3 needs glibc 2.38.
-- [ ] Windows: a per-user installer that needs no administrator rights,
+- [x] Windows: a per-user installer that needs no administrator rights,
       with a Start menu entry, an uninstaller and the start-at-login
       option.
-- [ ] macOS: a `.dmg` with drag-to-Applications, plus an Intel build.
-- [ ] PyPI releases, so the command line installs with `pipx install
+- [x] macOS: a `.dmg` with drag-to-Applications, plus an Intel build.
+- [x] PyPI releases, so the command line installs with `pipx install
       reclaimmychats`.
-- [ ] Build-provenance attestations on release files.
+- [x] Build-provenance attestations on release files.
 - [ ] Later, if users need it: code signing for Windows and macOS (paid).
 
 Not planned: a Flatpak or Snap, whose sandbox blocks starting the

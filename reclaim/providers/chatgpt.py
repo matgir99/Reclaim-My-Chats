@@ -107,34 +107,19 @@ def ensure_logged_in(page):
     with contextlib.suppress(Exception):  # navigation quirks are fine; the token probe decides
         page.goto(BASE_URL, wait_until='domcontentloaded', timeout=60000)
     time.sleep(4)
-    try:
-        return get_session_token(page)
-    except Exception:
-        pass
-    # Login may be an SPA flow (no reliable URL marker): show the window
-    # and poll until a session token is available.
-    timeout = browser.login_timeout()
-    browser.ask_for_login(page, PROVIDER, 'ChatGPT', timeout)
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            token = get_session_token(page)
-            browser.login_done(page, PROVIDER)
-            return token
-        except Exception:
-            time.sleep(3)
-    raise RuntimeError('Login timeout')
+    return browser.wait_for_login(page, PROVIDER, 'ChatGPT', lambda: get_session_token(page))
 
 
-def list_conversations(page, token: str) -> list[dict]:
+def list_conversations(page, token: str, *, archived: bool = False) -> list[dict]:
     """Every conversation outside projects, most recently updated first,
     paged by offset until an empty page."""
     items, offset = [], 0
     seen = set()
+    extra = '&is_archived=true' if archived else ''
     while True:
         data = _get(page, token,
                     f'{BASE_URL}/backend-api/conversations?offset={offset}'
-                    f'&limit={PAGE_LIMIT}&order=updated')
+                    f'&limit={PAGE_LIMIT}&order=updated{extra}')
         batch = data.get('items') if isinstance(data, dict) else None
         if not isinstance(batch, list):
             raise RuntimeError('unexpected ChatGPT conversation list shape')
@@ -153,6 +138,11 @@ def list_conversations(page, token: str) -> list[dict]:
             return items
         if not added:
             raise RuntimeError('ChatGPT conversation pagination made no progress')
+
+
+def list_archived_conversations(page, token: str) -> list[dict]:
+    """Every archived conversation at ChatGPT, paged until an empty page."""
+    return list_conversations(page, token, archived=True)
 
 
 # ---------------------------------------------------------------------------
@@ -366,7 +356,8 @@ class ChatGPT(engine.Provider):
     pace = 0.4
 
     def open(self, page):
-        return SimpleNamespace(page=page, token=ensure_logged_in(page), project_names=None)
+        return SimpleNamespace(page=page, token=ensure_logged_in(page),
+                               project_names=None, listing_complete=True)
 
     def listing_text(self) -> str:
         return 'Listing conversations (main list + projects)...'
@@ -376,9 +367,32 @@ class ChatGPT(engine.Provider):
         return f'Found {len(refs)} conversations ({in_projects} in projects)'
 
     def listing(self, s) -> list[engine.ChatRef]:
+        s.listing_complete = True
         return [engine.ChatRef(id=item.get('id', ''), title=item.get('title') or '',
-                               updated_at=item.get('update_time'), data=item)
+                               updated_at=item.get('update_time'), data=item,
+                               project=item.get('_project'),
+                               state='archived' if item.get('is_archived') else 'active')
                 for item in list_all_conversations(s.page, s.token)]
+
+    def archived_listing(self, s) -> list[engine.ChatRef]:
+        return [engine.ChatRef(id=item.get('id', ''), title=item.get('title') or '',
+                               updated_at=item.get('update_time'), data=item,
+                               state='archived')
+                for item in list_archived_conversations(s.page, s.token)]
+
+    def confirm_status(self, s, chat_id: str) -> str:
+        try:
+            data = _get(s.page, s.token,
+                        f'{BASE_URL}/backend-api/conversation/{chat_id}', retries=1)
+        except Exception as exc:
+            msg = str(exc).lower()
+            return 'deleted' if ('404' in msg or 'not found' in msg) else 'unconfirmed'
+        if isinstance(data, dict):
+            if data.get('is_archived'):
+                return 'archived'
+            if data.get('mapping'):
+                return 'active'
+        return 'unconfirmed'
 
     def from_url(self, s, url: str) -> engine.ChatRef:
         return engine.ChatRef(id=url.rstrip('/').split('/')[-1].split('?')[0], data={})

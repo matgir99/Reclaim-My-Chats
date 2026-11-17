@@ -45,11 +45,15 @@ class _Controller:
     def __init__(self, fail=False):
         self.calls = []
         self.capture_calls = []
+        self.only_ids = None
         self.stopped = False
+        self.brought_forward = False
         self.fail = fail
 
-    def run(self, providers, mode='update', sink=None, *, log=False):
+    def run(self, providers, mode='update', sink=None, *, log=False, only_ids=None):
         self.calls.append((list(providers), mode))
+        if only_ids is not None:
+            self.only_ids = list(only_ids)
         assert sink is not None
         sink(ProgressEvent('run_started', total=len(providers), message=mode))
         sink(ProgressEvent('provider_started', providers[0], current=1,
@@ -80,6 +84,10 @@ class _Controller:
     def stop(self) -> None:
         self.stopped = True
 
+    def bring_browser_forward(self) -> bool:
+        self.brought_forward = True
+        return True
+
 
 @unittest.skipUnless(gui.ft is not None, 'Flet GUI extra is not installed')
 class TestGui(unittest.IsolatedAsyncioTestCase):
@@ -88,10 +96,13 @@ class TestGui(unittest.IsolatedAsyncioTestCase):
         self.root = Path(self.temp.name)
         self.page = _Page()
         self.controller = _Controller()
+        self.notify_patch = patch.object(gui.autostart, 'notify_desktop', return_value=True)
+        self.notify_mock = self.notify_patch.start()
         self.window = gui.ReclaimWindow(self.page, self.root, self.controller)
         await self.window.refresh_archive()
 
     async def asyncTearDown(self):
+        self.notify_patch.stop()
         self.temp.cleanup()
 
     async def test_opens_with_all_providers_and_archive_path(self):
@@ -129,9 +140,113 @@ class TestGui(unittest.IsolatedAsyncioTestCase):
         assert dialog is not None
         assert dialog.actions is not None
         dialog.content.content.controls[1].controls[0].value = False  # Google AI Studio
-        await dialog.actions[1].on_click(None)
-        self.assertNotIn('googleaistudio', gui.config.load(self.root)['providers'])
+        dialog.content.content.controls[10].value = 'mainland'         # Kimi region
+        dialog.content.content.controls[11].value = '/usr/bin/chrome'  # Chrome location
+        dialog.content.content.controls[12].value = '180'              # Login wait
+        dialog.content.content.controls[13].value = True               # Check on startup
+        dialog.content.content.controls[14].value = True               # Start at login
+        with patch.object(gui.autostart, 'set_autostart') as set_auto:
+            await dialog.actions[1].on_click(None)
+        set_auto.assert_called_once_with(True)
+        saved = gui.config.load(self.root)
+        self.assertNotIn('googleaistudio', saved['providers'])
+        self.assertEqual(saved['kimi_region'], 'mainland')
+        self.assertEqual(saved['chrome_path'], '/usr/bin/chrome')
+        self.assertEqual(saved['login_timeout'], 180)
+        self.assertTrue(saved['check_on_startup'])
+        self.assertTrue(saved['start_at_login'])
         self.assertTrue(self.window.checks['googleaistudio'].disabled)
+
+    async def test_review_dialog_merges_subset_and_startup_check(self):
+        class _PlanController(_Controller):
+            def run(self, providers, mode='update', sink=None, *, log=False, only_ids=None):
+                self.calls.append((list(providers), mode))
+                if only_ids is not None:
+                    self.only_ids = list(only_ids)
+                assert sink is not None
+                if mode == 'dry-run':
+                    sink(ProgressEvent('chat_planned', 'chatgpt', 'Chat One', 1, 2,
+                                       'fetch (new)', detail='id-1'))
+                    sink(ProgressEvent('chat_planned', 'chatgpt', 'Chat Two', 2, 2,
+                                       'fetch (changed)', detail='id-2'))
+                return RunSummary(((providers[0], 0),))
+
+        ctrl = _PlanController()
+        self.window.controller = ctrl
+        for k, v in self.window.checks.items():
+            v.value = k == 'chatgpt'
+        await self.window._dry_run()
+        dialog = self.page.dialog
+        assert dialog is not None and dialog.actions is not None
+        self.assertEqual(dialog.title, 'Review updates')
+        dialog.content.content.controls[1].value = False  # uncheck Chat Two
+        await dialog.actions[1].on_click(None)  # Merge selected
+        self.assertEqual(ctrl.calls[-1], (['chatgpt'], 'update'))
+        self.assertEqual(ctrl.only_ids, ['id-1'])
+
+        gui.config.save(self.root, providers=['chatgpt'], archive=None, check_on_startup=True)
+        ctrl.calls.clear()
+        self.page.pop_dialog()
+        await self.window.run_startup_check_if_enabled()
+        self.assertEqual(ctrl.calls[-1], (['googleaistudio', 'deepseek', 'kimi', 'chatgpt',
+                                           'claude', 'googlegemini'], 'dry-run'))
+
+    async def test_archived_deleted_dialog_restores_and_deletes(self):
+        from reclaim.core import lifecycle
+        from reclaim.core.model import Chat, Turn
+        db = self.root / 'chats'
+        gui.database.init(db)
+        pdir = db / 'ChatGPT'
+        pdir.mkdir()
+        sync = lifecycle.SyncState(pdir, 'chatgpt')
+        for cid, name, state in (('a1', 'Arch Chat', 'archived'), ('d1', 'Del Chat', 'deleted')):
+            stats = gui.lifecycle.writer.write_chat(
+                Chat(cid, name, f'https://x/{cid}', [Turn('user', 'hi')], provider='chatgpt'),
+                pdir, updated_at='1')
+            sync.mark(cid, '1', str(stats['md']), title=name)
+            lifecycle.move_chat_folder(pdir, sync, cid, state, reason=state)
+
+        await self.window._archived_deleted_dialog()
+        dialog = self.page.dialog
+        assert dialog is not None and dialog.actions is not None
+        dialog.content.content.controls[0].controls[0].value = True  # select first item
+        await dialog.actions[1].on_click(None)  # Restore selected
+        self.assertIn('Restored 1 chat', self.window.summary.value)
+        self.assertEqual(len(lifecycle.list_state_chats(db)), 1)
+
+        await self.window._archived_deleted_dialog()
+        dialog = self.page.dialog
+        assert dialog is not None and dialog.actions is not None
+        dialog.content.content.controls[0].controls[0].value = True  # select remaining deleted item
+        dialog.actions[2].on_click(None)  # Delete permanently -> confirmation dialog
+        confirm = self.page.dialog
+        assert confirm is not None and confirm.actions is not None
+        self.assertEqual(confirm.title, 'Delete permanently?')
+        await confirm.actions[1].on_click(None)
+        self.assertIn('Permanently deleted 1', self.window.summary.value)
+        self.assertEqual(lifecycle.list_state_chats(db), [])
+
+    async def test_plain_labels_version_release_notice_and_separate_check_status(self):
+        self.assertEqual(self.window.dry_run.content, 'Check for updates')
+        self.assertEqual(self.window.rebuild.content, 'Download everything again')
+        self.assertTrue(bool(self.window.version_text.value))
+        self.assertFalse(self.window.release_notice.visible)
+
+        with patch.object(gui.releases, 'app_version', return_value='3.3.4'):
+            await self.window.check_release_update(
+                fetcher=lambda _u: {'tag_name': 'v3.4.0',
+                                    'html_url': 'https://example.test/v3.4.0'})
+        self.assertTrue(self.window.release_notice.visible)
+        self.assertIn('v3.4.0', self.window.release_notice_text.value)
+
+        info = gui.status.ProviderStatus(
+            provider='chatgpt', dir=str(self.root / 'chats' / 'ChatGPT'),
+            present=True, chats=2, chat_folders=2,
+            last_sync='2026-11-01 10:00:00',
+            last_checked='2026-11-17 12:00:00')
+        text = gui.status_text(info)
+        self.assertIn('last download 2026-11-01 10:00:00', text)
+        self.assertIn('last checked 2026-11-17 12:00:00', text)
 
     async def test_failure_is_visible(self):
         self.controller.fail = True
@@ -148,7 +263,8 @@ class TestGui(unittest.IsolatedAsyncioTestCase):
                 super().__init__()
                 self.window = window
 
-            def run(self, providers, mode='update', sink=None, *, log=False):
+            def run(self, providers, mode='update', sink=None, *, log=False,
+                    only_ids=None):
                 assert sink is not None
                 seen_enabled.append(not self.window.stop_button.disabled)
                 sink(ProgressEvent('run_started', total=len(providers), message=mode))
@@ -186,16 +302,18 @@ class _RaisingController(_Controller):
         super().__init__()
         self.exc = exc
 
-    def run(self, providers, mode='update', sink=None, *, log=False):
+    def run(self, providers, mode='update', sink=None, *, log=False,
+            only_ids=None):
         self.calls.append((list(providers), mode))
         raise self.exc
 
 
 class _WarningController(_Controller):
-    def run(self, providers, mode='update', sink=None, *, log=False):
+    def run(self, providers, mode='update', sink=None, *, log=False,
+            only_ids=None):
         assert sink is not None
         sink(ProgressEvent('warning', providers[0], 'Example', message='raw.json was not saved'))
-        return super().run(providers, mode, sink, log=log)
+        return super().run(providers, mode, sink, log=log, only_ids=only_ids)
 
 
 @unittest.skipUnless(gui.ft is not None, 'Flet GUI extra is not installed')
@@ -294,7 +412,8 @@ class TestGuiSafeguards(unittest.IsolatedAsyncioTestCase):
 
 
 class _CheckController(_Controller):
-    def run(self, providers, mode='update', sink=None, *, log=False):
+    def run(self, providers, mode='update', sink=None, *, log=False,
+            only_ids=None):
         self.calls.append((list(providers), mode))
         assert sink is not None
         for name in providers:
@@ -432,6 +551,45 @@ class TestGuiLoginRequest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(window.provider_status['kimi'].value, 'Running')
             window._event(ProgressEvent('chat_started', 'kimi', 'Example', 1, 2))
             self.assertNotIn('Example', window.log.value)  # progress, not Details
+
+    async def test_login_banner_provider_table_and_first_run_setup(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            page = _Page()
+            controller = _Controller()
+            window = gui.ReclaimWindow(page, root, controller)
+            await window.refresh_archive()
+            self.assertTrue(window.setup_banner.visible)
+
+            # Login banner + Bring browser forward button
+            window._event(ProgressEvent('login_needed', 'chatgpt', message='Log in to ChatGPT...'))
+            self.assertTrue(window.login_banner.visible)
+            self.assertEqual(window.provider_chips['chatgpt'].value, 'Needs login')
+            bring_handler: Any = window.bring_browser_button.on_click
+            assert bring_handler is not None
+            bring_handler(None)
+            self.assertTrue(controller.brought_forward)
+            window._event(ProgressEvent('logged_in', 'chatgpt', message='Logged in.'))
+            self.assertFalse(window.login_banner.visible)
+
+            # Per-row Log in & Review buttons
+            await window.provider_login_buttons['chatgpt'].on_click(None)
+            self.assertEqual(controller.calls[-1], (['chatgpt'], 'check'))
+            await window.provider_review_buttons['chatgpt'].on_click(None)
+            self.assertEqual(controller.calls[-1], (['chatgpt'], 'dry-run'))
+
+            # First-run setup wizard (chrome check + save + login)
+            with patch.object(gui.browser, 'find_chrome', return_value='/usr/bin/chrome'):
+                window._setup_wizard()
+            dialog = page.dialog
+            assert dialog is not None and dialog.actions is not None
+            controls = dialog.content.content.controls
+            self.assertIn('/usr/bin/chrome', controls[0].value)
+            await dialog.actions[2].on_click(None)  # Save & log in
+            self.assertTrue((root / 'chats' / gui.database.MARKER).exists())
+            self.assertTrue((root / '.reclaim.json').exists())
+            self.assertFalse(window.setup_banner.visible)
+            self.assertEqual(controller.calls[-1][1], 'check')
 
 
 class TestOptionalGui(unittest.TestCase):

@@ -10,6 +10,7 @@ reclaim status [-o DIR]                  offline database overview
 reclaim init [DIR]                       create a database (default: the configured folder)
 reclaim doctor [--live]                  check settings, database, locks, browser, logins
 reclaim capture <provider> URL [-o FILE] record one chat's sanitized responses
+reclaim tidy [--apply] [-o DIR]          preview or retire duplicate chat folders
 reclaim unlock                           remove a lock left by a run that has ended
 reclaim gui                              launch the desktop application
 reclaim --version                        version derived from Git tags
@@ -17,7 +18,8 @@ reclaim --version                        version derived from Git tags
 
 The six native provider names are `googleaistudio`, `deepseek`, `kimi`,
 `chatgpt`, `claude`, and `googlegemini`. Common options are `--rebuild`,
-`--dry-run`, `--list`, `--log`, `--skip N`, `--limit N`, `--no-raw`, and
+`--dry-run`, `--list`, `--log`, `--skip N`, `--limit N`, `--no-raw`,
+`--only-id ID` (repeatable to merge selected chats), and
 `-o/--output-dir`. A `TITLE` match or `--url URL` fetches only matching chats
 freshly. Default mode fetches new and changed chats according to the local
 sync record. `--dry-run` contacts the provider, classifies its current list,

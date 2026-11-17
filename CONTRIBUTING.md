@@ -9,7 +9,7 @@ Thanks for considering a contribution to ReclaimMyChats!
   of it; keep it that way.
 - **No credentials anywhere.** No tokens, cookies, or secrets in code,
   logs, or docs. Reference them by name only.
-- **Privacy of the archive is the point.** Changes that weaken the
+- **Privacy of the database is the point.** Changes that weaken the
   git-ignore boundary or the media-stripping in `raw.json` will be rejected.
 
 ## Before opening a PR

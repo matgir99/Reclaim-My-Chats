@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Verify GitHub accepted each local asset at the expected size."""
+"""Verify GitHub accepted each local asset at the expected size and digest."""
 
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import sys
 from pathlib import Path
 
@@ -12,8 +12,8 @@ from pathlib import Path
 def verify(directory: Path, response: dict) -> None:
     remote = {item['name']: item for item in response['assets']}
     local = {path.name: path for path in directory.iterdir() if path.is_file()}
-    if len(local) != 6:
-        raise ValueError(f'expected six release assets, found {len(local)}')
+    if len(local) < 6:
+        raise ValueError(f'expected at least six release assets, found {len(local)}')
     if set(remote) != set(local):
         raise ValueError('GitHub release asset names differ from local files')
     for name, path in local.items():
@@ -21,7 +21,8 @@ def verify(directory: Path, response: dict) -> None:
         if (remote[name]['size'] != path.stat().st_size
                 or remote[name].get('digest') != expected):
             raise ValueError(f'GitHub release asset size or SHA-256 differs: {name}')
-    print('verified six uploaded assets and their SHA-256 digests')
+    label = 'six' if len(local) == 6 else str(len(local))
+    print(f'verified {label} uploaded assets and their SHA-256 digests')
 
 
 def main() -> int:

@@ -29,7 +29,7 @@ import re
 import time
 from types import SimpleNamespace
 
-from ..core import browser, engine, retry
+from ..core import browser, config, engine, retry
 from ..core.events import EventSink
 from ..core.model import Chat, Turn
 
@@ -39,6 +39,16 @@ PROVIDER = 'kimi'
 PAGE_SIZE = 50
 MSG_PAGE_SIZE = 1000
 _THINK_HINT = re.compile(r'think|reason', re.IGNORECASE)
+
+
+def base_url() -> str:
+    """Kimi web URL (`RECLAIM_KIMI_URL` override, else settings, else kimi.ai)."""
+    override = os.environ.get('RECLAIM_KIMI_URL', '').strip().rstrip('/')
+    if override:
+        return override
+    with contextlib.suppress(config.SettingsError):
+        return config.kimi_base_url()
+    return BASE_URL
 
 _FETCH_JS = """async (args) => {
     const resp = await fetch(args.url, {
@@ -56,7 +66,8 @@ _FETCH_JS = """async (args) => {
 def _api(page, token: str, path: str, body: dict, retries: int = 3, *,
          record: bool = True) -> dict:
     """Page-side POST with the shared retry policy (see core/retry.py)."""
-    response = retry.send(lambda: page.evaluate(_FETCH_JS, {'url': f'{API}/{path}',
+    url = f'{base_url()}/apiv2/{path}'
+    response = retry.send(lambda: page.evaluate(_FETCH_JS, {'url': url,
                                                             'token': token, 'body': body}),
                           what=f'Kimi {path}', retries=retries, record=record)
     return json.loads(response['text'])
@@ -103,25 +114,9 @@ def get_token(page) -> str:
 
 def ensure_logged_in(page):
     with contextlib.suppress(Exception):  # navigation quirks are fine; the token probe decides
-        page.goto(BASE_URL, wait_until='domcontentloaded', timeout=60000)
+        page.goto(base_url(), wait_until='domcontentloaded', timeout=60000)
     time.sleep(4)
-    try:
-        return get_token(page)
-    except Exception:
-        pass
-    # Kimi login is an SPA modal (no URL change): show the window and poll
-    # until a valid token appears in localStorage.
-    timeout = browser.login_timeout()
-    browser.ask_for_login(page, PROVIDER, 'Kimi', timeout)
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            token = get_token(page)
-            browser.login_done(page, PROVIDER)
-            return token
-        except Exception:
-            time.sleep(3)
-    raise RuntimeError('Login timeout')
+    return browser.wait_for_login(page, PROVIDER, 'Kimi', lambda: get_token(page))
 
 
 def list_chats(page, token: str) -> list[dict]:
@@ -228,7 +223,7 @@ def parse_chat(meta: dict, messages: list[dict]) -> tuple[Chat, dict]:
         title = ((first_user.text[:80].replace('\n', ' ') if first_user else '')
                  or '(untitled)')
     chat = Chat(id=chat_id, title=title,
-                source_url=f'{BASE_URL}/chat/{chat_id}',
+                source_url=f'{base_url()}/chat/{chat_id}',
                 turns=turns, provider=PROVIDER)
     return chat, image_map
 
@@ -247,6 +242,14 @@ def _materialize_images(page, chat: Chat, image_map: dict) -> int:
     return ok
 
 
+def _project_name(item: dict) -> str | None:
+    proj = item.get('project')
+    if isinstance(proj, dict) and isinstance(proj.get('name'), str):
+        return proj['name'] or None
+    name = item.get('project_name')
+    return name or None if isinstance(name, str) else None
+
+
 class Kimi(engine.Provider):
     """What only Kimi does; the engine does the rest."""
 
@@ -256,12 +259,14 @@ class Kimi(engine.Provider):
     pace = 0.3
 
     def open(self, page):
-        return SimpleNamespace(page=page, token=ensure_logged_in(page))
+        return SimpleNamespace(page=page, token=ensure_logged_in(page), listing_complete=True)
 
     def listing(self, s) -> list[engine.ChatRef]:
+        s.listing_complete = True
         return [engine.ChatRef(id=c.get('id') or c.get('chat_id') or '',
                                title=c.get('name') or c.get('title') or '',
-                               updated_at=c.get('updateTime') or c.get('updated_at'), data=c)
+                               updated_at=c.get('updateTime') or c.get('updated_at'),
+                               data=c, project=_project_name(c))
                 for c in list_chats(s.page, s.token)]
 
     def from_url(self, s, url: str) -> engine.ChatRef:
@@ -280,9 +285,22 @@ class Kimi(engine.Provider):
         chat, image_map = parse_chat(meta, messages)
         if not chat.visible_turns():
             raise RuntimeError('Kimi returned no readable messages; response shape may have changed')
+        if ref.project or _project_name(meta):
+            chat.project = ref.project or _project_name(meta)
         images = _materialize_images(s.page, chat, image_map)
         return engine.Fetched(chat, raw={'meta': meta, 'messages': messages},
                               detail=f'images: {images}')
+
+    def confirm_status(self, s, chat_id: str) -> str:
+        try:
+            data = _api(s.page, s.token, 'kimi.chat.v1.ChatService/GetChat',
+                        {'chat_id': chat_id}, retries=1)
+        except Exception as exc:
+            msg = str(exc).lower()
+            return 'deleted' if ('404' in msg or 'not found' in msg) else 'unconfirmed'
+        if isinstance(data, dict) and ('chat' in data or data.get('id')):
+            return 'active'
+        return 'unconfirmed'
 
 
 SPEC = Kimi()

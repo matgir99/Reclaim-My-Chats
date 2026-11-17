@@ -288,7 +288,7 @@ def write_raw(chat_dir: Path, obj, max_str: int = 200_000) -> Path:
 
 
 def _dump_chat_json(chat: Chat, chat_dir: Path, saved: list[dict], md_name: str,
-                    updated_at) -> None:
+                    updated_at, *, state: str = 'active') -> None:
     """Write chat.json last: its presence marks a complete, owned folder."""
     payload = {
         'format': CHAT_FORMAT,
@@ -299,7 +299,7 @@ def _dump_chat_json(chat: Chat, chat_dir: Path, saved: list[dict], md_name: str,
         'project': chat.project,
         'provider_updated_at': updated_at,
         'saved_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
-        'state': 'active',
+        'state': state,
         'markdown': md_name,
         'had_thoughts': chat.had_thoughts,
         'errors': chat.errors,
@@ -369,7 +369,7 @@ def _footer(chat: Chat) -> list[str]:
     return out
 
 
-def write_chat(chat: Chat, out_dir: Path, *, updated_at=None) -> dict:
+def write_chat(chat: Chat, out_dir: Path, *, updated_at=None, state: str = 'active') -> dict:
     """Write one chat folder. Returns stats dict.
 
     `updated_at` is the provider's own timestamp for this version of the
@@ -407,7 +407,7 @@ def write_chat(chat: Chat, out_dir: Path, *, updated_at=None) -> dict:
 
     atomic_write_text(md, ''.join(out))
     # Canonical data dump for exporters / offline re-processing.
-    _dump_chat_json(chat, chat_dir, saved, md.name, updated_at)
+    _dump_chat_json(chat, chat_dir, saved, md.name, updated_at, state=state)
 
     return {'md': md, 'dir': chat_dir, 'images': media.images, 'docs': media.docs,
             'links': media.links, 'turns': len(visible),

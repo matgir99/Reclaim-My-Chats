@@ -114,6 +114,16 @@ def _images(ref: dict) -> str:
     return '\n\n'.join(links)
 
 
+def _chart_point_cells(point: dict, shown: dict, x_key: str, series: list[dict]) -> list:
+    cells = [point.get(x_key)]
+    for s in series:
+        value = shown.get(s['dataKey'])
+        if value is None and point.get(s['dataKey']) is not None:
+            value = f"{point[s['dataKey']]}{s.get('valueSuffix') or ''}"
+        cells.append(value)
+    return cells
+
+
 def _chart(chart) -> str:
     """A chart widget becomes its description and a table of its data."""
     if not isinstance(chart, dict):
@@ -136,13 +146,7 @@ def _chart(chart) -> str:
         if not isinstance(point, dict):
             continue
         shown = _dict(formatted[index]) if index < len(formatted) else {}
-        cells = [point.get(x_key)]
-        for s in series:
-            value = shown.get(s['dataKey'])
-            if value is None and point.get(s['dataKey']) is not None:
-                value = f"{point[s['dataKey']]}{s.get('valueSuffix') or ''}"
-            cells.append(value)
-        rows.append(row(cells))
+        rows.append(row(_chart_point_cells(point, shown, x_key, series)))
     table = '\n'.join(rows)
     description = _str(_dict(chart.get('meta')).get('description'))
     return f'{description.strip()}\n\n{table}' if description.strip() else table
@@ -164,16 +168,23 @@ def _entity_ref(ref: dict) -> str:
     return _escape_text(name) if name else _alt(ref)
 
 
-def _ref_sources(ref: dict) -> list[dict]:
-    """The sources a citation shows, in the first form the reference has:
-    its items (with their supporting websites) and fallback items, a cited
-    file, the reference itself, or its plain URLs."""
+def _item_sources(ref: dict) -> list[dict]:
+    """Collect item, supporting website, and fallback citation entries."""
     sources: list[dict] = []
     for item in ref.get('items') or []:
         if isinstance(item, dict):
             sources.append(item)
-            sources.extend(s for s in item.get('supporting_websites') or [] if isinstance(s, dict))
+            sources.extend(s for s in item.get('supporting_websites') or []
+                           if isinstance(s, dict))
     sources.extend(s for s in ref.get('fallback_items') or [] if isinstance(s, dict))
+    return sources
+
+
+def _ref_sources(ref: dict) -> list[dict]:
+    """The sources a citation shows, in the first form the reference has:
+    its items (with their supporting websites) and fallback items, a cited
+    file, the reference itself, or its plain URLs."""
+    sources = _item_sources(ref)
     if not sources and ref.get('type') == 'file' and isinstance(ref.get('name'), str):
         sources.append({'title': ref['name']})
     if not sources and any(isinstance(ref.get(k), str) and ref[k].strip()

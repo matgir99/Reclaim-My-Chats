@@ -19,11 +19,17 @@ development version and release artifacts the exact tagged version.
 
 The workflow builds the Python wheel and source distribution with an explicit
 version override before creating the tag. It checks their metadata, installs
-the wheel in a fresh environment, and launches each extracted Linux, Windows,
-and macOS application with isolated data. This also starts the bundled
-Playwright driver without opening a browser or contacting a provider.
-Only then does it create or reuse
-the tag, create a draft release, upload and verify assets, and publish it.
+the wheel in a fresh environment, and builds desktop downloads using only the
+`gui-pack` dependencies: Linux `.tar.gz`, `.AppImage`, and `.deb` on Ubuntu
+22.04 (`glibc 2.35`), Windows portable `.zip` and per-user `-setup.exe`
+installer, and macOS Apple Silicon (`arm64`) and Intel (`x86_64`) `.dmg` and
+`.zip` bundles. Each packaged application is launched in isolation with
+`scripts/smoke_desktop.py` (which also starts the bundled Playwright driver
+without opening a browser or contacting a provider).
+Only then does it generate `SHA256SUMS` and GitHub build-provenance
+attestations, create or reuse the tag, create a draft release, upload and
+verify assets, publish the GitHub Release, and publish Python distributions
+to PyPI (`pypa/gh-action-pypi-publish` with Trusted Publishing).
 Rerunning a failed workflow at the same `main` commit reuses its tag and
 resumes an incomplete draft. Published release downloads are never replaced.
 Draft lookup uses the authenticated release list when GitHub's tag endpoint

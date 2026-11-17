@@ -10,6 +10,7 @@ printed, such as a library's warning, is logged too.
 
 from __future__ import annotations
 
+import contextlib
 import sys
 import threading
 import traceback
@@ -23,7 +24,7 @@ from . import browser, config, database, locks, logs
 from .database import PROVIDER_DIRS
 from .events import EventSink, emit, routed
 from .render import LogRenderer, TerminalRenderer, fanout
-from .manifest import write_attempt
+from .manifest import record_check, write_attempt
 
 ALL_PROVIDERS = list(PROVIDER_DIRS)
 
@@ -100,8 +101,13 @@ class ArchiveController:
         """Request the active run to stop after the current chat."""
         self._stop.set()
 
+    def bring_browser_forward(self) -> bool:
+        """Bring the active browser window to the front for login."""
+        return browser.bring_browser_forward()
+
     def run(self, providers: list[str], mode: str = 'update',
-            sink: EventSink | None = None, *, log: bool = False) -> RunSummary:
+            sink: EventSink | None = None, *, log: bool = False,
+            only_ids: list[str] | None = None) -> RunSummary:
         """Run a selected set in one Playwright session, off the GUI loop."""
         if mode not in ('update', 'rebuild', 'dry-run', 'check'):
             raise ValueError(f'unknown mode: {mode}')
@@ -113,12 +119,13 @@ class ArchiveController:
         try:
             flags = {'update': [], 'rebuild': ['--rebuild'],
                      'dry-run': ['--dry-run'], 'check': ['--dry-run']}[mode]
+            only_flags = [arg for cid in (only_ids or ()) for arg in ('--only-id', cid)]
             archive = config.archive_root(self.root)
             parsed = {}
             for name in chosen:
                 out_dir = archive / PROVIDER_DIRS[name]
                 parsed[name] = provider_module(name).parse_args(
-                    [*flags, '-o', str(out_dir), *(['--log'] if log else [])])
+                    [*flags, *only_flags, '-o', str(out_dir), *(['--log'] if log else [])])
             return self._execute(chosen, parsed, mode, sink, {archive},
                                  readonly=mode in ('dry-run', 'check'))
         finally:
@@ -240,6 +247,9 @@ class ArchiveController:
                 code = 2
                 emit(sink, 'error', name,
                      message=f'Could not save run status: {save_error}')
+        if code == 0 and mode in ('update', 'rebuild', 'dry-run', 'check', 'cli', 'cli-single'):
+            with contextlib.suppress(OSError):
+                record_check(self.root, name, started)
         emit(sink, 'provider_completed', name, current=index,
              total=total, message=f'exit {code}')
         return code

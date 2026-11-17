@@ -1,18 +1,26 @@
 # Desktop GUI
 
-The Flet window manages database updates for all six native providers. On
-startup it reads local files only: saved chat counts, last manifest time,
-and the last run result. It shows live changes only after a dry run or update
-contacts a provider.
+The Flet window manages database updates for all six native providers in a
+provider table with per-row status chips, saved chat counts, **last download**
+and **last checked** times, and **Log in** / **Review** buttons. On startup
+without settings or an initialized database, a **First-run setup** banner
+guides folder selection, Chrome detection, provider selection, and logging in.
+When any provider waits for manual sign-in, a banner shows which provider needs
+a login with a **Bring browser forward** button. Startup reads local files
+only and checks for newer GitHub releases non-blockingly. It shows live remote
+changes only after **Check for updates**, **Review**, or an update contacts a
+provider.
 
 Use **Update selected** for checked providers or **Update all** for every
 provider enabled in settings, and **Stop** to end an active run cleanly after
-the current chat finishes saving. **Dry run** lists current provider chats and
-previews the work without writing to the database. **Rebuild selected** asks for
-confirmation, then fetches all selected chats again. The progress bar and
-Details panel show the operation; provider errors appear in the summary and
-details. Playwright work runs in a worker thread, keeping the window
-responsive while login or downloads take time.
+the current chat finishes saving. **Check for updates** lists current provider
+chats and previews changes without writing to the database. **Download
+everything again** asks for confirmation, then fetches all selected chats
+again. Provider rows show both **last download** and **last checked** times,
+and the header shows the installed version and a banner when a newer GitHub
+release is available. The progress bar and Details panel show the operation;
+provider errors appear in the summary and details. Playwright work runs in a
+worker thread, keeping the window responsive while login or downloads take time.
 
 Problems that would make a run unsafe appear in a banner under the title,
 and the update buttons stay disabled until they are solved:
@@ -28,8 +36,16 @@ and the update buttons stay disabled until they are solved:
   clears it.
 
 Warnings during a run, such as a `raw.json` that could not be written, are
-counted in the summary and listed in Details. **Open log folder** shows the
-run log, which keeps the full output of every run, including errors.
+counted in the summary and listed in Details. Completed updates also send a
+desktop notification with the run summary. **Open log folder** shows the run log,
+which keeps the full output of every run, including errors. **Tidy duplicates**
+scans for multiple folders belonging to the same chat, previews them, and retires
+safe duplicates while preserving copies that contain unique branch text
+(`reclaim tidy [--apply]`). **Archived & deleted** opens a review dialog for
+chats in `_Archived` and `_Deleted` to open their folders, restore them to
+active folders, or permanently delete them after confirmation. When **Check for
+updates** finds new or changed chats, a review dialog lets you merge all, merge
+a checked subset, or skip.
 
 **Diagnostics** lists the state of this computer: version, settings,
 database (location, chat count, write access, free space), the database and
@@ -46,11 +62,14 @@ chat's sanitized API responses (saved even if fetching fails), then shows
 the saved path with *Open folder*. Open and check the file before sharing it.
 `reclaim capture PROVIDER URL [-o FILE]` runs the same capture from the CLI.
 
-**Settings** writes the shared `.reclaim.json`. It can choose enabled
-providers, a database folder, and an existing browser profile. Choosing an
-empty or new database folder creates the database there after a
-confirmation; a folder with unrelated files is refused. The profile field
-is useful when a standalone download should reuse a checkout's
+**Settings** writes the shared `.reclaim.json` (version 2, migrating older
+settings automatically). It can choose enabled providers, a database folder, an
+optional login data folder, the Kimi region (`international` vs `mainland`),
+an optional Chrome or Chromium executable path, the login wait in seconds,
+whether to check for updates at startup without waiting for logins, and whether
+to start the app when logging in to the computer. Choosing an empty or new database folder creates the database there after a
+confirmation; a folder with unrelated files is refused. The login data folder
+field is useful when a standalone download should reuse a checkout's
 `.playwright-profile`; point it at that folder. The field stores a path, not
 account passwords. Only one run uses a profile at a time: a second run, from
 the window or the command line, is refused and told which process holds it.
@@ -85,16 +104,20 @@ python scripts/pack_desktop.py --version 0.0.0
 The Flet device tests run the real controls with a deterministic fake
 controller. Linux device tests require Flutter, a display, and the packages
 listed in [Flet's Linux build
-requirements](https://flet.dev/docs/publish/linux/). The separate `flet pack`
-build uses PyInstaller. `scripts/smoke_desktop.py PACKAGE` extracts and launches
-the actual packaged application in an isolated directory, checks its GUI and
-Playwright driver, and closes it. CI uses this on Linux, Windows, and macOS.
+requirements](https://flet.dev/docs/publish/linux/). Packaging CI installs the
+slimmer `gui-pack` extra (excluding test libraries) and builds Linux `.tar.gz`,
+`.AppImage`, and `.deb` packages on Ubuntu 22.04 (`glibc 2.35`), Windows
+portable `.zip` and per-user `-setup.exe` installers, and macOS `.dmg` and
+`.zip` bundles for Apple Silicon (`arm64`) and Intel (`x86_64`).
+`scripts/smoke_desktop.py PACKAGE` extracts or installs and launches each
+packaged application in an isolated directory, checks its GUI and Playwright
+driver, and closes it. CI runs this on Linux, Windows, and macOS.
 These startup checks need no provider accounts. A real authenticated dry run
 and update still need manual testing with your own account.
 
 Flet is pinned to 1.0.5. Version 1.0.4 fixed the Flutter JNI dependency
 conflict that broke fresh integration-test builds with 1.0.0.
 
-The Linux package also contains a `.desktop` template. If you install it in
-your application menu, set its `Exec=` line to the absolute path of the
-extracted `ReclaimMyChats` executable first.
+On Linux, the `.deb` package installs a menu entry and icon automatically, and
+the `.tar.gz` bundle ships a `.desktop` template alongside the icon (set `Exec=`
+to the extracted `ReclaimMyChats` path if installing it manually).

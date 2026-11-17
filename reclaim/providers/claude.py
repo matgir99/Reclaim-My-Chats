@@ -73,17 +73,8 @@ def ensure_logged_in(page) -> str:
         with contextlib.suppress(Exception):
             page.goto(BASE_URL, wait_until='domcontentloaded', timeout=60000)
         time.sleep(4)
-    if not _cookies(page).get('sessionKey'):
-        timeout = browser.login_timeout()
-        browser.ask_for_login(page, PROVIDER, 'Claude', timeout)
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            if _cookies(page).get('sessionKey'):
-                browser.login_done(page, PROVIDER)
-                break
-            time.sleep(3)
-        else:
-            raise RuntimeError('Login timeout')
+    browser.wait_for_login(page, PROVIDER, 'Claude',
+                           lambda: bool(_cookies(page).get('sessionKey')))
     org = _cookies(page).get('lastActiveOrg')
     if not org:
         data = _get(page, f'{BASE_URL}/api/organizations', record=False)
@@ -137,8 +128,10 @@ def list_chats(page, org: str) -> list[dict]:
         for row in rows:
             if not isinstance(row, dict) or not row.get('uuid'):
                 raise RuntimeError('unexpected Claude conversation row')
+            proj = row.get('project')
+            project = (proj.get('name') if isinstance(proj, dict) else row.get('project_name')) or None
             items.setdefault(row['uuid'], {'id': row['uuid'], 'title': row.get('name') or '',
-                                           'updated_at': row.get('updated_at')})
+                                           'updated_at': row.get('updated_at'), 'project': project})
         if rows and len(items) == before:
             raise RuntimeError('Claude conversation pagination made no progress')
         cursor_mode = isinstance(data, dict) and any(
@@ -259,11 +252,13 @@ class Claude(engine.Provider):
     pace = 0.4
 
     def open(self, page):
-        return SimpleNamespace(page=page, org=ensure_logged_in(page))
+        return SimpleNamespace(page=page, org=ensure_logged_in(page), listing_complete=True)
 
     def listing(self, s) -> list[engine.ChatRef]:
+        s.listing_complete = True
         return [engine.ChatRef(id=item.get('id', ''), title=item.get('title', ''),
-                               updated_at=item.get('updated_at'), data=item)
+                               updated_at=item.get('updated_at'), data=item,
+                               project=item.get('project'))
                 for item in list_chats(s.page, s.org)]
 
     def from_url(self, s, url: str) -> engine.ChatRef:
@@ -271,7 +266,20 @@ class Claude(engine.Provider):
 
     def fetch(self, s, ref: engine.ChatRef) -> engine.Fetched:
         chat, raw = fetch_conversation(s.page, s.org, ref.id, ref.title)
+        if ref.project:
+            chat.project = ref.project
         return engine.Fetched(chat, raw=raw)
+
+    def confirm_status(self, s, chat_id: str) -> str:
+        try:
+            data = _get(s.page, f'{BASE_URL}/api/organizations/{s.org}/chat_conversations/'
+                                f'{chat_id}?tree=true&rendering_mode=messages', retries=1)
+        except Exception as exc:
+            msg = str(exc).lower()
+            return 'deleted' if ('http 404' in msg or '404' in msg) else 'unconfirmed'
+        if isinstance(data, dict) and ('chat_messages' in data or 'uuid' in data):
+            return 'active'
+        return 'unconfirmed'
 
 
 SPEC = Claude()

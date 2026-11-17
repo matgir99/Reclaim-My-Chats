@@ -16,7 +16,7 @@ from reclaim.gui import ReclaimWindow
 class FakeController:
     busy = False
 
-    def run(self, providers, mode='update', sink=None, *, log=False):
+    def run(self, providers, mode='update', sink=None, *, log=False, only_ids=None):
         assert sink is not None
         sink(ProgressEvent('run_started', total=len(providers), message=mode))
         codes = []
@@ -51,6 +51,9 @@ class FakeController:
 
     def stop(self) -> None:
         pass
+
+    def bring_browser_forward(self) -> bool:
+        return True
 
 
 async def main(page: ft.Page) -> None:

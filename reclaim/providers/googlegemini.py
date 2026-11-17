@@ -324,6 +324,14 @@ def fetch_chat(page, tokens: dict, chat_id: str, reqid: int,
     return chat, raw, reqid + 1
 
 
+def _project_name(item: dict) -> str | None:
+    for key in ('gem_name', 'notebook_name', 'project_name', 'project'):
+        val = item.get(key)
+        if isinstance(val, str) and val:
+            return val
+    return None
+
+
 class GoogleGemini(engine.Provider):
     """What only Gemini does; the engine does the rest."""
 
@@ -335,19 +343,43 @@ class GoogleGemini(engine.Provider):
     def open(self, page):
         ensure_logged_in(page)
         # Each request carries a counter that keeps increasing during a session.
-        return SimpleNamespace(page=page, tokens=init_session(page), reqid=100000)
+        return SimpleNamespace(page=page, tokens=init_session(page), reqid=100000,
+                               listing_complete=True)
 
     def listing(self, s) -> list[engine.ChatRef]:
+        s.listing_complete = True
         chats, s.reqid = list_chats(s.page, s.tokens, s.reqid)
         return [engine.ChatRef(id=c['id'], title=c.get('title', ''),
-                               updated_at=c.get('updated_at'), data=c) for c in chats]
+                               updated_at=c.get('updated_at'), data=c,
+                               project=_project_name(c)) for c in chats]
 
     def from_url(self, s, url: str) -> engine.ChatRef:
         return engine.ChatRef(id=url.rstrip('/').split('/')[-1].split('?')[0])
 
     def fetch(self, s, ref: engine.ChatRef) -> engine.Fetched:
         chat, raw, s.reqid = fetch_chat(s.page, s.tokens, ref.id, s.reqid, ref.title)
+        if ref.project:
+            chat.project = ref.project
         return engine.Fetched(chat, raw=raw)
+
+    def confirm_status(self, s, chat_id: str) -> str:
+        reqid = s.reqid
+        s.reqid += 1
+        try:
+            status, text = rpc_call(s.page, s.tokens, READ_RPC, [chat_id, 10], reqid, retries=1)
+        except Exception:
+            return 'unconfirmed'
+        if status == 404:
+            return 'deleted'
+        if status != 200:
+            return 'unconfirmed'
+        try:
+            raw = decode_response(text, READ_RPC)
+        except Exception:
+            return 'unconfirmed'
+        if raw == []:
+            return 'deleted'
+        return 'active' if parse_read(raw) else 'unconfirmed'
 
 
 SPEC = GoogleGemini()
