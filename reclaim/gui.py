@@ -44,6 +44,8 @@ class Controller(Protocol):
     def capture(self, provider: str, url: str, sink: EventSink | None = None,
                 destination: Path | None = None) -> RunSummary: ...
 
+    def stop(self) -> None: ...
+
 
 def configured_providers(root: Path) -> list[str]:
     chosen, _, _ = config.selected_providers(root, ALL_PROVIDERS)
@@ -99,6 +101,7 @@ class ReclaimWindow:
         self._capture_provider = self.enabled[0] if self.enabled else ALL_PROVIDERS[0]
         self._capture_url = ''
         self._running = False
+        self._stopping = False
         self._log_lines: list[str] = []
         self._provider_index = 0
         self._provider_count = 1
@@ -145,6 +148,8 @@ class ReclaimWindow:
                                                key='update-selected')
         self.update_all = ft.Button('Update all', on_click=self._update_all,
                                     key='update-all')
+        self.stop_button = ft.OutlinedButton('Stop', on_click=self._stop_run,
+                                             key='stop-run', disabled=True)
         self.dry_run = ft.Button('Dry run', on_click=self._dry_run,
                                  key='dry-run')
         self.rebuild = ft.OutlinedButton('Rebuild selected',
@@ -178,7 +183,7 @@ class ReclaimWindow:
                 ft.Divider(),
                 ft.Text('Providers', size=20, weight=ft.FontWeight.BOLD),
                 *rows,
-                ft.Row([self.update_selected, self.update_all], wrap=True),
+                ft.Row([self.update_selected, self.update_all, self.stop_button], wrap=True),
                 ft.Row([self.dry_run, self.rebuild], wrap=True),
                 ft.Divider(),
                 ft.Text('Progress', size=20, weight=ft.FontWeight.BOLD),
@@ -349,13 +354,25 @@ class ReclaimWindow:
         self.dry_run.disabled = busy or not selected
         self.rebuild.disabled = busy or not selected
         self.update_all.disabled = busy or not self.enabled
+        self.stop_button.disabled = not self._running or self._stopping
         # Settings cannot be edited while the settings file itself is broken.
         self.settings_button.disabled = self._running or self.settings_error is not None
         self.page.update()
 
     def _set_running(self, running: bool) -> None:
         self._running = running
+        if not running:
+            self._stopping = False
         self._selection_changed()
+
+    def _stop_run(self, _=None) -> None:
+        if not self._running or self._stopping:
+            return
+        self._stopping = True
+        self.stop_button.disabled = True
+        self.current.value = 'Stopping after current chat...'
+        self.controller.stop()
+        self.page.update()
 
     def _append_log(self, line: str) -> None:
         self._log_lines.append(line)
@@ -409,7 +426,7 @@ class ReclaimWindow:
             self.current.value = f'Starting {event.message}'
         elif kind == 'provider_started':
             self.current.value = f'{name}: starting'
-        elif kind in ('login_needed', 'listing', 'listed', 'captured'):
+        elif kind in ('login_needed', 'listing', 'listed', 'captured', 'stopped'):
             self.current.value = f'{name}: {event.message}'
         elif kind in CHAT_PROGRESS and event.title:
             self.current.value = f'{name}: {event.title}'
@@ -421,18 +438,17 @@ class ReclaimWindow:
             return 'Running'
         if kind == 'login_needed':
             return 'Waiting for login in the browser window'
-        if kind == 'error':
-            return f'Error: {event.message}'
-        if kind == 'checked':
-            return f'Live check: {event.message}'
-        if kind == 'captured':
-            return f'Capture: {event.message}'
+        prefixes = {'error': 'Error', 'checked': 'Live check', 'captured': 'Capture'}
+        if kind in prefixes:
+            return f'{prefixes[kind]}: {event.message}'
+        if kind == 'stopped':
+            return event.message or 'Stopped'
         if kind != 'provider_completed':
             return None
         row = self.provider_status.get(event.provider)
         current = str(row.value) if row is not None else ''
         if event.message == 'exit 0':
-            return None if current.startswith(('Live check:', 'Capture:')) else 'Completed'
+            return None if current.startswith(('Live check:', 'Capture:', 'Stopped')) else 'Completed'
         if current.startswith('Error:'):
             return None  # keep the error, which says more than the exit code
         return f'Failed ({event.message})'
@@ -516,7 +532,13 @@ class ReclaimWindow:
                   'dry-run': 'Dry run', 'check': 'Live check', 'capture': 'Capture'}[mode]
         if mode == 'check':
             self._live_results = doctor.checks_from_events(self._run_events)
-        state = 'completed successfully' if result.exit_code == 0 else 'completed with errors'
+        stopped = self._stopping or any(e.kind == 'stopped' for e in self._run_events)
+        if result.exit_code != 0:
+            state = 'completed with errors'
+        elif stopped:
+            state = 'stopped'
+        else:
+            state = 'completed successfully'
         summary = f'{action} {state} · {labels}'
         if mode == 'capture' and self._captured_path is not None:
             summary += f' · {self._captured_path}'

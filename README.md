@@ -28,7 +28,8 @@ contain a browser or account credentials. Unsigned Windows and macOS builds
 may show their usual security prompts.
 
 The main window lets you select providers, update selected or all enabled
-providers, preview a dry run, rebuild selected providers, inspect progress and
+providers, stop an active run after the current chat, preview a dry run,
+rebuild selected providers, inspect progress and
 errors, and open or change the database folder. Rebuild fetches every selected
 conversation again and overwrites its copy in the database. A dry run contacts
 the providers to list conversations, but does not write to the database.

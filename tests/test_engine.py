@@ -9,11 +9,13 @@ import io
 import json
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from reclaim.core import engine
+from reclaim.core.events import ProgressEvent
 from reclaim.core.manifest import SyncState
 from reclaim.core.model import Chat, Turn
 from reclaim.core.service import ArchiveController, RunSummary
@@ -145,6 +147,85 @@ class TestEngine(unittest.TestCase):
         self.assertIn('[2/3] Beta -> 2t,', out)
         self.assertIn('fake detail', out)
         self.assertEqual([c.args[0] for c in sleep.call_args_list], [0.25, 0.25, 0.25])
+
+    def test_download_stops_after_current_chat_when_stop_is_set(self):
+        stop = threading.Event()
+        provider = FakeProvider({'a': ('Alpha', '1'), 'b': ('Beta', '1')})
+        provider.pace = 0.5
+        events: list[ProgressEvent] = []
+        original_fetch = provider.fetch
+
+        def stopping_fetch(session, ref):
+            got = original_fetch(session, ref)
+            stop.set()
+            return got
+
+        with (patch.object(provider, 'fetch', side_effect=stopping_fetch),
+              patch.object(engine.time, 'sleep') as sleep):
+            refs = provider.listing(None)
+            results = engine.download(provider, None, refs, self.out,
+                                      sink=events.append, stop=stop)
+        self.assertEqual([r['id'] for r in results], ['a'])
+        self.assertEqual(provider.fetched, ['a'])
+        self.assertTrue((self.out / 'Alpha' / 'Alpha.md').exists())
+        self.assertFalse((self.out / 'Beta').exists())
+        self.assertIsNotNone(SyncState(self.out, 'fake').known('a'))
+        self.assertIsNone(SyncState(self.out, 'fake').known('b'))
+        sleep.assert_not_called()
+        stopped = [e for e in events if e.kind == 'stopped']
+        self.assertEqual(len(stopped), 1)
+        self.assertEqual(stopped[0].message, 'Stopped after 1 of 2 chats')
+
+    def test_controller_stop_ends_current_provider_and_skips_next(self):
+        with tempfile.TemporaryDirectory() as root_dir:
+            root = Path(root_dir)
+            controller = ArchiveController(root)
+            events: list[ProgressEvent] = []
+            seen: list[str] = []
+
+            class _FakeCtx:
+                def close(self):
+                    pass
+
+            class _FakePlaywright:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_):
+                    pass
+
+            class _StoppingProvider:
+                def __init__(self, prov_name: str):
+                    self._spec = FakeProvider({'a': ('Alpha', '1'), 'b': ('Beta', '1')})
+                    self._spec.name = prov_name
+                    self._spec.folder = prov_name.capitalize()
+
+                def parse_args(self, argv):
+                    return engine.parse_args(self._spec, argv)
+
+                def run_session(self, page, args, sink=None):
+                    seen.append(self._spec.name)
+                    original = self._spec.fetch
+
+                    def fetch_and_stop(session, ref):
+                        got = original(session, ref)
+                        controller.stop()
+                        return got
+
+                    with patch.object(self._spec, 'fetch', side_effect=fetch_and_stop):
+                        return engine.run_session(self._spec, page, args, sink)
+
+            modules = {'chatgpt': _StoppingProvider('chatgpt'),
+                       'claude': _StoppingProvider('claude')}
+            with (patch('reclaim.core.service.provider_module', side_effect=modules.__getitem__),
+                  patch('reclaim.core.service.browser.launch', return_value=(_FakeCtx(), object())),
+                  patch('playwright.sync_api.sync_playwright', return_value=_FakePlaywright())):
+                summary = controller.run(['chatgpt', 'claude'], sink=events.append)
+            self.assertEqual(seen, ['chatgpt'])
+            self.assertEqual(summary.codes, (('chatgpt', 0),))
+            self.assertEqual(modules['chatgpt']._spec.fetched, ['a'])
+            self.assertTrue((root / 'chats' / 'ChatGPT' / 'Alpha' / 'Alpha.md').exists())
+            self.assertTrue(any(e.kind == 'stopped' and e.provider == 'chatgpt' for e in events))
 
 
 if __name__ == '__main__':

@@ -45,6 +45,7 @@ class _Controller:
     def __init__(self, fail=False):
         self.calls = []
         self.capture_calls = []
+        self.stopped = False
         self.fail = fail
 
     def run(self, providers, mode='update', sink=None, *, log=False):
@@ -75,6 +76,9 @@ class _Controller:
         sink(ProgressEvent('provider_completed', provider, current=1, total=1, message='exit 0'))
         sink(ProgressEvent('run_completed', current=1, total=1, message='exit 0'))
         return RunSummary(((provider, 0),))
+
+    def stop(self) -> None:
+        self.stopped = True
 
 
 @unittest.skipUnless(gui.ft is not None, 'Flet GUI extra is not installed')
@@ -134,6 +138,47 @@ class TestGui(unittest.IsolatedAsyncioTestCase):
         await self.window._update_selected()
         self.assertIn('completed with errors', self.window.summary.value)
         self.assertIn('Synthetic failure', self.window.log.value)
+
+    async def test_stop_button_stops_running_update_after_current_chat(self):
+        self.assertTrue(self.window.stop_button.disabled)
+        seen_enabled = []
+
+        class _InteractiveStopController(_Controller):
+            def __init__(self, window: gui.ReclaimWindow):
+                super().__init__()
+                self.window = window
+
+            def run(self, providers, mode='update', sink=None, *, log=False):
+                assert sink is not None
+                seen_enabled.append(not self.window.stop_button.disabled)
+                sink(ProgressEvent('run_started', total=len(providers), message=mode))
+                sink(ProgressEvent('provider_started', providers[0], current=1,
+                                   total=len(providers)))
+                self.window._stop_run()
+                sink(ProgressEvent('stopped', providers[0], current=1, total=2,
+                                   message='Stopped after 1 of 2 chats'))
+                sink(ProgressEvent('provider_completed', providers[0], current=1,
+                                   total=len(providers), message='exit 0'))
+                sink(ProgressEvent('run_completed', current=len(providers),
+                                   total=len(providers), message='exit 0'))
+                return RunSummary(((providers[0], 0),))
+
+        controller = _InteractiveStopController(self.window)
+        self.window.controller = controller
+        for name, check in self.window.checks.items():
+            check.value = name == 'chatgpt'
+        await self.window._update_selected()
+        self.assertEqual(seen_enabled, [True])
+        self.assertTrue(controller.stopped)
+        self.assertTrue(self.window.stop_button.disabled)
+        self.assertTrue(self.window.summary.value.startswith('Update stopped · ChatGPT: ok'))
+        self.assertIn('Stopped after 1 of 2 chats', self.window.log.value)
+
+        # Before refresh_archive runs (or in dry-run), completed event keeps the Stopped row.
+        self.window._event(ProgressEvent('stopped', 'kimi', message='Stopped after 1 of 2 chats'))
+        self.window._event(ProgressEvent('provider_completed', 'kimi', current=1, total=1,
+                                         message='exit 0'))
+        self.assertEqual(self.window.provider_status['kimi'].value, 'Stopped after 1 of 2 chats')
 
 
 class _RaisingController(_Controller):

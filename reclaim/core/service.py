@@ -90,10 +90,15 @@ class ArchiveController:
     def __init__(self, root: Path | None = None):
         self.root = Path(root) if root is not None else config.default_root()
         self._lock = threading.Lock()
+        self._stop = threading.Event()
 
     @property
     def busy(self) -> bool:
         return self._lock.locked()
+
+    def stop(self) -> None:
+        """Request the active run to stop after the current chat."""
+        self._stop.set()
 
     def run(self, providers: list[str], mode: str = 'update',
             sink: EventSink | None = None, *, log: bool = False) -> RunSummary:
@@ -163,6 +168,7 @@ class ArchiveController:
         the events; check each database folder; lock the login data folder
         (one browser per profile); for runs that write, lock each database
         and only then mark one made by an earlier version. Then run."""
+        self._stop.clear()
         label = f'{mode} {", ".join(chosen)}'
         with ExitStack() as stack:
             sink = stack.enter_context(_reporting(self.root, label, sink))
@@ -184,13 +190,16 @@ class ArchiveController:
                        sink: EventSink, profile: Path) -> RunSummary:
         """All chosen providers in one browser window, one after another."""
         from playwright.sync_api import sync_playwright  # imported only when a run starts
+        from . import engine
 
         emit(sink, 'run_started', total=len(chosen), message=mode)
         codes: list[tuple[str, int]] = []
-        with sync_playwright() as playwright:
+        with sync_playwright() as playwright, engine.stoppable(self._stop):
             ctx, page = browser.launch(playwright, profile_dir=profile)
             try:
                 for index, name in enumerate(chosen, 1):
+                    if index > 1 and self._stop.is_set():
+                        break
                     codes.append((name, self._run_one(name, parsed[name], mode, sink,
                                                       page, index, len(chosen))))
             finally:

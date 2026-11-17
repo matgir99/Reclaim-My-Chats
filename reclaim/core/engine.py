@@ -13,8 +13,11 @@ from __future__ import annotations
 
 import argparse
 import sys
+import threading
 import time
 import traceback
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -23,6 +26,25 @@ from . import config
 from .events import EventSink, emit, resolve, routed
 from .manifest import SyncState, finish_run, report_dry_run, save_chat, stats_text
 from .model import Chat
+
+_stop = threading.local()
+
+
+@contextmanager
+def stoppable(event: threading.Event) -> Iterator[threading.Event]:
+    """Allow `event.set()` from another thread to stop a run after the current chat."""
+    previous = getattr(_stop, 'event', None)
+    _stop.event = event
+    try:
+        yield event
+    finally:
+        _stop.event = previous
+
+
+def should_stop(stop: threading.Event | None = None) -> bool:
+    """True when the active run (or explicit stop event) has been asked to stop."""
+    active = stop if stop is not None else getattr(_stop, 'event', None)
+    return bool(active is not None and active.is_set())
 
 
 @dataclass
@@ -156,6 +178,11 @@ def _session(provider: Provider, page, args, sink: EventSink) -> int:
                               {r.id: r.updated_at for r in refs}, sync, skip_unchanged,
                               sink=sink, provider=name)
 
+    if should_stop():
+        emit(sink, 'stopped', name, current=0, total=len(refs),
+             message=f'Stopped before downloading (0 of {len(refs)} {provider.noun})')
+        return 0
+
     out_dir.mkdir(parents=True, exist_ok=True)
     emit(sink, 'downloading', name, total=len(refs), message=f'{len(refs)} {provider.noun}')
     results = download(provider, session, refs, out_dir, skip_unchanged=skip_unchanged,
@@ -203,15 +230,39 @@ def capture(provider: Provider, page, url: str, destination: Path,
     return 0
 
 
+def _download_one(provider: Provider, session, ref: ChatRef, index: int, total: int,
+                  out_dir: Path, sync: SyncState, *, save_raw: bool,
+                  sink: EventSink) -> dict:
+    """Fetch and save one chat; a failing chat keeps its sync record untouched."""
+    name = provider.name
+    label = ref.title or ref.id
+    t0 = time.time()
+    try:
+        got = provider.fetch(session, ref)
+        stats = save_chat(got.chat, out_dir, sync, ref.id, ref.updated_at,
+                          got.raw if save_raw else None, sink=sink, provider=name)
+        detail = got.detail or f'assets: {stats["images"] + stats["docs"]}'
+        emit(sink, 'chat_completed', name, got.chat.title or label, index, total,
+             stats_text(stats), f'{detail} · {time.time() - t0:.1f}s')
+        return {'id': ref.id, 'title': got.chat.title, 'ok': True, **got.extra,
+                'duration_s': round(time.time() - t0, 1),
+                **{k: stats[k] for k in ('turns', 'chars', 'images', 'docs')}}
+    except Exception as exc:
+        emit(sink, 'error', name, label, index, total, str(exc), traceback.format_exc())
+        return {'id': ref.id, 'title': label, 'ok': False, 'error': str(exc)}
+
+
 def download(provider: Provider, session, refs: list[ChatRef], out_dir: Path, *,
              skip_unchanged: bool = False, save_raw: bool = True, log: bool = False,
-             sink: EventSink | None = None) -> list[dict]:
+             sink: EventSink | None = None,
+             stop: threading.Event | None = None) -> list[dict]:
     """Fetch and save `refs`. Returns per-chat results for the manifest.
 
     Reports a chat_started and then a chat_skipped, chat_completed or error
     event per chat (`log`: a verbose terminal when no sink or route is set).
     One failing chat never stops the others, and it keeps its previous sync
-    record, so the next update retries it."""
+    record, so the next update retries it. When `stop` (or `stoppable()`) is
+    set, stops cleanly before starting the next chat."""
     sink = resolve(sink, verbose=log)
     name = provider.name
     out_dir = Path(out_dir)
@@ -219,26 +270,19 @@ def download(provider: Provider, session, refs: list[ChatRef], out_dir: Path, *,
     results: list[dict] = []
     total = len(refs)
     for i, ref in enumerate(refs, 1):
+        if should_stop(stop):
+            emit(sink, 'stopped', name, current=i - 1, total=total,
+                 message=f'Stopped after {i - 1} of {total} {provider.noun}')
+            break
         label = ref.title or ref.id
         emit(sink, 'chat_started', name, label, i, total)
         if skip_unchanged and sync.is_unchanged(ref.id, ref.updated_at):
             emit(sink, 'chat_skipped', name, label, i, total, 'skip (unchanged)')
             continue
-        t0 = time.time()
-        try:
-            got = provider.fetch(session, ref)
-            stats = save_chat(got.chat, out_dir, sync, ref.id, ref.updated_at,
-                              got.raw if save_raw else None, sink=sink, provider=name)
-            results.append({'id': ref.id, 'title': got.chat.title, 'ok': True, **got.extra,
-                            'duration_s': round(time.time() - t0, 1),
-                            **{k: stats[k] for k in ('turns', 'chars', 'images', 'docs')}})
-            detail = got.detail or f'assets: {stats["images"] + stats["docs"]}'
-            emit(sink, 'chat_completed', name, got.chat.title or label, i, total,
-                 stats_text(stats), f'{detail} · {time.time() - t0:.1f}s')
-        except Exception as exc:
-            results.append({'id': ref.id, 'title': label, 'ok': False, 'error': str(exc)})
-            emit(sink, 'error', name, label, i, total, str(exc), traceback.format_exc())
-        time.sleep(provider.pace)
+        results.append(_download_one(provider, session, ref, i, total, out_dir,
+                                     sync, save_raw=save_raw, sink=sink))
+        if not should_stop(stop):
+            time.sleep(provider.pace)
     sync.save()
     return results
 

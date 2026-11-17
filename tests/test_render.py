@@ -38,6 +38,9 @@ class TestWording(unittest.TestCase):
         self.assertEqual(render.describe(event('captured', message='1 response recorded',
                                                detail='/tmp/c.json')),
                          '1 response recorded · /tmp/c.json')
+        self.assertEqual(render.describe(event('stopped', provider='chatgpt', current=1,
+                                               total=3, message='Stopped after 1 of 3 chats')),
+                         'Stopped after 1 of 3 chats')
         self.assertEqual(render.describe(event('login_needed', message='Log in to Kimi')),
                          'Log in to Kimi')
 
@@ -60,7 +63,9 @@ class TestTerminal(unittest.TestCase):
                event('warning', title='C', message='raw.json was not saved'),
                event('plan', message='would fetch: 1', detail='  - A'),
                event('captured', provider='kimi', message='1 response recorded',
-                     detail='/tmp/c.json')]
+                     detail='/tmp/c.json'),
+               event('stopped', provider='kimi', current=1, total=3,
+                     message='Stopped after 1 of 3 chats')]
         text = self.lines(render.TerminalRenderer(), *evs)
         self.assertNotIn('kimi', text)          # no heading for a single provider
         self.assertNotIn('2t, 9 chars', text)   # per-chat lines need --log
@@ -69,6 +74,7 @@ class TestTerminal(unittest.TestCase):
         self.assertIn('  warning: C: raw.json was not saved', text)
         self.assertIn('would fetch: 1\n  - A', text)
         self.assertIn('1 response recorded · /tmp/c.json', text)
+        self.assertIn('Stopped after 1 of 3 chats', text)
 
     def test_verbose_adds_chat_lines_progress_and_tracebacks(self):
         renderer = render.TerminalRenderer(verbose=True, headers=True)

@@ -118,7 +118,7 @@ update the database and solve common problems.
       only a cookie or token), run by the engine, and the same login wait
       everywhere. A visible banner says which provider needs a login, with
       a button that brings the browser window forward.
-- [ ] A *Stop* button that ends a run after the current chat.
+- [x] A *Stop* button that ends a run after the current chat.
 - [ ] Plain labels: *Check for updates*, *Download everything again*,
       *Login data folder*. Show "last checked" separately from "last
       download".
