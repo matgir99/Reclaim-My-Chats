@@ -16,7 +16,7 @@ from reclaim.gui import ReclaimWindow
 class FakeController:
     busy = False
 
-    def run(self, providers, mode='update', sink=None, *, log=False):
+    def run(self, providers, mode='update', sink=None, *, log=False, only_ids=None):
         assert sink is not None
         sink(ProgressEvent('run_started', total=len(providers), message=mode))
         codes = []

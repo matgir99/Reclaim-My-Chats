@@ -36,11 +36,16 @@ and the update buttons stay disabled until they are solved:
   clears it.
 
 Warnings during a run, such as a `raw.json` that could not be written, are
-counted in the summary and listed in Details. **Open log folder** shows the
-run log, which keeps the full output of every run, including errors. **Tidy
-duplicates** scans for multiple folders belonging to the same chat, previews them,
-and retires safe duplicates while preserving copies that contain unique branch
-text (`reclaim tidy [--apply]`).
+counted in the summary and listed in Details. Completed updates also send a
+desktop notification with the run summary. **Open log folder** shows the run log,
+which keeps the full output of every run, including errors. **Tidy duplicates**
+scans for multiple folders belonging to the same chat, previews them, and retires
+safe duplicates while preserving copies that contain unique branch text
+(`reclaim tidy [--apply]`). **Archived & deleted** opens a review dialog for
+chats in `_Archived` and `_Deleted` to open their folders, restore them to
+active folders, or permanently delete them after confirmation. When **Check for
+updates** finds new or changed chats, a review dialog lets you merge all, merge
+a checked subset, or skip.
 
 **Diagnostics** lists the state of this computer: version, settings,
 database (location, chat count, write access, free space), the database and
@@ -60,8 +65,9 @@ the saved path with *Open folder*. Open and check the file before sharing it.
 **Settings** writes the shared `.reclaim.json` (version 2, migrating older
 settings automatically). It can choose enabled providers, a database folder, an
 optional login data folder, the Kimi region (`international` vs `mainland`),
-an optional Chrome or Chromium executable path, and the login wait in seconds.
-Choosing an empty or new database folder creates the database there after a
+an optional Chrome or Chromium executable path, the login wait in seconds,
+whether to check for updates at startup without waiting for logins, and whether
+to start the app when logging in to the computer. Choosing an empty or new database folder creates the database there after a
 confirmation; a folder with unrelated files is refused. The login data folder
 field is useful when a standalone download should reuse a checkout's
 `.playwright-profile`; point it at that folder. The field stores a path, not

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import subprocess
 import sys
@@ -17,7 +18,7 @@ else:
     except ImportError:  # The CLI intentionally has no GUI dependency.
         ft = None
 
-from .core import browser, config, database, doctor, locks, logs, releases, render, status, tidy
+from .core import autostart, browser, config, database, doctor, lifecycle, locks, logs, releases, render, status, tidy
 from .core.events import EventSink, ProgressEvent
 from .core.service import ALL_PROVIDERS, ArchiveController, BusyOperationError, RunSummary
 
@@ -39,7 +40,8 @@ class Controller(Protocol):
     def busy(self) -> bool: ...
 
     def run(self, providers: list[str], mode: str = 'update',
-            sink: EventSink | None = None, *, log: bool = False) -> RunSummary: ...
+            sink: EventSink | None = None, *, log: bool = False,
+            only_ids: list[str] | None = None) -> RunSummary: ...
 
     def capture(self, provider: str, url: str, sink: EventSink | None = None,
                 destination: Path | None = None) -> RunSummary: ...
@@ -186,6 +188,9 @@ class ReclaimWindow:
                                    key='open-logs')
         self.tidy_button = ft.Button('Tidy duplicates', on_click=self._tidy_dialog,
                                      key='tidy-database')
+        self.review_states_button = ft.Button('Archived & deleted',
+                                              on_click=self._archived_deleted_dialog,
+                                              key='review-archived-deleted')
         ver = releases.app_version()
         self.version_text = ft.Text(ver if ver == 'dev' else f'v{ver}',
                                     color=ft.Colors.ON_SURFACE_VARIANT, key='app-version')
@@ -260,7 +265,8 @@ class ReclaimWindow:
                 ft.Text('Database', size=20, weight=ft.FontWeight.BOLD),
                 self.archive_total,
                 self.archive_path,
-                ft.Row([self.open_archive, self.open_logs, self.tidy_button], wrap=True),
+                ft.Row([self.open_archive, self.open_logs, self.tidy_button,
+                        self.review_states_button], wrap=True),
                 ft.ExpansionTile(title='Details', controls=[self.log],
                                  key='details'),
             ], spacing=12),
@@ -461,6 +467,7 @@ class ReclaimWindow:
         self.settings_button.disabled = self._running or self.settings_error is not None
         self.setup_button.disabled = self._running
         self.tidy_button.disabled = busy
+        self.review_states_button.disabled = busy
         self.page.update()
 
     def _set_running(self, running: bool) -> None:
@@ -588,7 +595,14 @@ class ReclaimWindow:
             return 'Fix the problem shown at the top of the window first.'
         return None
 
-    async def _run(self, providers: list[str], mode: str, *, url: str = '') -> None:
+    async def run_startup_check_if_enabled(self) -> None:
+        """Run a non-blocking update check on startup when opted in by settings."""
+        if not self.blocked and self.enabled and config.check_on_startup(self.root):
+            with browser.no_login_wait():
+                await self._run(list(self.enabled), 'dry-run')
+
+    async def _run(self, providers: list[str], mode: str, *, url: str = '',
+                   only_ids: list[str] | None = None) -> None:
         problem = self._cannot_start(providers)
         if problem:
             self._error(problem)
@@ -602,8 +616,10 @@ class ReclaimWindow:
         self._log_lines.clear()
         self.log.value = ''
         self._provider_count = len(providers)
+        completed_ok = False
         try:
-            self._show_result(await self._execute(providers, mode, url=url), mode)
+            self._show_result(await self._execute(providers, mode, url=url, only_ids=only_ids), mode)
+            completed_ok = True
         except BusyOperationError as exc:
             self._error(str(exc))
         except locks.LockedError as exc:
@@ -625,8 +641,11 @@ class ReclaimWindow:
             if mode != 'capture' and not self.blocked:
                 await self.refresh_archive(preserve_prefixes=('Live check:', 'Capture:'))
             self.page.update()
+        if completed_ok and mode == 'dry-run':
+            self._maybe_show_review_dialog(providers)
 
-    async def _execute(self, providers: list[str], mode: str, *, url: str = '') -> RunSummary:
+    async def _execute(self, providers: list[str], mode: str, *, url: str = '',
+                       only_ids: list[str] | None = None) -> RunSummary:
         """Run in a worker thread, showing its events as they arrive."""
         queue: asyncio.Queue[ProgressEvent | None] = asyncio.Queue()
         loop = asyncio.get_running_loop()
@@ -638,6 +657,8 @@ class ReclaimWindow:
             try:
                 if mode == 'capture':
                     return self.controller.capture(providers[0], url, receive)
+                if only_ids is not None:
+                    return self.controller.run(providers, mode, receive, only_ids=only_ids)
                 return self.controller.run(providers, mode, receive)
             finally:
                 # Use the same thread-safe channel as events so completion
@@ -649,6 +670,51 @@ class ReclaimWindow:
             self._run_events.append(event)
             self._event(event)
         return await task
+
+    def _maybe_show_review_dialog(self, providers: list[str]) -> None:
+        planned = [e for e in self._run_events
+                   if e.kind == 'chat_planned' and e.message.startswith('fetch')]
+        if planned:
+            self._review_plan_dialog(providers, planned)
+
+    def _review_plan_dialog(self, providers: list[str],
+                            planned: list[ProgressEvent]) -> None:
+        """Show the planned downloads per provider with checkboxes to merge all, subset, or skip."""
+        items = [
+            (e, ft.Checkbox(label=f'{DISPLAY_NAMES.get(e.provider, e.provider)}: '
+                                  f'{e.title} ({e.message})',
+                            value=True, key=f'plan-chat-{i}'))
+            for i, e in enumerate(planned)
+        ]
+
+        async def merge_selected(_=None) -> None:
+            self.page.pop_dialog()
+            chosen_provs = list(dict.fromkeys(e.provider for e, c in items if c.value))
+            chosen_ids = [e.detail or e.title for e, c in items if c.value]
+            if chosen_provs and chosen_ids:
+                await self._run(chosen_provs, 'update', only_ids=chosen_ids)
+
+        async def merge_all(_=None) -> None:
+            self.page.pop_dialog()
+            await self._run(providers, 'update')
+
+        self.page.show_dialog(ft.AlertDialog(
+            modal=True,
+            key='review-plan-dialog',
+            title='Review updates',
+            content=ft.Container(
+                width=580,
+                content=ft.Column([c for _, c in items], spacing=6,
+                                  scroll=ft.ScrollMode.AUTO, height=340),
+            ),
+            actions=[
+                ft.OutlinedButton('Skip', on_click=lambda _: self.page.pop_dialog(),
+                                  key='review-skip'),
+                ft.Button('Merge selected', on_click=merge_selected,
+                          key='review-merge-selected'),
+                ft.FilledButton('Merge all', on_click=merge_all, key='review-merge-all'),
+            ],
+        ))
 
     def _show_result(self, result: RunSummary, mode: str) -> None:
         labels = ', '.join(f'{DISPLAY_NAMES[name]}: {"ok" if code == 0 else "failed"}'
@@ -672,6 +738,8 @@ class ReclaimWindow:
             summary += f' · {self._warnings} warning{plural} (see Details)'
         self.summary.value = summary
         self.current.value = 'Ready'
+        if mode in ('update', 'rebuild'):
+            autostart.notify_desktop('Reclaim My Chats', summary)
 
     async def _update_selected(self, _=None) -> None:
         await self._run(self._selected(), 'update')
@@ -865,6 +933,108 @@ class ReclaimWindow:
             ],
         ))
 
+    @staticmethod
+    def _restore_locked(archive: Path, selected: list[lifecycle.StateChatEntry]) -> int:
+        with locks.hold(archive, 'update'):
+            return sum(1 for entry in selected
+                       if lifecycle.restore_state_chat(archive, entry) is not None)
+
+    @staticmethod
+    def _delete_locked(archive: Path, selected: list[lifecycle.StateChatEntry]) -> int:
+        with locks.hold(archive, 'update'):
+            return sum(1 for entry in selected
+                       if lifecycle.delete_state_chat_permanently(archive, entry))
+
+    async def _archived_deleted_dialog(self, _=None) -> None:
+        archive = self._database_path()
+        if archive is None:
+            return
+        state = await asyncio.to_thread(database.inspect, archive)
+        if not state.usable:
+            self._error(state.message())
+            return
+        entries = await asyncio.to_thread(lifecycle.list_state_chats, archive)
+        items = [
+            (entry, ft.Checkbox(
+                label=f'[{DISPLAY_NAMES.get(entry.provider, entry.provider)} · {entry.state}] '
+                      f'{entry.title}',
+                value=False, key=f'state-chat-{entry.provider}-{entry.chat_id}'))
+            for entry in entries
+        ]
+        row_controls: list[ft.Control] = [
+            ft.Row([
+                cb,
+                ft.TextButton('Open', on_click=lambda _, p=entry.folder: self._open(p),
+                              key=f'open-state-{entry.chat_id}'),
+            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
+            for entry, cb in items
+        ] or [ft.Text('No archived or deleted chats in the database.')]
+
+        async def restore(_=None) -> None:
+            selected = [entry for entry, cb in items if cb.value]
+            if not selected:
+                return
+            self.page.pop_dialog()
+            try:
+                count = await asyncio.to_thread(self._restore_locked, archive, selected)
+            except locks.LockedError as exc:
+                self._lock_dialog(exc)
+                return
+            self.summary.value = f'Restored {count} chat(s) back to active folders.'
+            await self.refresh_archive()
+
+        def ask_delete(_=None) -> None:
+            selected = [entry for entry, cb in items if cb.value]
+            if not selected:
+                return
+            self.page.pop_dialog()
+            self._confirm_permanent_delete(archive, selected)
+
+        self.page.show_dialog(ft.AlertDialog(
+            modal=True,
+            key='archived-deleted-dialog',
+            title='Archived & deleted chats',
+            content=ft.Container(
+                width=600,
+                content=ft.Column(row_controls, spacing=6,
+                                  scroll=ft.ScrollMode.AUTO, height=340),
+            ),
+            actions=[
+                ft.OutlinedButton('Close', on_click=lambda _: self.page.pop_dialog(),
+                                  key='close-state-review'),
+                ft.Button('Restore selected', on_click=restore,
+                          key='restore-selected', disabled=not entries),
+                ft.OutlinedButton('Delete permanently', on_click=ask_delete,
+                                  key='delete-selected', disabled=not entries),
+            ],
+        ))
+
+    def _confirm_permanent_delete(self, archive: Path,
+                                  selected: list[lifecycle.StateChatEntry]) -> None:
+        async def do_delete(_=None) -> None:
+            self.page.pop_dialog()
+            try:
+                count = await asyncio.to_thread(self._delete_locked, archive, selected)
+            except locks.LockedError as exc:
+                self._lock_dialog(exc)
+                return
+            self.summary.value = f'Permanently deleted {count} chat folder(s).'
+            await self.refresh_archive()
+
+        self.page.show_dialog(ft.AlertDialog(
+            modal=True,
+            key='confirm-permanent-delete',
+            title='Delete permanently?',
+            content=ft.Text(
+                f'This permanently deletes {len(selected)} chat folder(s) from '
+                '_Archived/_Deleted on disk and cannot be undone.'),
+            actions=[
+                ft.OutlinedButton('Cancel', on_click=lambda _: self.page.pop_dialog()),
+                ft.FilledButton('Delete permanently', on_click=do_delete,
+                                key='confirm-delete-now'),
+            ],
+        ))
+
     def _settings(self, _=None) -> None:
         try:
             raw = config.load(self.root)
@@ -902,6 +1072,14 @@ class ReclaimWindow:
             label='Login wait (seconds)',
             value=str(raw.get('login_timeout') or config.DEFAULT_LOGIN_TIMEOUT),
             key='settings-login-timeout')
+        startup_check = ft.Checkbox(
+            label='Check for updates when the app starts',
+            value=config.check_on_startup(self.root),
+            key='settings-check-on-startup')
+        autostart_check = ft.Checkbox(
+            label='Start Reclaim My Chats when I log in',
+            value=config.start_at_login(self.root),
+            key='settings-start-at-login')
 
         async def choose_archive(_=None) -> None:
             await self._pick_folder(archive_field, 'Choose database folder')
@@ -915,7 +1093,9 @@ class ReclaimWindow:
                 archive_field.value.strip(), profile_field.value.strip(),
                 kimi_region=kimi_field.value or 'international',
                 chrome_path=(chrome_field.value or '').strip(),
-                login_timeout=(timeout_field.value or '').strip())
+                login_timeout=(timeout_field.value or '').strip(),
+                check_on_startup=bool(startup_check.value),
+                start_at_login=bool(autostart_check.value))
 
         dialog = ft.AlertDialog(
             modal=True,
@@ -935,6 +1115,8 @@ class ReclaimWindow:
                     kimi_field,
                     chrome_field,
                     timeout_field,
+                    startup_check,
+                    autostart_check,
                 ], scroll=ft.ScrollMode.AUTO, height=430),
             ),
             actions=[ft.OutlinedButton('Cancel', on_click=lambda _: self.page.pop_dialog()),
@@ -956,7 +1138,9 @@ class ReclaimWindow:
 
     async def _save_settings(self, enabled: list[str], archive: str, profile: str, *,
                              kimi_region: str = 'international', chrome_path: str = '',
-                             login_timeout: str | int = config.DEFAULT_LOGIN_TIMEOUT) -> None:
+                             login_timeout: str | int = config.DEFAULT_LOGIN_TIMEOUT,
+                             check_on_startup: bool | None = None,
+                             start_at_login: bool | None = None) -> None:
         """Check the chosen database folder, then save. A new or empty folder
         becomes a database only after the user confirms."""
         if not enabled or not archive:
@@ -982,7 +1166,11 @@ class ReclaimWindow:
             try:
                 config.save(self.root, providers=enabled, archive=choice, profile=profile,
                             kimi_region=kimi_region, chrome_path=chrome_path,
-                            login_timeout=timeout)
+                            login_timeout=timeout, check_on_startup=check_on_startup,
+                            start_at_login=start_at_login)
+                if start_at_login is not None:
+                    with contextlib.suppress(OSError):
+                        autostart.set_autostart(start_at_login)
             except (OSError, ValueError) as exc:
                 self._error(str(exc))
                 return
@@ -1104,6 +1292,7 @@ async def app(page) -> None:
     window = ReclaimWindow(page)
     await window.refresh_archive()
     await window.check_release_update()
+    await window.run_startup_check_if_enabled()
 
 
 def main() -> int:

@@ -10,9 +10,11 @@ from __future__ import annotations
 import contextlib
 import os
 import shutil
+import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -20,6 +22,27 @@ from . import config
 from .events import emit
 
 _active_page: Any = None
+_no_wait = threading.local()
+
+
+class LoginRequiredError(RuntimeError):
+    """Raised when login is needed while wait-free checks (`no_login_wait`) are active."""
+
+
+@contextmanager
+def no_login_wait() -> Iterator[None]:
+    """Fail immediately instead of waiting for manual login (e.g. startup checks)."""
+    prev = getattr(_no_wait, 'active', False)
+    _no_wait.active = True
+    try:
+        yield
+    finally:
+        _no_wait.active = prev
+
+
+def login_wait_disabled() -> bool:
+    """True inside a `no_login_wait()` block."""
+    return bool(getattr(_no_wait, 'active', False))
 
 LAUNCH_ARGS = [
     '--disable-blink-features=AutomationControlled',
@@ -173,6 +196,9 @@ def wait_for_login(page, provider: str, service: str,
     result = _try_probe(probe)
     if result:
         return result
+    if login_wait_disabled():
+        emit(None, 'login_needed', provider, message=f'{service} requires a login.')
+        raise LoginRequiredError(f'{service} login required')
     timeout = login_timeout()
     ask_for_login(page, provider, service, timeout)
     deadline = time.time() + timeout
@@ -195,6 +221,9 @@ def interactive_login(page, check_url_fragment: str, ready_url: str | Callable[[
     """
     if check_url_fragment not in page.url:
         return
+    if login_wait_disabled():
+        emit(None, 'login_needed', provider, message=f'{provider_name} requires a login.')
+        raise LoginRequiredError(f'{provider_name} login required')
     wait_ms = timeout_ms if timeout_ms is not None else login_timeout() * 1000
     ask_for_login(page, provider, provider_name, wait_ms // 1000)
     page.wait_for_url(ready_url, timeout=wait_ms)

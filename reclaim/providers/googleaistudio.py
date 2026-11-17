@@ -567,6 +567,21 @@ class GoogleAIStudio(engine.Provider):
                      message=f'raw.json was not saved: {e}')
         return engine.Fetched(chat, raw=raw, detail=f'path: {path}', extra={'path': path})
 
+    def confirm_status(self, s, chat_id: str) -> str:
+        try:
+            status, text = rpc_call(s.page, 'ResolveDriveResource', [chat_id], retries=1)
+        except Exception:
+            return 'unconfirmed'
+        if status == 404:
+            return 'deleted'
+        if status != 200:
+            return 'unconfirmed'
+        try:
+            parsed = parse_rpc(json.loads(text))
+        except Exception:
+            return 'unconfirmed'
+        return 'active' if parsed and parsed.get('entries') else 'unconfirmed'
+
 
 SPEC = GoogleAIStudio()
 

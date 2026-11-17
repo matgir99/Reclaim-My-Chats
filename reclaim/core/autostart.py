@@ -1,0 +1,129 @@
+"""Per-user autostart registration and desktop notifications."""
+
+from __future__ import annotations
+
+import contextlib
+import importlib
+import os
+import shlex
+import shutil
+import subprocess
+import sys
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
+from xml.sax.saxutils import escape
+
+APP_ID = 'org.reclaimmychats.app'
+WINDOWS_RUN_KEY = r'Software\Microsoft\Windows\CurrentVersion\Run'
+
+
+def default_command() -> str:
+    """Command used when registering start-at-login for this installation."""
+    if getattr(sys, 'frozen', False):
+        return shlex.quote(sys.executable)
+    return f'{shlex.quote(sys.executable)} -m reclaim gui'
+
+
+def linux_autostart_path(home: Path | None = None) -> Path:
+    base = Path(home) if home is not None else Path.home()
+    config_home = os.environ.get('XDG_CONFIG_HOME')
+    root = Path(config_home) if (config_home and home is None) else (base / '.config')
+    return root / 'autostart' / f'{APP_ID}.desktop'
+
+
+def macos_plist_path(home: Path | None = None) -> Path:
+    base = Path(home) if home is not None else Path.home()
+    return base / 'Library' / 'LaunchAgents' / f'{APP_ID}.plist'
+
+
+def _write_linux_entry(path: Path, enabled: bool, cmd: str) -> Path:
+    if enabled:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            '[Desktop Entry]\n'
+            'Type=Application\n'
+            'Name=Reclaim My Chats\n'
+            'Comment=Save and synchronize your AI conversations in a local database\n'
+            f'Exec={cmd}\n'
+            'Terminal=false\n'
+            'X-GNOME-Autostart-enabled=true\n',
+            encoding='utf-8',
+        )
+    elif path.exists():
+        path.unlink()
+    return path
+
+
+def _write_macos_entry(path: Path, enabled: bool, cmd: str) -> Path:
+    if enabled:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        args = ''.join(f'    <string>{escape(part)}</string>\n' for part in shlex.split(cmd))
+        path.write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
+            '"http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+            '<plist version="1.0">\n'
+            '<dict>\n'
+            f'  <key>Label</key><string>{APP_ID}</string>\n'
+            '  <key>ProgramArguments</key>\n'
+            '  <array>\n'
+            f'{args}'
+            '  </array>\n'
+            '  <key>RunAtLoad</key><true/>\n'
+            '</dict>\n'
+            '</plist>\n',
+            encoding='utf-8',
+        )
+    elif path.exists():
+        path.unlink()
+    return path
+
+
+def _windows_autostart(enabled: bool, cmd: str) -> None:
+    winreg = importlib.import_module('winreg')
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, WINDOWS_RUN_KEY, 0,
+                        winreg.KEY_SET_VALUE) as key:
+        if enabled:
+            winreg.SetValueEx(key, 'ReclaimMyChats', 0, winreg.REG_SZ, cmd)
+        else:
+            with contextlib.suppress(FileNotFoundError):
+                winreg.DeleteValue(key, 'ReclaimMyChats')
+
+
+def set_autostart(enabled: bool, *, command: str | None = None,
+                  home: Path | None = None, system: str | None = None,
+                  win_setter: Callable[[bool, str], None] | None = None) -> Path | str | None:
+    """Create or remove a per-user login autostart entry on Linux, macOS, or Windows."""
+    cmd = command or default_command()
+    sys_name = (system or sys.platform).lower()
+    if sys_name.startswith('linux'):
+        return _write_linux_entry(linux_autostart_path(home), enabled, cmd)
+    if sys_name == 'darwin':
+        return _write_macos_entry(macos_plist_path(home), enabled, cmd)
+    if sys_name in ('win32', 'nt', 'windows'):
+        (win_setter or _windows_autostart)(enabled, cmd)
+        return WINDOWS_RUN_KEY
+    return None
+
+
+def notify_desktop(title: str, message: str, *,
+                   runner: Callable[[list[str]], Any] | None = None,
+                   system: str | None = None) -> bool:
+    """Send a best-effort desktop notification; never raises."""
+    if os.environ.get('RECLAIM_NO_NOTIFY'):
+        return False
+    sys_name = (system or sys.platform).lower()
+    cmd: list[str] | None = None
+    if sys_name.startswith('linux') and (runner is not None or shutil.which('notify-send')):
+        cmd = ['notify-send', title, message]
+    elif sys_name == 'darwin':
+        safe_title = title.replace('"', '\\"')
+        safe_msg = message.replace('"', '\\"')
+        cmd = ['osascript', '-e', f'display notification "{safe_msg}" with title "{safe_title}"']
+    if cmd is None:
+        return False
+    with contextlib.suppress(Exception):
+        (runner or subprocess.Popen)(cmd)
+        return True
+    return False

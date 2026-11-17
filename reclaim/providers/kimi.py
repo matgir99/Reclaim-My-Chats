@@ -291,6 +291,17 @@ class Kimi(engine.Provider):
         return engine.Fetched(chat, raw={'meta': meta, 'messages': messages},
                               detail=f'images: {images}')
 
+    def confirm_status(self, s, chat_id: str) -> str:
+        try:
+            data = _api(s.page, s.token, 'kimi.chat.v1.ChatService/GetChat',
+                        {'chat_id': chat_id}, retries=1)
+        except Exception as exc:
+            msg = str(exc).lower()
+            return 'deleted' if ('404' in msg or 'not found' in msg) else 'unconfirmed'
+        if isinstance(data, dict) and ('chat' in data or data.get('id')):
+            return 'active'
+        return 'unconfirmed'
+
 
 SPEC = Kimi()
 

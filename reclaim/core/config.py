@@ -178,6 +178,13 @@ def _field_problem(data: dict) -> str | None:
     return None
 
 
+def _flag_problem(data: dict) -> str | None:
+    for key in ('check_on_startup', 'start_at_login'):
+        if key in data and not isinstance(data[key], bool):
+            return f'has an invalid "{key}" value (expected true or false)'
+    return None
+
+
 def _runtime_problem(data: dict) -> str | None:
     if 'chrome_path' in data and not isinstance(data['chrome_path'], str):
         return 'has an invalid "chrome_path" value (expected a file path)'
@@ -187,7 +194,7 @@ def _runtime_problem(data: dict) -> str | None:
         timeout = data['login_timeout']
         if not isinstance(timeout, int) or isinstance(timeout, bool) or timeout < 30:
             return 'has an invalid "login_timeout" value (expected at least 30 seconds)'
-    return None
+    return _flag_problem(data)
 
 
 def _problem(data) -> str | None:
@@ -232,6 +239,18 @@ def login_timeout(root: Path | None = None) -> int:
     return int(configured) if isinstance(configured, int) else DEFAULT_LOGIN_TIMEOUT
 
 
+def check_on_startup(root: Path | None = None) -> bool:
+    """True when the GUI should check for updates non-interactively on startup."""
+    base = Path(root) if root is not None else default_root()
+    return bool(load(base).get('check_on_startup', False))
+
+
+def start_at_login(root: Path | None = None) -> bool:
+    """True when the desktop app is configured to launch on OS login."""
+    base = Path(root) if root is not None else default_root()
+    return bool(load(base).get('start_at_login', False))
+
+
 def uses_default_database(root: Path | None = None) -> bool:
     """True when the settings do not choose a database folder."""
     base = Path(root) if root is not None else default_root()
@@ -266,7 +285,9 @@ def _validate_extra(*, kimi_region: str | None, login_timeout: int | None) -> No
 
 
 def _apply_optional(data: dict, *, profile: str | None, kimi_region: str | None,
-                    chrome_path: str | None, login_timeout: int | None) -> None:
+                    chrome_path: str | None, login_timeout: int | None,
+                    check_on_startup: bool | None = None,
+                    start_at_login: bool | None = None) -> None:
     if profile is not None:
         _set_or_drop(data, 'profile', profile if profile.strip() else None)
     if kimi_region is not None:
@@ -276,11 +297,17 @@ def _apply_optional(data: dict, *, profile: str | None, kimi_region: str | None,
     if login_timeout is not None:
         _set_or_drop(data, 'login_timeout',
                      None if login_timeout == DEFAULT_LOGIN_TIMEOUT else login_timeout)
+    if check_on_startup is not None:
+        _set_or_drop(data, 'check_on_startup', True if check_on_startup else None)
+    if start_at_login is not None:
+        _set_or_drop(data, 'start_at_login', True if start_at_login else None)
 
 
 def save(root: Path, *, providers: list[str], archive: str | None,
          profile: str | None = None, kimi_region: str | None = None,
-         chrome_path: str | None = None, login_timeout: int | None = None) -> None:
+         chrome_path: str | None = None, login_timeout: int | None = None,
+         check_on_startup: bool | None = None,
+         start_at_login: bool | None = None) -> None:
     """Atomically update settings without discarding other config keys.
 
     `archive=None` removes the database choice, so the default location
@@ -300,7 +327,8 @@ def save(root: Path, *, providers: list[str], archive: str | None,
     data['providers'] = providers
     _set_or_drop(data, 'archive', archive, keep_empty=True)
     _apply_optional(data, profile=profile, kimi_region=kimi_region,
-                    chrome_path=chrome_path, login_timeout=login_timeout)
+                    chrome_path=chrome_path, login_timeout=login_timeout,
+                    check_on_startup=check_on_startup, start_at_login=start_at_login)
     root.mkdir(parents=True, exist_ok=True)
     text = json.dumps(data, indent=2, ensure_ascii=False) + '\n'
     atomic_write_text(root / CONFIG_NAME, text, mode=0o600)

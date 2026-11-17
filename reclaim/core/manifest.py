@@ -190,6 +190,11 @@ class SyncState:
         """Copy of all sync records keyed by chat id."""
         return dict(self._state)
 
+    def forget(self, chat_id: str) -> None:
+        """Remove `chat_id` from the sync record after permanent deletion."""
+        if not self.readonly and self._state.pop(chat_id, None) is not None:
+            self.save()
+
     @staticmethod
     def _metadata_changed(prev: dict, title: str | None, project: str | None) -> bool:
         if title is not None and prev.get('title') and prev.get('title') != title:
@@ -352,7 +357,7 @@ def report_dry_run(chats: list[dict], updated_map: dict | None, sync: SyncState,
             action = f'fetch ({state})'
         emit(sink, 'chat_planned', provider,
              str(chat.get('title') or chat.get('name') or chat.get('id') or '?'),
-             i, len(chats), action)
+             i, len(chats), action, detail=str(chat.get('id') or ''))
     if skip_unchanged:
         counts = (f'would fetch: {plan["fetch"]} ({plan["new"]} new, {plan["changed"]} '
                   f'changed) · would skip: {plan["skip"]} unchanged')

@@ -123,6 +123,8 @@ def build_parser(provider: Provider) -> argparse.ArgumentParser:
                     help='fetch at most N chats')
     ap.add_argument('--no-raw', action='store_true',
                     help='do not save media-stripped raw.json per chat')
+    ap.add_argument('--only-id', action='append', dest='only_ids',
+                    help='fetch only this chat id (repeatable)')
     ap.add_argument('-o', '--output-dir',
                     default=str(config.archive_root() / provider.folder))
     return ap
@@ -192,8 +194,10 @@ def _session(provider: Provider, page, args, sink: EventSink) -> int:
 
     out_dir.mkdir(parents=True, exist_ok=True)
     emit(sink, 'downloading', name, total=len(refs), message=f'{len(refs)} {provider.noun}')
+    only = getattr(args, 'only_ids', None)
     results = download(provider, session, refs, out_dir, skip_unchanged=skip_unchanged,
-                       save_raw=not args.no_raw, sink=sink)
+                       save_raw=not args.no_raw, sink=sink,
+                       only_ids=set(only) if only else None)
     return finish_run(out_dir, name, results, started, sink)
 
 
@@ -262,19 +266,23 @@ def _download_one(provider: Provider, session, ref: ChatRef, index: int, total: 
 def download(provider: Provider, session, refs: list[ChatRef], out_dir: Path, *,
              skip_unchanged: bool = False, save_raw: bool = True, log: bool = False,
              sink: EventSink | None = None,
-             stop: threading.Event | None = None) -> list[dict]:
+             stop: threading.Event | None = None,
+             only_ids: set[str] | None = None) -> list[dict]:
     """Fetch and save `refs`. Returns per-chat results for the manifest.
 
     Reports a chat_started and then a chat_skipped, chat_completed or error
     event per chat (`log`: a verbose terminal when no sink or route is set).
     One failing chat never stops the others, and it keeps its previous sync
     record, so the next update retries it. When `stop` (or `stoppable()`) is
-    set, stops cleanly before starting the next chat."""
+    set, stops cleanly before starting the next chat. `only_ids` restricts
+    downloads to a chosen subset of chat IDs."""
     sink = resolve(sink, verbose=log)
     name = provider.name
     out_dir = Path(out_dir)
     sync = SyncState(out_dir, name)
     results: list[dict] = []
+    if only_ids is not None:
+        refs = [r for r in refs if r.id in only_ids]
     total = len(refs)
     for i, ref in enumerate(refs, 1):
         if should_stop(stop):

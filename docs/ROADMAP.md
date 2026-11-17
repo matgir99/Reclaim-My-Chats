@@ -216,31 +216,31 @@ one at a time with synthetic tests of each response shape.
 - [x] A completeness flag returned by every provider listing.
 - [x] A lifecycle planner shared by all providers: classify, confirm,
       apply the brake, report.
-- [ ] ChatGPT archived listing and deletion confirmation, then the other
+- [x] ChatGPT archived listing and deletion confirmation, then the other
       providers one at a time, including Claude, Kimi and Gemini grouping.
 - [x] Moves into and out of `_Archived` and `_Deleted`, with the event
       log. (The writer already reserves both names.)
-- [ ] Check without writing, and merge of an approved subset.
+- [x] Check without writing, and merge of an approved subset.
 - [x] Tidy: find chats saved in more than one folder and retire stale
       copies after a preview. Covers the duplicates created before
       November 2026. **Window:** a *Tidy* action with a preview.
       **CLI:** `reclaim tidy`.
-- [ ] **Window:** the review dialog (per-provider lists with checkboxes,
+- [x] **Window:** the review dialog (per-provider lists with checkboxes,
       merge all, merge selected, skip); a review screen for `_Archived`
       and `_Deleted` to open, restore or permanently delete chats with
       confirmation; counts per state in the provider table.
       **CLI:** the same plan in `--dry-run`, and `reclaim status` counts
       per state.
-- [ ] **Window:** setting to check for updates when the app starts (off
+- [x] **Window:** setting to check for updates when the app starts (off
       by default). Opening the app then runs *Check* and shows *Review*
       when something was found. The automatic check never waits for a
       login; a provider that needs one shows *Log in*.
-- [ ] **Window:** setting to start the app at login (off by default),
+- [x] **Window:** setting to start the app at login (off by default),
       creating a per-user autostart entry: an XDG autostart `.desktop`
       file on Linux, a `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
       value on Windows, and a login item on macOS. Turning it off removes
       the entry.
-- [ ] A run summary after each merge, also as a desktop notification.
+- [x] A run summary after each merge, also as a desktop notification.
 
 ## Phase 5. Packaging and updates
 

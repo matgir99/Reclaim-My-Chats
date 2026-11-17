@@ -362,6 +362,25 @@ class GoogleGemini(engine.Provider):
             chat.project = ref.project
         return engine.Fetched(chat, raw=raw)
 
+    def confirm_status(self, s, chat_id: str) -> str:
+        reqid = s.reqid
+        s.reqid += 1
+        try:
+            status, text = rpc_call(s.page, s.tokens, READ_RPC, [chat_id, 10], reqid, retries=1)
+        except Exception:
+            return 'unconfirmed'
+        if status == 404:
+            return 'deleted'
+        if status != 200:
+            return 'unconfirmed'
+        try:
+            raw = decode_response(text, READ_RPC)
+        except Exception:
+            return 'unconfirmed'
+        if raw == []:
+            return 'deleted'
+        return 'active' if parse_read(raw) else 'unconfirmed'
+
 
 SPEC = GoogleGemini()
 

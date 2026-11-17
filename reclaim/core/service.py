@@ -106,7 +106,8 @@ class ArchiveController:
         return browser.bring_browser_forward()
 
     def run(self, providers: list[str], mode: str = 'update',
-            sink: EventSink | None = None, *, log: bool = False) -> RunSummary:
+            sink: EventSink | None = None, *, log: bool = False,
+            only_ids: list[str] | None = None) -> RunSummary:
         """Run a selected set in one Playwright session, off the GUI loop."""
         if mode not in ('update', 'rebuild', 'dry-run', 'check'):
             raise ValueError(f'unknown mode: {mode}')
@@ -118,12 +119,13 @@ class ArchiveController:
         try:
             flags = {'update': [], 'rebuild': ['--rebuild'],
                      'dry-run': ['--dry-run'], 'check': ['--dry-run']}[mode]
+            only_flags = [arg for cid in (only_ids or ()) for arg in ('--only-id', cid)]
             archive = config.archive_root(self.root)
             parsed = {}
             for name in chosen:
                 out_dir = archive / PROVIDER_DIRS[name]
                 parsed[name] = provider_module(name).parse_args(
-                    [*flags, '-o', str(out_dir), *(['--log'] if log else [])])
+                    [*flags, *only_flags, '-o', str(out_dir), *(['--log'] if log else [])])
             return self._execute(chosen, parsed, mode, sink, {archive},
                                  readonly=mode in ('dry-run', 'check'))
         finally:

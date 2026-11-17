@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
+import shutil
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import writer
+from . import database, writer
 from .engine import ChatRef
 from .fsutil import atomic_write_text
 from .manifest import SyncState
@@ -206,3 +207,66 @@ def apply_moves(out_dir: Path, sync: SyncState, plan: LifecyclePlan, *,
         if target is not None:
             moved.append(target)
     return moved
+
+
+@dataclass(frozen=True)
+class StateChatEntry:
+    provider: str
+    chat_id: str
+    title: str
+    state: str
+    folder: Path
+    md: Path
+
+
+def list_state_chats(db: Path) -> list[StateChatEntry]:
+    """List every saved chat under `_Archived` or `_Deleted` across providers."""
+    db = Path(db)
+    entries: list[StateChatEntry] = []
+    for provider, dirname in database.PROVIDER_DIRS.items():
+        pdir = db / dirname
+        if not pdir.is_dir():
+            continue
+        for state, subdir in (('archived', ARCHIVED_DIR), ('deleted', DELETED_DIR)):
+            root = pdir / subdir
+            if not root.is_dir():
+                continue
+            for cj in sorted(root.rglob(writer.CHAT_JSON)):
+                if not cj.is_file():
+                    continue
+                payload = writer.read_chat_json(cj.parent) or {}
+                cid = str(payload.get('id') or cj.parent.name)
+                title = str(payload.get('title') or cj.parent.name)
+                md_name = str(payload.get('markdown') or f'{cj.parent.name}.md')
+                entries.append(StateChatEntry(
+                    provider=provider, chat_id=cid, title=title, state=state,
+                    folder=cj.parent, md=cj.parent / md_name,
+                ))
+    return entries
+
+
+def restore_state_chat(db: Path, entry: StateChatEntry) -> Path | None:
+    """Restore an `_Archived` or `_Deleted` chat back into active folders."""
+    pdir = Path(db) / database.PROVIDER_DIRS[entry.provider]
+    sync = SyncState(pdir, entry.provider)
+    if sync.known(entry.chat_id) is None:
+        payload = writer.read_chat_json(entry.folder) or {}
+        sync.mark(entry.chat_id, payload.get('provider_updated_at'), str(entry.md),
+                  title=entry.title, project=payload.get('project'), state=entry.state)
+    return move_chat_folder(pdir, sync, entry.chat_id, 'active', reason='restored by user')
+
+
+def delete_state_chat_permanently(db: Path, entry: StateChatEntry) -> bool:
+    """Permanently delete a confirmed `_Archived` or `_Deleted` chat folder."""
+    pdir = Path(db) / database.PROVIDER_DIRS[entry.provider]
+    if not entry.folder.is_dir() or not writer._inside(entry.folder, pdir):
+        return False
+    rel = entry.folder.resolve().relative_to(pdir.resolve())
+    if not rel.parts or rel.parts[0] not in (ARCHIVED_DIR, DELETED_DIR):
+        return False
+    shutil.rmtree(entry.folder)
+    _prune_empty_parents(pdir, entry.folder.parent)
+    SyncState(pdir, entry.provider).forget(entry.chat_id)
+    _append_event(pdir, entry.chat_id, rel, rel, 'permanently_deleted',
+                  'deleted permanently by user')
+    return True
