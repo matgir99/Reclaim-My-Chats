@@ -16,6 +16,8 @@
 .reclaim.json.invalid-*
 # Run logs (logs/reclaim.log and its rotated copies reclaim.log.1 …)
 logs/
+# Chat captures (reclaim capture / Diagnostics)
+captures/
 # Test coverage data
 .coverage
 

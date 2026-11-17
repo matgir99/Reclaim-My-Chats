@@ -44,11 +44,12 @@ _GET_JS = """async (args) => {
 }"""
 
 
-def _get(page, url: str, retries: int = 3) -> dict:
+def _get(page, url: str, retries: int = 3, *, record: bool = True) -> dict:
     """Page-side GET (cookies attach automatically) with the shared retry
     policy (see core/retry.py); returns parsed JSON."""
     response = retry.send(lambda: page.evaluate(_GET_JS, {'url': url}),
-                          what=f'Claude GET {url[:80]}', retries=retries, give_back=(404,))
+                          what=f'Claude GET {url[:80]}', retries=retries, give_back=(404,),
+                          record=record)
     if response['status'] == 404:
         raise RuntimeError('HTTP 404 — chat deleted?')
     return json.loads(response['text'])
@@ -85,7 +86,7 @@ def ensure_logged_in(page) -> str:
             raise RuntimeError('Login timeout')
     org = _cookies(page).get('lastActiveOrg')
     if not org:
-        data = _get(page, f'{BASE_URL}/api/organizations')
+        data = _get(page, f'{BASE_URL}/api/organizations', record=False)
         orgs = data if isinstance(data, list) else data.get('organizations') or []
         if not orgs:
             raise RuntimeError('no organizations in /api/organizations — account issue?')

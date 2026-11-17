@@ -5,14 +5,23 @@ database of 583 chats from all six providers: every parser read each
 cleaned chat into the same turns, roles, attachments and text lengths."""
 
 import base64
+import contextlib
+import io
 import json
+import os
 import re
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
-from reclaim.core import capture
+from reclaim import __main__ as cli
+from reclaim.core import capture, engine, retry
 from reclaim.core.batchexecute import decode_response
+from reclaim.core.events import ProgressEvent
+from reclaim.core.model import Chat, Turn
+from reclaim.core.service import ArchiveController
 from reclaim.providers import chatgpt, claude, deepseek, googleaistudio, googlegemini, kimi
 
 FIX = Path(__file__).resolve().parent / 'fixtures'
@@ -224,6 +233,145 @@ class CaptureFileTests(unittest.TestCase):
         path = capture.default_path(Path('/data'), 'kimi')
         self.assertEqual(path.parent, Path('/data/captures'))
         self.assertTrue(path.name.startswith('kimi-') and path.suffix == '.json')
+
+
+class _Context:
+    def close(self):
+        pass
+
+
+class _Playwright:
+    def __enter__(self):
+        return object()
+
+    def __exit__(self, *_):
+        return False
+
+
+class _RecordingProvider(engine.Provider):
+    name = 'claude'
+    folder = 'Claude'
+    pace = 0.0
+
+    def __init__(self, *, fail: bool = False, extra: dict | None = None):
+        self.fail = fail
+        self.extra = extra or {}
+
+    def open(self, page):
+        return None
+
+    def from_url(self, session, url: str) -> engine.ChatRef:
+        return engine.ChatRef(id=url.rsplit('/', 1)[-1])
+
+    def fetch(self, session, ref: engine.ChatRef) -> engine.Fetched:
+        retry.send(lambda: {'status': 200, 'text': json.dumps({'name': 'Ottoline chat',
+                                                              'chat_messages': []})},
+                   what='Claude GET chat')
+        if self.fail:
+            raise RuntimeError('Ottoline response shape changed')
+        return engine.Fetched(Chat(id=ref.id, title='T', source_url='', provider='claude',
+                                   turns=[Turn('user', 'hi')]), extra=dict(self.extra))
+
+
+class CaptureWorkflowTests(unittest.TestCase):
+    def test_engine_capture_saves_on_success_failure_and_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ok_dest = root / 'ok.json'
+            events: list[ProgressEvent] = []
+            code = engine.capture(_RecordingProvider(), None, 'https://claude.ai/chat/c1',
+                                  ok_dest, events.append)
+            self.assertEqual(code, 0)
+            loaded = capture.load(ok_dest)
+            self.assertEqual(len(loaded.responses), 1)
+            self.assertIsNone(loaded.error)
+            self.assertNotIn('Ottoline', ok_dest.read_text(encoding='utf-8'))
+            self.assertEqual([e.kind for e in events], ['captured'])
+            self.assertEqual(events[0].detail, str(ok_dest))
+
+            fail_dest = root / 'fail.json'
+            fail_events: list[ProgressEvent] = []
+            code = engine.capture(_RecordingProvider(fail=True), None, 'https://claude.ai/chat/c1',
+                                  fail_dest, fail_events.append)
+            self.assertEqual(code, 0)
+            loaded_fail = capture.load(fail_dest)
+            assert loaded_fail.error is not None
+            self.assertEqual(loaded_fail.error['type'], 'RuntimeError')
+            self.assertEqual([e.kind for e in fail_events], ['warning', 'captured'])
+            self.assertIn('capture was still saved', fail_events[0].message)
+
+            fb_events: list[ProgressEvent] = []
+            engine.capture(_RecordingProvider(extra={'path': 'intercept'}), None,
+                           'https://aistudio.google.com/prompts/p1', root / 'fb.json',
+                           fb_events.append)
+            self.assertEqual([e.kind for e in fb_events], ['warning', 'captured'])
+            self.assertIn('intercept fallback', fb_events[0].message)
+
+    def test_aistudio_drive_token_is_not_recorded(self):
+        page = MagicMock()
+        token_payload = json.dumps(['ya29.' + 'a' * 80])
+        chat_payload = json.dumps([[[], None, None, None, ['Title'], None, None, None,
+                                    None, None, None, None, None, []]])
+        page.evaluate.side_effect = [
+            {'status': 200, 'text': token_payload, 'retryAfter': None},
+            {'status': 200, 'text': chat_payload, 'retryAfter': None},
+        ]
+        with retry.recording() as recorded:
+            drive = googleaistudio.DriveClient(page)
+            self.assertTrue(drive.token().startswith('ya29.'))
+            googleaistudio.rpc_call(page, 'ResolveDriveResource', ['p1'])
+        self.assertEqual(len(recorded), 1)
+        self.assertIn('ResolveDriveResource', recorded[0]['request'])
+        self.assertNotIn('ya29.', json.dumps(recorded))
+
+    def test_controller_capture_locks_profile_only_and_saves_default_or_custom(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            module = SimpleNamespace(SPEC=_RecordingProvider())
+            with (patch('reclaim.core.service.provider_module', return_value=module),
+                  patch('reclaim.core.service.browser.launch',
+                        return_value=(_Context(), object())),
+                  patch('playwright.sync_api.sync_playwright', return_value=_Playwright())):
+                summary = ArchiveController(root).capture('claude', 'https://claude.ai/chat/c1')
+            self.assertEqual(summary.exit_code, 0)
+            self.assertFalse((root / 'chats').exists())
+            self.assertTrue((root / '.playwright-profile' / '.reclaim.lock').exists())
+            captures = list((root / 'captures').glob('claude-*.json'))
+            self.assertEqual(len(captures), 1)
+
+    def test_cli_capture_command(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dest = root / 'out.json'
+            module = SimpleNamespace(SPEC=_RecordingProvider(fail=True))
+            out = io.StringIO()
+            with (patch.dict(os.environ, {'RECLAIM_HOME': str(root)}),
+                  patch('reclaim.core.service.provider_module', return_value=module),
+                  patch('reclaim.core.service.browser.launch',
+                        return_value=(_Context(), object())),
+                  patch('playwright.sync_api.sync_playwright', return_value=_Playwright()),
+                  contextlib.redirect_stdout(out)):
+                code = cli.main(['capture', 'claude', 'https://claude.ai/chat/c1',
+                                 '-o', str(dest)])
+            self.assertEqual(code, 0)
+            self.assertTrue(dest.exists())
+            self.assertIn(str(dest), out.getvalue())
+            self.assertIn('check that nothing private remains', out.getvalue())
+
+            # Failure before saving (e.g., destination is an existing directory) -> exit 2.
+            bad_dest = root / 'existing_dir'
+            bad_dest.mkdir()
+            err_out = io.StringIO()
+            with (patch.dict(os.environ, {'RECLAIM_HOME': str(root)}),
+                  patch('reclaim.core.service.provider_module', return_value=module),
+                  patch('reclaim.core.service.browser.launch',
+                        return_value=(_Context(), object())),
+                  patch('playwright.sync_api.sync_playwright', return_value=_Playwright()),
+                  contextlib.redirect_stdout(err_out)):
+                code = cli.main(['capture', 'claude', 'https://claude.ai/chat/c1',
+                                 '-o', str(bad_dest)])
+            self.assertEqual(code, 2)
+            self.assertNotIn('check that nothing private remains', err_out.getvalue())
 
 
 if __name__ == '__main__':

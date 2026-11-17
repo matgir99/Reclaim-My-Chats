@@ -53,11 +53,12 @@ _FETCH_JS = """async (args) => {
 }"""
 
 
-def _api(page, token: str, path: str, body: dict, retries: int = 3) -> dict:
+def _api(page, token: str, path: str, body: dict, retries: int = 3, *,
+         record: bool = True) -> dict:
     """Page-side POST with the shared retry policy (see core/retry.py)."""
     response = retry.send(lambda: page.evaluate(_FETCH_JS, {'url': f'{API}/{path}',
                                                             'token': token, 'body': body}),
-                          what=f'Kimi {path}', retries=retries)
+                          what=f'Kimi {path}', retries=retries, record=record)
     return json.loads(response['text'])
 
 
@@ -90,7 +91,7 @@ def get_token(page) -> str:
         tried += 1
         try:
             _api(page, token, 'kimi.chat.v1.ChatService/ListChats',
-                 {'project_id': '', 'page_size': 1, 'query': ''}, retries=1)
+                 {'project_id': '', 'page_size': 1, 'query': ''}, retries=1, record=False)
             return token
         except Exception:
             continue

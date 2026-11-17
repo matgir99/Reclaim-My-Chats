@@ -81,6 +81,7 @@ reclaim init [FOLDER]                 # create a database (default: the configur
 reclaim unlock                        # remove a lock left by a run that has ended
 reclaim doctor                        # check settings, database, locks, browser, login data
 reclaim doctor --live                 # also log in to each provider and list its chats
+reclaim capture PROVIDER URL [-o FILE]  # record sanitized responses for one chat
 ```
 
 Run `reclaim <provider> --help` for `--skip`, `--limit`, `--log`, `--no-raw`,
@@ -132,6 +133,13 @@ the login data folder, and says what to do about each problem. *Run live
 check* (`reclaim doctor --live`) also logs in to each enabled provider and
 lists its chats without saving anything. *Copy diagnostics* copies the
 results for a bug report: they contain folder paths, never chat content.
+When a provider fails on a conversation, *Capture a chat* in Diagnostics (or
+`reclaim capture PROVIDER URL [-o FILE]`) records that chat's API
+responses with the chat's text replaced while keeping the structure, field
+names, numbers, dates and parser words; it saves the capture even if the
+fetch fails. Only direct API/RPC responses are recorded (not Google AI
+Studio's page-interception or DOM fallbacks), and login/token requests stay
+outside the recorder. Open and read the saved file before sharing it.
 
 The GUI and CLI use the same `.reclaim.json` settings. For a source checkout,
 the default database is `<checkout>/chats` and the default browser profile is

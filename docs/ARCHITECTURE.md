@@ -63,7 +63,10 @@ shared and kept as a test fixture: each letter and digit of the chats is
 replaced, while the structure, field names, numbers, dates and the words the
 parsers look for stay. Those words come from the provider code itself (its
 string constants, read from the loaded modules). Equal strings get equal
-replacements, so ids and citation markers still match up.
+replacements, so ids and citation markers still match up. `retry.recording()`
+records non-auth responses during `engine.capture` (invoked via
+`ArchiveController.capture` from `reclaim capture` and *Capture a chat* in
+Diagnostics).
 
 Settings, database, and browser profile paths share one writable root. A Git
 checkout keeps its original root. Installed or frozen applications use the

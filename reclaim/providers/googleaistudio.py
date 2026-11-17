@@ -84,13 +84,14 @@ def init_replay(page):
     page.remove_listener('request', grab_key)
 
 
-def rpc_call(page, name: str, payload: list, retries: int = 3) -> tuple[int, str]:
+def rpc_call(page, name: str, payload: list, retries: int = 3, *,
+             record: bool = True) -> tuple[int, str]:
     # The page captures its API key from the app's own first requests, so a
     # 401/403 right after loading is retried once after a short pause.
     response = retry.send(lambda: page.evaluate("(a) => window.__msRpc(a.n, a.p)",
                                                 {'n': name, 'p': payload}),
                           what=f'AI Studio RPC {name}', retries=retries,
-                          return_errors=True, auth_retries=1)
+                          return_errors=True, auth_retries=1, record=record)
     return response['status'], response['text']
 
 
@@ -106,7 +107,7 @@ class DriveClient:
     def token(self) -> str:
         if self._token and (time.time() - self._token_ts) < 1800:
             return self._token
-        status, text = rpc_call(self.page, 'GenerateAccessToken', ['users/me'])
+        status, text = rpc_call(self.page, 'GenerateAccessToken', ['users/me'], record=False)
         if status != 200:
             raise RuntimeError(f'GenerateAccessToken HTTP {status}')
         token = self._find_token(json.loads(text))

@@ -11,6 +11,7 @@ Usage:
   reclaim status [-o DIR]                  offline database overview
   reclaim init [DIR]                       create a database (default: the configured folder)
   reclaim doctor [--live]                  check settings, database, locks, browser, logins
+  reclaim capture <provider> URL [-o FILE] record one chat's sanitized responses
   reclaim unlock                           remove a lock left by a run that has ended
   reclaim gui                              launch the desktop application
   reclaim all [options]                    update all six providers, in order
@@ -210,6 +211,38 @@ def _gui(rest: list[str]) -> int:
     return gui_main()
 
 
+def _capture(rest: list[str]) -> int:
+    import argparse
+    from pathlib import Path
+    from .core import capture, config, service
+    from .core.events import ProgressEvent
+    from .core.render import TerminalRenderer, fanout
+    ap = argparse.ArgumentParser(
+        prog='reclaim capture',
+        description='Record one chat’s provider responses with the chat’s text replaced, '
+                    'for a bug report or test fixture.')
+    ap.add_argument('provider', choices=ALL_PROVIDERS,
+                    help='provider that owns the chat')
+    ap.add_argument('url', help='URL of the chat to capture')
+    ap.add_argument('-o', '--output', metavar='FILE',
+                    help='where to save the capture (default: captures/<provider>-<time>.json)')
+    args = ap.parse_args(rest)
+    root = config.default_root()
+    target = (Path(args.output).expanduser().resolve() if args.output
+              else capture.default_path(root, args.provider))
+    events: list[ProgressEvent] = []
+    summary = service.ArchiveController(root).capture(
+        args.provider, args.url,
+        sink=fanout(events.append, TerminalRenderer(sys.stdout)),
+        destination=target)
+    if summary.exit_code != 0:
+        return 2
+    if not any(e.kind == 'captured' for e in events):
+        print(f'Saved capture: {target}')
+    print('Open the file and check that nothing private remains before sharing it.')
+    return 0
+
+
 COMMANDS = {
     '--version': _version,
     'all': _run_all,
@@ -217,6 +250,7 @@ COMMANDS = {
     'unlock': _unlock,
     'gui': _gui,
     'doctor': lambda rest: _module_main('reclaim.core.doctor', rest),
+    'capture': _capture,
     'status': lambda rest: _module_main('reclaim.core.status', rest),
 }
 

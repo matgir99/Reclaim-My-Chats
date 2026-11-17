@@ -42,8 +42,8 @@ def describe(event: ProgressEvent) -> str | None:
         return f'warning: {title} — {message}' if title else f'warning: {message}'
     if kind == 'plan':
         return '\n'.join(part for part in (message, event.detail) if part)
-    if kind == 'downloaded':
-        return f'{message} · {event.detail}' if event.detail else message
+    if kind in ('downloaded', 'captured'):
+        return f'{message} · {event.detail}' if message and event.detail else (event.detail or message)
     return message or kind.replace('_', ' ')
 
 
@@ -87,8 +87,14 @@ class TerminalRenderer:
         special = {'provider_started': self._heading, 'login_needed': self._banner,
                    'downloading': self._download_start, 'downloaded': self._download_end,
                    'error': self._failure, 'warning': self._warning, 'plan': self._plan,
-                   'checked': lambda e: f'{e.provider}: {e.message}'}.get(kind)
+                   'checked': lambda e: f'{e.provider}: {e.message}',
+                   'captured': self._captured}.get(kind)
         return special(event) if special else event.message or None
+
+    @staticmethod
+    def _captured(event: ProgressEvent) -> str:
+        return (f'{event.message} · {event.detail}' if event.message and event.detail
+                else (event.detail or event.message))
 
     def _heading(self, event: ProgressEvent) -> str | None:
         return f'\n========== {event.provider} ==========' if self.headers else None

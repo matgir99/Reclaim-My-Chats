@@ -88,6 +88,24 @@ class TestRetry(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'HTTP 429'):
                 retry.send(call, what='Test GET', return_errors=True)
 
+    def test_recording_captures_every_response_including_retries_and_skips_auth(self):
+        self.assertEqual(self.send(responses(ok('plain')))[0]['text'], 'plain')
+        with retry.recording() as recorded:
+            call = responses(status(429, '1'), status(500), ok('{"secret": 1}'))
+            result, _ = self.send(call)
+            self.assertEqual(result['status'], 200)
+            self.send(responses(ok('{"token": "ya29.secret"}')), record=False)
+            with self.assertRaises(RuntimeError):
+                self.send(responses(status(502), status(502), status(502)))
+        self.assertEqual([(r['request'], r['status'], r['text']) for r in recorded], [
+            ('Test GET', 429, 'body 429'),
+            ('Test GET', 500, 'body 500'),
+            ('Test GET', 200, '{"secret": 1}'),
+            ('Test GET', 502, 'body 502'),
+            ('Test GET', 502, 'body 502'),
+            ('Test GET', 502, 'body 502'),
+        ])
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -39,7 +39,11 @@ each enabled provider and lists its chats, writing nothing; each provider's
 row then shows "Live check: logged in · N chats listed" or the error.
 *Copy diagnostics* copies the results as text for a bug report. They contain
 folder paths, which can include your user name, but never chat content.
-`reclaim doctor [--live]` prints the same report.
+`reclaim doctor [--live]` prints the same report. **Capture a chat** lets
+you choose a provider, enter a chat URL, and click *Capture* to record that
+chat's sanitized API responses (saved even if fetching fails), then shows
+the saved path with *Open folder*. Open and check the file before sharing it.
+`reclaim capture PROVIDER URL [-o FILE]` runs the same capture from the CLI.
 
 **Settings** writes the shared `.reclaim.json`. It can choose enabled
 providers, a database folder, and an existing browser profile. Choosing an

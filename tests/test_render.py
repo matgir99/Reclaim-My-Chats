@@ -35,6 +35,9 @@ class TestWording(unittest.TestCase):
         self.assertEqual(render.describe(event('downloaded', message='Done: 1 ok, 0 failed',
                                                detail='Manifest: m.json')),
                          'Done: 1 ok, 0 failed · Manifest: m.json')
+        self.assertEqual(render.describe(event('captured', message='1 response recorded',
+                                               detail='/tmp/c.json')),
+                         '1 response recorded · /tmp/c.json')
         self.assertEqual(render.describe(event('login_needed', message='Log in to Kimi')),
                          'Log in to Kimi')
 
@@ -55,7 +58,9 @@ class TestTerminal(unittest.TestCase):
                event('error', title='B' * 80, current=2, total=2, message='HTTP 500',
                      detail='Traceback (most recent call last): ...'),
                event('warning', title='C', message='raw.json was not saved'),
-               event('plan', message='would fetch: 1', detail='  - A')]
+               event('plan', message='would fetch: 1', detail='  - A'),
+               event('captured', provider='kimi', message='1 response recorded',
+                     detail='/tmp/c.json')]
         text = self.lines(render.TerminalRenderer(), *evs)
         self.assertNotIn('kimi', text)          # no heading for a single provider
         self.assertNotIn('2t, 9 chars', text)   # per-chat lines need --log
@@ -63,6 +68,7 @@ class TestTerminal(unittest.TestCase):
         self.assertNotIn('Traceback', text)     # kept for the log and --log
         self.assertIn('  warning: C: raw.json was not saved', text)
         self.assertIn('would fetch: 1\n  - A', text)
+        self.assertIn('1 response recorded · /tmp/c.json', text)
 
     def test_verbose_adds_chat_lines_progress_and_tracebacks(self):
         renderer = render.TerminalRenderer(verbose=True, headers=True)
