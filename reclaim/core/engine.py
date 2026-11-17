@@ -16,7 +16,7 @@ import sys
 import threading
 import time
 import traceback
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -159,6 +159,55 @@ def run_session(provider: Provider, page, args, sink: EventSink | None = None) -
         return _session(provider, page, args, sink)
 
 
+def _confirm_callback(provider: Provider, session) -> Callable[[str], str] | None:
+    confirm_api = getattr(provider, 'confirm_status', None)
+    if not callable(confirm_api):
+        return None
+    return lambda cid: str(confirm_api(session, cid))
+
+
+def _emit_and_apply_lifecycle(plan, out_dir: Path, sync: SyncState, args,
+                              provider: Provider, sink: EventSink, *, dry_run: bool) -> None:
+    from . import lifecycle
+    if dry_run:
+        for idx, move in enumerate(plan.moves, 1):
+            emit(sink, 'chat_planned', provider.name, move.title,
+                 idx, len(plan.moves), f'move ({move.to_state})', detail=move.chat_id)
+    if plan.brake_triggered:
+        emit(sink, 'warning', provider.name, message=plan.brake_reason)
+    elif not dry_run:
+        only = getattr(args, 'only_ids', None)
+        lifecycle.apply_moves(out_dir, sync, plan, approved_ids=set(only) if only else None)
+
+
+def _archived_refs(provider: Provider, session) -> list[ChatRef] | None:
+    archived_api = getattr(provider, 'archived_listing', None)
+    if not callable(archived_api):
+        return None
+    refs = archived_api(session)
+    return [r for r in refs if isinstance(r, ChatRef)] if isinstance(refs, list) else None
+
+
+def _run_lifecycle(provider: Provider, session, refs: list[ChatRef], out_dir: Path,
+                   args, sink: EventSink, *, dry_run: bool) -> list[ChatRef]:
+    """Plan and preview/apply provider lifecycle moves during unfiltered runs."""
+    if (args.url or args.title or args.skip or args.limit or args.rebuild
+            or not out_dir.exists()):
+        return refs
+    from . import lifecycle
+    sync = SyncState(out_dir, provider.name, migrate=not dry_run)
+    if not sync.records():
+        return refs
+    lplan = lifecycle.plan_lifecycle(
+        out_dir, provider.name, refs, sync,
+        archived_refs=_archived_refs(provider, session),
+        confirm=_confirm_callback(provider, session),
+        provider_obj=provider, session=session,
+    )
+    _emit_and_apply_lifecycle(lplan, out_dir, sync, args, provider, sink, dry_run=dry_run)
+    return [r for r in refs if not (r.state == 'archived' and sync.known(r.id) is not None)]
+
+
 def _session(provider: Provider, page, args, sink: EventSink) -> int:
     """Log in, list or take the URL, filter, then list, preview or download."""
     name = provider.name
@@ -182,6 +231,7 @@ def _session(provider: Provider, page, args, sink: EventSink) -> int:
         return 0
     skip_unchanged = not args.rebuild and not args.title
     if args.dry_run:
+        refs = _run_lifecycle(provider, session, refs, out_dir, args, sink, dry_run=True)
         sync = SyncState(out_dir, name, migrate=False)
         return report_dry_run([{'id': r.id, 'title': r.title} for r in refs],
                               {r.id: r.updated_at for r in refs}, sync, skip_unchanged,
@@ -192,6 +242,7 @@ def _session(provider: Provider, page, args, sink: EventSink) -> int:
              message=f'Stopped before downloading (0 of {len(refs)} {provider.noun})')
         return 0
 
+    refs = _run_lifecycle(provider, session, refs, out_dir, args, sink, dry_run=False)
     out_dir.mkdir(parents=True, exist_ok=True)
     emit(sink, 'downloading', name, total=len(refs), message=f'{len(refs)} {provider.noun}')
     only = getattr(args, 'only_ids', None)
@@ -251,7 +302,8 @@ def _download_one(provider: Provider, session, ref: ChatRef, index: int, total: 
     try:
         got = provider.fetch(session, ref)
         stats = save_chat(got.chat, out_dir, sync, ref.id, ref.updated_at,
-                          got.raw if save_raw else None, sink=sink, provider=name)
+                          got.raw if save_raw else None, sink=sink, provider=name,
+                          state=ref.state)
         detail = got.detail or f'assets: {stats["images"] + stats["docs"]}'
         emit(sink, 'chat_completed', name, got.chat.title or label, index, total,
              stats_text(stats), f'{detail} · {time.time() - t0:.1f}s')

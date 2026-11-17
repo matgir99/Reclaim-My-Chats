@@ -339,3 +339,85 @@ class TestAllProviderConfirmAndSubsetAndAutostart(unittest.TestCase):
             self.assertEqual(seen_cmds, [['notify-send', 'Reclaim My Chats', 'Update completed']])
         with patch.dict(os.environ, {'RECLAIM_NO_NOTIFY': '1'}):
             self.assertFalse(autostart.notify_desktop('Reclaim My Chats', 'x', runner=seen_cmds.append))
+
+    def test_engine_session_applies_lifecycle_moves_and_honors_brake(self):
+        class _FakeLifecycleProvider(engine.Provider):
+            name = 'chatgpt'
+            folder = 'ChatGPT'
+            pace = 0.0
+
+            def __init__(self, active_refs, archived_refs, verdicts):
+                self._active = active_refs
+                self._archived = archived_refs
+                self._verdicts = verdicts
+                self.fetched: list[str] = []
+
+            def open(self, page):
+                return {'page': page, 'listing_complete': True}
+
+            def listing(self, s):
+                return list(self._active)
+
+            def archived_listing(self, s):
+                return list(self._archived)
+
+            def confirm_status(self, s, cid: str) -> str:
+                return self._verdicts.get(cid, 'unconfirmed')
+
+            def from_url(self, s, url):
+                return engine.ChatRef(id=url.rsplit('/', 1)[-1])
+
+            def fetch(self, s, ref):
+                self.fetched.append(ref.id)
+                return engine.Fetched(_chat(ref.id, ref.title), raw={'id': ref.id})
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / 'chats'
+            database.init(db)
+            out = db / 'ChatGPT'
+            out.mkdir()
+            sync = SyncState(out, 'chatgpt')
+            for cid, title in (('keep', 'Keep'), ('unknown', 'Keep Absent'),
+                               ('arc', 'To Archive'), ('gone', 'To Delete')):
+                save_chat(_chat(cid, title), out, sync, cid, '1')
+
+            prov = _FakeLifecycleProvider(
+                active_refs=[engine.ChatRef('keep', 'Keep', '1'),
+                             engine.ChatRef('new_chat', 'Brand New', '1')],
+                archived_refs=[engine.ChatRef('arc', 'To Archive', '1', state='archived')],
+                verdicts={'gone': 'deleted', 'unknown': 'unconfirmed'},
+            )
+            dry_events = []
+            dry_args = engine.parse_args(prov, ['--dry-run', '-o', str(out)])
+            self.assertEqual(engine.run_session(prov, None, dry_args, sink=dry_events.append), 0)
+            planned = [(e.detail, e.message) for e in dry_events if e.kind == 'chat_planned']
+            self.assertIn(('arc', 'move (archived)'), planned)
+            self.assertIn(('gone', 'move (deleted)'), planned)
+            self.assertFalse((out / '_Archived').exists())
+            self.assertFalse((out / '_Deleted').exists())
+
+            up_args = engine.parse_args(prov, ['-o', str(out)])
+            self.assertEqual(engine.run_session(prov, None, up_args), 0)
+            self.assertEqual(prov.fetched, ['new_chat'])
+            self.assertTrue((out / '_Archived' / 'To Archive').is_dir())
+            self.assertTrue((out / '_Deleted' / 'To Delete').is_dir())
+            self.assertTrue((out / 'Keep').is_dir())
+            self.assertTrue((out / 'Keep Absent').is_dir())
+            self.assertTrue((out / 'Brand New').is_dir())
+
+            braked_out = db / 'ChatGPTBraked'
+            braked_out.mkdir()
+            sync2 = SyncState(braked_out, 'chatgpt')
+            for i in range(6):
+                save_chat(_chat(f'c{i}', f'Chat {i}'), braked_out, sync2, f'c{i}', '1')
+            prov2 = _FakeLifecycleProvider(
+                active_refs=[engine.ChatRef('c0', 'Chat 0', '1')],
+                archived_refs=[],
+                verdicts={f'c{i}': 'deleted' for i in range(1, 6)},
+            )
+            brake_events = []
+            args2 = engine.parse_args(prov2, ['-o', str(braked_out)])
+            self.assertEqual(engine.run_session(prov2, None, args2, sink=brake_events.append), 0)
+            self.assertTrue(any(e.kind == 'warning' and 'Mass-change brake' in e.message
+                                for e in brake_events))
+            self.assertFalse((braked_out / '_Deleted').exists())
