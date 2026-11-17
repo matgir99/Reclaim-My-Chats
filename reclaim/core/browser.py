@@ -7,6 +7,7 @@ appears when a human login is needed.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
 import time
@@ -29,14 +30,18 @@ class BrowserUnavailableError(RuntimeError):
     """No usable system or Playwright Chromium installation was found."""
 
 
-def find_chrome() -> str | None:
+def find_chrome(root: Path | None = None) -> str | None:
     """Locate a system Chrome/Chromium binary, or None to use Playwright's bundled one.
 
-    Order: RECLAIM_CHROME_PATH env var -> known OS paths -> PATH lookup.
+    Order: RECLAIM_CHROME_PATH env var -> saved settings -> known OS paths -> PATH lookup.
     """
-    env = os.environ.get('RECLAIM_CHROME_PATH')
+    env = os.environ.get('RECLAIM_CHROME_PATH', '').strip()
     if env:
         return env
+    with contextlib.suppress(config.SettingsError):
+        configured = config.chrome_path(root)
+        if configured:
+            return configured
     candidates = [
         # Linux
         '/usr/bin/google-chrome-stable',
@@ -112,8 +117,10 @@ def on_host(host: str) -> Callable[[str], bool]:
     return lambda url: urlsplit(url).hostname == host
 
 
-def login_timeout() -> int:
-    """Seconds to wait for a login in the browser window (RECLAIM_LOGIN_TIMEOUT)."""
+def login_timeout(root: Path | None = None) -> int:
+    """Seconds to wait for a login in the browser window (`RECLAIM_LOGIN_TIMEOUT` or settings)."""
+    with contextlib.suppress(config.SettingsError):
+        return config.login_timeout(root)
     return int(os.environ.get('RECLAIM_LOGIN_TIMEOUT', '900'))
 
 

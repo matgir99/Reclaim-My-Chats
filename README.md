@@ -28,11 +28,12 @@ contain a browser or account credentials. Unsigned Windows and macOS builds
 may show their usual security prompts.
 
 The main window lets you select providers, update selected or all enabled
-providers, stop an active run after the current chat, preview a dry run,
-rebuild selected providers, inspect progress and
-errors, and open or change the database folder. Rebuild fetches every selected
-conversation again and overwrites its copy in the database. A dry run contacts
-the providers to list conversations, but does not write to the database.
+providers, stop an active run after the current chat, check for updates without
+writing to the database, download everything again, inspect progress and
+errors, and open or change the database folder. **Download everything again**
+fetches every selected conversation again and overwrites its copy in the
+database. **Check for updates** contacts the providers to list conversations,
+but does not write to the database.
 
 See [GUI usage and testing](docs/GUI.md) for settings, profile migration,
 and development commands.
@@ -155,22 +156,26 @@ desktop downloads use an operating system data folder instead:
 
 The database is `chats/` and the browser profile is `.playwright-profile/`
 inside that data folder by default. Set `RECLAIM_HOME` to use an existing
-checkout or another data folder. In the GUI, **Settings** can choose a
-database folder and an existing browser profile. This lets a standalone download
-reuse the login sessions from a checkout without copying cookies. Do not open
-two Reclaim processes with the same profile simultaneously.
+checkout or another data folder. In the GUI, **Settings** configures enabled providers, the database folder, an
+optional login data folder (for reusing login sessions from a checkout without
+copying cookies), the Kimi region (`international` or `mainland`), an optional
+Chrome or Chromium executable path, and the manual login wait time. Environment
+variables (`RECLAIM_KIMI_URL`, `RECLAIM_CHROME_PATH`, `RECLAIM_LOGIN_TIMEOUT`)
+remain available as overrides. Do not open two Reclaim processes with the same
+profile simultaneously.
 
-Kimi accounts outside mainland China use kimi.ai, which is the default. For
-a mainland China account, set `RECLAIM_KIMI_URL=https://www.kimi.com`.
-
-For manual configuration (the `archive` key names the database folder; its
-name is kept for compatibility):
+For manual configuration (settings version 2; the `archive` key names the
+database folder for compatibility):
 
 ```json
 {
+  "version": 2,
   "providers": ["chatgpt", "claude"],
   "archive": "/path/to/chats",
-  "profile": "/path/to/existing/.playwright-profile"
+  "profile": "/path/to/existing/.playwright-profile",
+  "kimi_region": "international",
+  "chrome_path": "/usr/bin/google-chrome",
+  "login_timeout": 900
 }
 ```
 

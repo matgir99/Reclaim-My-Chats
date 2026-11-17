@@ -7,12 +7,14 @@ contacts a provider.
 
 Use **Update selected** for checked providers or **Update all** for every
 provider enabled in settings, and **Stop** to end an active run cleanly after
-the current chat finishes saving. **Dry run** lists current provider chats and
-previews the work without writing to the database. **Rebuild selected** asks for
-confirmation, then fetches all selected chats again. The progress bar and
-Details panel show the operation; provider errors appear in the summary and
-details. Playwright work runs in a worker thread, keeping the window
-responsive while login or downloads take time.
+the current chat finishes saving. **Check for updates** lists current provider
+chats and previews changes without writing to the database. **Download
+everything again** asks for confirmation, then fetches all selected chats
+again. Provider rows show both **last download** and **last checked** times,
+and the header shows the installed version and a banner when a newer GitHub
+release is available. The progress bar and Details panel show the operation;
+provider errors appear in the summary and details. Playwright work runs in a
+worker thread, keeping the window responsive while login or downloads take time.
 
 Problems that would make a run unsafe appear in a banner under the title,
 and the update buttons stay disabled until they are solved:
@@ -46,11 +48,13 @@ chat's sanitized API responses (saved even if fetching fails), then shows
 the saved path with *Open folder*. Open and check the file before sharing it.
 `reclaim capture PROVIDER URL [-o FILE]` runs the same capture from the CLI.
 
-**Settings** writes the shared `.reclaim.json`. It can choose enabled
-providers, a database folder, and an existing browser profile. Choosing an
-empty or new database folder creates the database there after a
-confirmation; a folder with unrelated files is refused. The profile field
-is useful when a standalone download should reuse a checkout's
+**Settings** writes the shared `.reclaim.json` (version 2, migrating older
+settings automatically). It can choose enabled providers, a database folder, an
+optional login data folder, the Kimi region (`international` vs `mainland`),
+an optional Chrome or Chromium executable path, and the login wait in seconds.
+Choosing an empty or new database folder creates the database there after a
+confirmation; a folder with unrelated files is refused. The login data folder
+field is useful when a standalone download should reuse a checkout's
 `.playwright-profile`; point it at that folder. The field stores a path, not
 account passwords. Only one run uses a profile at a time: a second run, from
 the window or the command line, is refused and told which process holds it.

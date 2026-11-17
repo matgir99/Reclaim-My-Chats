@@ -53,10 +53,11 @@ their tracebacks), and the window's `_event`. The log and the window's
 Details share one wording, `render.describe`. Anything else printed during a
 run, such as a library warning, still reaches the log. The Flet GUI receives
 events from a worker thread through an asyncio queue, then updates controls
-on its own event loop. Database status is
-read from local manifests and files on another worker thread. Startup never
-guesses whether a remote chat changed; dry run or update must contact the
-provider to know that.
+on its own event loop. Status is read from local manifests, chat files, and `.reclaim_checks.json`
+(recorded when a provider check or update succeeds without modifying the database)
+on another worker thread. Startup checks for a newer GitHub release non-blockingly
+(`core/releases.py`), and never guesses whether a remote chat changed; dry run or
+update must contact the provider to know that.
 
 `core/capture.py` turns a provider's real responses into a file that can be
 shared and kept as a test fixture: each letter and digit of the chats is
@@ -70,8 +71,11 @@ Diagnostics).
 
 Settings, database, and browser profile paths share one writable root. A Git
 checkout keeps its original root. Installed or frozen applications use the
-operating system's user data directory. `RECLAIM_HOME` overrides the root;
-the `archive` and `profile` keys in `.reclaim.json` can choose other paths.
+operating system's user data directory. `.reclaim.json` uses a versioned
+schema (`SETTINGS_VERSION = 2`) with automatic migration for older keys.
+`RECLAIM_HOME`, `RECLAIM_KIMI_URL`, `RECLAIM_CHROME_PATH`, and
+`RECLAIM_LOGIN_TIMEOUT` act as environment overrides over `.reclaim.json`;
+the `archive` and `profile` keys can choose other paths.
 The profile contains browser sessions and is never part of a release asset.
 
 The desktop package is made with `flet pack` and PyInstaller. The native

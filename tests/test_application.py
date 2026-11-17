@@ -24,7 +24,8 @@ class TestApplicationConfig(unittest.TestCase):
             (root / '.reclaim.json').write_text(json.dumps({'future': 42}))
             config.save(root, providers=['chatgpt'], archive='archive', profile='old-profile')
             self.assertEqual(config.load(root), {
-                'future': 42, 'version': 1, 'providers': ['chatgpt'],
+                'future': 42, 'version': config.SETTINGS_VERSION,
+                'providers': ['chatgpt'],
                 'archive': 'archive', 'profile': 'old-profile',
             })
             self.assertEqual(config.archive_root(root), root / 'archive')

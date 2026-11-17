@@ -129,9 +129,38 @@ class TestGui(unittest.IsolatedAsyncioTestCase):
         assert dialog is not None
         assert dialog.actions is not None
         dialog.content.content.controls[1].controls[0].value = False  # Google AI Studio
+        dialog.content.content.controls[10].value = 'mainland'         # Kimi region
+        dialog.content.content.controls[11].value = '/usr/bin/chrome'  # Chrome location
+        dialog.content.content.controls[12].value = '180'              # Login wait
         await dialog.actions[1].on_click(None)
-        self.assertNotIn('googleaistudio', gui.config.load(self.root)['providers'])
+        saved = gui.config.load(self.root)
+        self.assertNotIn('googleaistudio', saved['providers'])
+        self.assertEqual(saved['kimi_region'], 'mainland')
+        self.assertEqual(saved['chrome_path'], '/usr/bin/chrome')
+        self.assertEqual(saved['login_timeout'], 180)
         self.assertTrue(self.window.checks['googleaistudio'].disabled)
+
+    async def test_plain_labels_version_release_notice_and_separate_check_status(self):
+        self.assertEqual(self.window.dry_run.content, 'Check for updates')
+        self.assertEqual(self.window.rebuild.content, 'Download everything again')
+        self.assertTrue(bool(self.window.version_text.value))
+        self.assertFalse(self.window.release_notice.visible)
+
+        with patch.object(gui.releases, 'app_version', return_value='3.3.4'):
+            await self.window.check_release_update(
+                fetcher=lambda _u: {'tag_name': 'v3.4.0',
+                                    'html_url': 'https://example.test/v3.4.0'})
+        self.assertTrue(self.window.release_notice.visible)
+        self.assertIn('v3.4.0', self.window.release_notice_text.value)
+
+        info = gui.status.ProviderStatus(
+            provider='chatgpt', dir=str(self.root / 'chats' / 'ChatGPT'),
+            present=True, chats=2, chat_folders=2,
+            last_sync='2026-11-01 10:00:00',
+            last_checked='2026-11-17 12:00:00')
+        text = gui.status_text(info)
+        self.assertIn('last download 2026-11-01 10:00:00', text)
+        self.assertIn('last checked 2026-11-17 12:00:00', text)
 
     async def test_failure_is_visible(self):
         self.controller.fail = True

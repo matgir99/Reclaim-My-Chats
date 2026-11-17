@@ -13,8 +13,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import database
-from .config import archive_root
-from .manifest import SyncState
+from .config import archive_root, default_root
+from .manifest import SyncState, read_checks
 
 # (provider name, output dir name) in display order
 PROVIDER_DIRS = list(database.PROVIDER_DIRS.items())
@@ -29,6 +29,7 @@ class ProviderStatus:
     chat_folders: int = 0          # chat dirs with a chat.json on disk
     synced_chats: int = 0          # distinct chats in the sync record
     last_sync: str | None = None   # manifest 'started' timestamp
+    last_checked: str | None = None  # latest successful check or download timestamp
     duration_s: float | None = None
     last_run: dict[str, int] = field(default_factory=dict)
     last_error: str | None = None
@@ -81,11 +82,17 @@ def _archive_totals(pdir: Path) -> dict[str, int]:
     return {'images': images, 'docs': docs, 'chars': chars, 'chats': len(ids)}
 
 
-def describe(provider: str, dirname: str, root: Path) -> ProviderStatus:
+def describe(provider: str, dirname: str, root: Path, *,
+             checks: dict[str, str] | None = None) -> ProviderStatus:
     """One provider's status from local files only."""
     pdir = Path(root) / dirname
+    recorded_checks = checks if checks is not None else {
+        **read_checks(Path(root).parent),
+        **read_checks(Path(root)),
+    }
+    recorded_check = recorded_checks.get(provider)
     info = ProviderStatus(provider=provider, dir=str(pdir),
-                          present=pdir.is_dir())
+                          present=pdir.is_dir(), last_checked=recorded_check)
     if not info.present:
         return info
     manifest = _read_json(pdir / '.reclaim_manifest.json')
@@ -106,6 +113,11 @@ def describe(provider: str, dirname: str, root: Path) -> ProviderStatus:
             'docs': totals.get('docs', 0),
             'chars': totals.get('chars', 0),
         }
+    attempt_ok = (attempt.get('started')
+                  if attempt.get('exit_code') == 0 and isinstance(attempt.get('started'), str)
+                  else None)
+    info.last_checked = max((ts for ts in (info.last_sync, attempt_ok, recorded_check) if ts),
+                            default=None)
     sync_path = pdir / f'.last_sync_{provider}.json'
     if not sync_path.exists():
         legacy = SyncState.LEGACY.get(provider)
@@ -124,15 +136,19 @@ def describe(provider: str, dirname: str, root: Path) -> ProviderStatus:
     return info
 
 
-def scan(root: Path) -> list[ProviderStatus]:
+def scan(root: Path, *, checks_root: Path | None = None) -> list[ProviderStatus]:
     """Status for every provider, in fixed display order."""
-    return [describe(prov, d, root) for prov, d in PROVIDER_DIRS]
+    checks = {**read_checks(Path(root).parent), **read_checks(Path(root))}
+    if checks_root is not None:
+        checks.update(read_checks(checks_root))
+    return [describe(prov, d, root, checks=checks) for prov, d in PROVIDER_DIRS]
 
 
 def format_status(info: ProviderStatus) -> str:
     """Human-readable block for one provider."""
     if not info.present:
-        return f'{info.dir} — no chats saved yet'
+        base = f'{info.dir} — no chats saved yet'
+        return f'{base} (last checked: {info.last_checked})' if info.last_checked else base
     lines = [info.dir]
     lines.append(f'  chats in database: {info.chats} '
                  f'(sync records: {info.synced_chats})')
@@ -152,6 +168,8 @@ def format_status(info: ProviderStatus) -> str:
         lines.append(f'  last sync: {info.last_sync} · {info.duration_s}s')
     else:
         lines.append('  last run: (no manifest yet)')
+    if info.last_checked:
+        lines.append(f'  last checked: {info.last_checked}')
     if info.last_error:
         lines.append(f'  last attempt failed: {info.last_error}')
     return '\n'.join(lines)
@@ -168,7 +186,7 @@ def main(argv=None):
         print(f'error: {state.message()}')
         return 2
     print(f'ReclaimMyChats database status — scan root: {root}\n')
-    for info in scan(root):
+    for info in scan(root, checks_root=None if args.output_dir else default_root()):
         print(format_status(info))
         print()
     return 0

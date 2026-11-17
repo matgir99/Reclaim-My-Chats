@@ -17,7 +17,7 @@ else:
     except ImportError:  # The CLI intentionally has no GUI dependency.
         ft = None
 
-from .core import config, database, doctor, locks, logs, render, status
+from .core import config, database, doctor, locks, logs, releases, render, status
 from .core.events import EventSink, ProgressEvent
 from .core.service import ALL_PROVIDERS, ArchiveController, BusyOperationError, RunSummary
 
@@ -65,12 +65,15 @@ def open_directory(path: Path) -> None:
 
 def status_text(info: status.ProviderStatus) -> str:
     if not info.present:
-        return 'No chats saved yet'
+        return (f'No chats saved yet · last checked {info.last_checked}'
+                if info.last_checked else 'No chats saved yet')
     summary = f'{info.chats} chats in database'
     if info.chat_folders > info.chats:
         summary += f' ({info.chat_folders - info.chats} older copies)'
     if info.last_sync:
-        summary += f' · last sync {info.last_sync}'
+        summary += f' · last download {info.last_sync}'
+    if info.last_checked:
+        summary += f' · last checked {info.last_checked}'
     if info.last_run:
         summary += (f' · last run {info.last_run["ok"]} ok, '
                     f'{info.last_run["failed"]} failed')
@@ -150,15 +153,24 @@ class ReclaimWindow:
                                     key='update-all')
         self.stop_button = ft.OutlinedButton('Stop', on_click=self._stop_run,
                                              key='stop-run', disabled=True)
-        self.dry_run = ft.Button('Dry run', on_click=self._dry_run,
+        self.dry_run = ft.Button('Check for updates', on_click=self._dry_run,
                                  key='dry-run')
-        self.rebuild = ft.OutlinedButton('Rebuild selected',
+        self.rebuild = ft.OutlinedButton('Download everything again',
                                          on_click=self._confirm_rebuild,
                                          key='rebuild')
         self.open_archive = ft.Button('Open database folder', on_click=self._open_archive,
                                       key='open-archive')
         self.open_logs = ft.Button('Open log folder', on_click=self._open_logs,
                                    key='open-logs')
+        ver = releases.app_version()
+        self.version_text = ft.Text(ver if ver == 'dev' else f'v{ver}',
+                                    color=ft.Colors.ON_SURFACE_VARIANT, key='app-version')
+        self.release_notice_text = ft.Text('', selectable=True, key='release-notice-text',
+                                           color=ft.Colors.ON_SECONDARY_CONTAINER)
+        self.release_notice = ft.Container(
+            content=self.release_notice_text,
+            bgcolor=ft.Colors.SECONDARY_CONTAINER, padding=10, border_radius=8,
+            visible=False, key='release-notice')
         self.notice_text = ft.Text('', selectable=True, key='notice-text',
                                    color=ft.Colors.ON_ERROR_CONTAINER)
         self.notice_actions = ft.Row([], wrap=True, key='notice-actions')
@@ -175,10 +187,14 @@ class ReclaimWindow:
             padding=20,
             content=ft.Column([
                 ft.Row([
-                    ft.Text('Reclaim My Chats', size=28, weight=ft.FontWeight.BOLD),
+                    ft.Row([
+                        ft.Text('Reclaim My Chats', size=28, weight=ft.FontWeight.BOLD),
+                        self.version_text,
+                    ], vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=10),
                     ft.Row([self.diagnostics_button, self.settings_button], wrap=True),
                 ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, wrap=True),
                 ft.Text('Save and synchronize your AI conversations in a local database'),
+                self.release_notice,
                 self.notice,
                 ft.Divider(),
                 ft.Text('Providers', size=20, weight=ft.FontWeight.BOLD),
@@ -209,7 +225,7 @@ class ReclaimWindow:
             self.settings_error = exc
             return None
 
-    async def refresh_archive(self) -> None:
+    async def refresh_archive(self, *, preserve_prefixes: tuple[str, ...] = ()) -> None:
         """Re-read settings and database state, then the saved chat counts."""
         archive = self._database_path()
         if archive is None or self.settings_error is not None:
@@ -220,7 +236,7 @@ class ReclaimWindow:
         self.archive_path.value = str(archive)
         try:
             state = await asyncio.to_thread(database.inspect, archive)
-            infos = await asyncio.to_thread(status.scan, archive)
+            infos = await asyncio.to_thread(status.scan, archive, checks_root=self.root)
         except Exception as exc:
             self._error(f'Could not read database status: {exc}')
             return
@@ -231,11 +247,22 @@ class ReclaimWindow:
             self._show_database_problem(state)
         self.archive_total.value = f'{sum(i.chats for i in infos):,} chats in the database'
         for info in infos:
+            current = str(self.provider_status[info.provider].value or '')
+            if preserve_prefixes and current.startswith(preserve_prefixes):
+                continue
             if info.provider in self.enabled:
                 self.provider_status[info.provider].value = status_text(info)
             else:
                 self.provider_status[info.provider].value = 'Disabled in settings'
         self.page.update()
+
+    async def check_release_update(self, *, fetcher=None) -> None:
+        """Check non-blockingly for a newer GitHub release and show a notice if found."""
+        info = await asyncio.to_thread(releases.check_for_update, fetcher=fetcher)
+        if info is not None:
+            self.release_notice_text.value = f'New release available: v{info.version} ({info.url})'
+            self.release_notice.visible = True
+            self.page.update()
 
     # Problems that stop runs, shown in the banner under the title
 
@@ -497,8 +524,8 @@ class ReclaimWindow:
             self._error(str(exc))
         finally:
             self._set_running(False)
-            if mode not in ('dry-run', 'check', 'capture'):  # these write nothing
-                await self.refresh_archive()
+            if mode != 'capture' and not self.blocked:
+                await self.refresh_archive(preserve_prefixes=('Live check:', 'Capture:'))
             self.page.update()
 
     async def _execute(self, providers: list[str], mode: str, *, url: str = '') -> RunSummary:
@@ -703,21 +730,41 @@ class ReclaimWindow:
                                                or config.default_archive(self.root)),
                                      key='settings-archive', expand=True)
         profile_field = ft.TextField(
-            label='Existing browser profile (optional)',
+            label='Login data folder (optional)',
             value=str(raw.get('profile') or ''),
             hint_text=f'Default: {self.root / ".playwright-profile"}',
             key='settings-profile')
+        kimi_field = ft.Dropdown(
+            label='Kimi region',
+            value=config.kimi_region(self.root),
+            options=[
+                ft.DropdownOption(key='international', text='International (kimi.ai)'),
+                ft.DropdownOption(key='mainland', text='Mainland China (kimi.com)'),
+            ],
+            key='settings-kimi-region')
+        chrome_field = ft.TextField(
+            label='Chrome or Chromium location (optional)',
+            value=str(raw.get('chrome_path') or ''),
+            hint_text='Default: automatic detection',
+            key='settings-chrome-path')
+        timeout_field = ft.TextField(
+            label='Login wait (seconds)',
+            value=str(raw.get('login_timeout') or config.DEFAULT_LOGIN_TIMEOUT),
+            key='settings-login-timeout')
 
         async def choose_archive(_=None) -> None:
             await self._pick_folder(archive_field, 'Choose database folder')
 
         async def choose_profile(_=None) -> None:
-            await self._pick_folder(profile_field, 'Choose existing Playwright profile')
+            await self._pick_folder(profile_field, 'Choose login data folder')
 
         async def save_settings(_=None) -> None:
             await self._save_settings(
                 [name for name in ALL_PROVIDERS if enabled_checks[name].value],
-                archive_field.value.strip(), profile_field.value.strip())
+                archive_field.value.strip(), profile_field.value.strip(),
+                kimi_region=kimi_field.value or 'international',
+                chrome_path=(chrome_field.value or '').strip(),
+                login_timeout=(timeout_field.value or '').strip())
 
         dialog = ft.AlertDialog(
             modal=True,
@@ -733,7 +780,10 @@ class ReclaimWindow:
                     ft.Row([profile_field,
                             ft.Button('Browse', on_click=choose_profile,
                                       key='browse-profile')]),
-                    ft.Text('The profile stores browser login sessions. Leave it blank to use this app’s profile.'),
+                    ft.Text('The login data folder stores browser login sessions. Leave it blank to use this app’s folder.'),
+                    kimi_field,
+                    chrome_field,
+                    timeout_field,
                 ], scroll=ft.ScrollMode.AUTO, height=430),
             ),
             actions=[ft.OutlinedButton('Cancel', on_click=lambda _: self.page.pop_dialog()),
@@ -753,11 +803,21 @@ class ReclaimWindow:
             field.value = picked
             self.page.update()
 
-    async def _save_settings(self, enabled: list[str], archive: str, profile: str) -> None:
+    async def _save_settings(self, enabled: list[str], archive: str, profile: str, *,
+                             kimi_region: str = 'international', chrome_path: str = '',
+                             login_timeout: str | int = config.DEFAULT_LOGIN_TIMEOUT) -> None:
         """Check the chosen database folder, then save. A new or empty folder
         becomes a database only after the user confirms."""
         if not enabled or not archive:
             self._error('Choose at least one provider and a database folder.')
+            return
+        try:
+            timeout = int(str(login_timeout).strip() or config.DEFAULT_LOGIN_TIMEOUT)
+        except ValueError:
+            self._error('Login wait must be a whole number of at least 30 seconds.')
+            return
+        if timeout < 30:
+            self._error('Login wait must be a whole number of at least 30 seconds.')
             return
         target = config.resolve_folder(self.root, archive)
         # The default location stays "default", so it may be created on first use.
@@ -769,7 +829,9 @@ class ReclaimWindow:
 
         async def commit() -> None:
             try:
-                config.save(self.root, providers=enabled, archive=choice, profile=profile)
+                config.save(self.root, providers=enabled, archive=choice, profile=profile,
+                            kimi_region=kimi_region, chrome_path=chrome_path,
+                            login_timeout=timeout)
             except (OSError, ValueError) as exc:
                 self._error(str(exc))
                 return
@@ -792,6 +854,7 @@ class ReclaimWindow:
 async def app(page) -> None:
     window = ReclaimWindow(page)
     await window.refresh_archive()
+    await window.check_release_update()
 
 
 def main() -> int:

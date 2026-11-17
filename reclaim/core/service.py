@@ -10,6 +10,7 @@ printed, such as a library's warning, is logged too.
 
 from __future__ import annotations
 
+import contextlib
 import sys
 import threading
 import traceback
@@ -23,7 +24,7 @@ from . import browser, config, database, locks, logs
 from .database import PROVIDER_DIRS
 from .events import EventSink, emit, routed
 from .render import LogRenderer, TerminalRenderer, fanout
-from .manifest import write_attempt
+from .manifest import record_check, write_attempt
 
 ALL_PROVIDERS = list(PROVIDER_DIRS)
 
@@ -240,6 +241,9 @@ class ArchiveController:
                 code = 2
                 emit(sink, 'error', name,
                      message=f'Could not save run status: {save_error}')
+        if code == 0 and mode in ('update', 'rebuild', 'dry-run', 'check', 'cli', 'cli-single'):
+            with contextlib.suppress(OSError):
+                record_check(self.root, name, started)
         emit(sink, 'provider_completed', name, current=index,
              total=total, message=f'exit {code}')
         return code

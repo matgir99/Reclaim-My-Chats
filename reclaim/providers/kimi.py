@@ -29,7 +29,7 @@ import re
 import time
 from types import SimpleNamespace
 
-from ..core import browser, engine, retry
+from ..core import browser, config, engine, retry
 from ..core.events import EventSink
 from ..core.model import Chat, Turn
 
@@ -39,6 +39,16 @@ PROVIDER = 'kimi'
 PAGE_SIZE = 50
 MSG_PAGE_SIZE = 1000
 _THINK_HINT = re.compile(r'think|reason', re.IGNORECASE)
+
+
+def base_url() -> str:
+    """Kimi web URL (`RECLAIM_KIMI_URL` override, else settings, else kimi.ai)."""
+    override = os.environ.get('RECLAIM_KIMI_URL', '').strip().rstrip('/')
+    if override:
+        return override
+    with contextlib.suppress(config.SettingsError):
+        return config.kimi_base_url()
+    return BASE_URL
 
 _FETCH_JS = """async (args) => {
     const resp = await fetch(args.url, {
@@ -56,7 +66,8 @@ _FETCH_JS = """async (args) => {
 def _api(page, token: str, path: str, body: dict, retries: int = 3, *,
          record: bool = True) -> dict:
     """Page-side POST with the shared retry policy (see core/retry.py)."""
-    response = retry.send(lambda: page.evaluate(_FETCH_JS, {'url': f'{API}/{path}',
+    url = f'{base_url()}/apiv2/{path}'
+    response = retry.send(lambda: page.evaluate(_FETCH_JS, {'url': url,
                                                             'token': token, 'body': body}),
                           what=f'Kimi {path}', retries=retries, record=record)
     return json.loads(response['text'])
@@ -103,7 +114,7 @@ def get_token(page) -> str:
 
 def ensure_logged_in(page):
     with contextlib.suppress(Exception):  # navigation quirks are fine; the token probe decides
-        page.goto(BASE_URL, wait_until='domcontentloaded', timeout=60000)
+        page.goto(base_url(), wait_until='domcontentloaded', timeout=60000)
     time.sleep(4)
     try:
         return get_token(page)
@@ -228,7 +239,7 @@ def parse_chat(meta: dict, messages: list[dict]) -> tuple[Chat, dict]:
         title = ((first_user.text[:80].replace('\n', ' ') if first_user else '')
                  or '(untitled)')
     chat = Chat(id=chat_id, title=title,
-                source_url=f'{BASE_URL}/chat/{chat_id}',
+                source_url=f'{base_url()}/chat/{chat_id}',
                 turns=turns, provider=PROVIDER)
     return chat, image_map
 

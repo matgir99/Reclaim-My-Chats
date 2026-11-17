@@ -119,14 +119,14 @@ update the database and solve common problems.
       everywhere. A visible banner says which provider needs a login, with
       a button that brings the browser window forward.
 - [x] A *Stop* button that ends a run after the current chat.
-- [ ] Plain labels: *Check for updates*, *Download everything again*,
+- [x] Plain labels: *Check for updates*, *Download everything again*,
       *Login data folder*. Show "last checked" separately from "last
       download".
-- [ ] Every setting in the window, including the Kimi region, the Chrome
+- [x] Every setting in the window, including the Kimi region, the Chrome
       location and the login wait. Environment variables remain only as
       overrides.
-- [ ] Version number and a notice when a new release is available.
-- [ ] A version number in the settings file, with migrations.
+- [x] Version number and a notice when a new release is available.
+- [x] A version number in the settings file, with migrations.
 
 ## Phase 4. Follow chats at the provider
 

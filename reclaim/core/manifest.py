@@ -61,6 +61,30 @@ def write_attempt(out_dir: Path, started: float, code: int, error: str | None) -
     atomic_write_text(out_dir / '.reclaim_last_attempt.json', json.dumps(data, ensure_ascii=False))
 
 
+CHECKS_FILE = '.reclaim_checks.json'
+
+
+def read_checks(root: Path) -> dict[str, str]:
+    """Last successful check timestamp per provider stored under `root`."""
+    try:
+        data = json.loads((Path(root) / CHECKS_FILE).read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {k: v for k, v in data.items() if isinstance(k, str) and isinstance(v, str)}
+
+
+def record_check(root: Path, provider: str, started: float | None = None) -> None:
+    """Record when `provider` was last contacted successfully without touching the database."""
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+    data = read_checks(root)
+    ts = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(started or time.time()))
+    data[provider] = ts
+    atomic_write_text(root / CHECKS_FILE, json.dumps(data, indent=2, ensure_ascii=False) + '\n')
+
+
 def rebuild_records(out_dir: Path) -> dict:
     """Sync records reconstructed from the chat folders under `out_dir`.
 
