@@ -18,7 +18,7 @@ Usage:
   reclaim all --rebuild                    rebuild all providers
   reclaim --version                        print version
   reclaim import kept VAULT [--providers kimi,claude] [-o DIR]
-  reclaim import chatgpt CONVERSATIONS.json [-o DIR]
+  reclaim import chatgpt EXPORT.zip [-o DIR]
   reclaim import scrapemychats EXPORT_DIR [-o DIR]
   reclaim parse  googleaistudio --from-folder DIR [--titles MAP.json] [-o DIR]
   reclaim export haevn-md . chats.zip
