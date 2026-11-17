@@ -41,6 +41,9 @@ class Controller(Protocol):
     def run(self, providers: list[str], mode: str = 'update',
             sink: EventSink | None = None, *, log: bool = False) -> RunSummary: ...
 
+    def capture(self, provider: str, url: str, sink: EventSink | None = None,
+                destination: Path | None = None) -> RunSummary: ...
+
 
 def configured_providers(root: Path) -> list[str]:
     chosen, _, _ = config.selected_providers(root, ALL_PROVIDERS)
@@ -92,6 +95,9 @@ class ReclaimWindow:
         self._warnings = 0
         self._run_events: list[ProgressEvent] = []
         self._live_results: list[doctor.Check] = []
+        self._captured_path: Path | None = None
+        self._capture_provider = self.enabled[0] if self.enabled else ALL_PROVIDERS[0]
+        self._capture_url = ''
         self._running = False
         self._log_lines: list[str] = []
         self._provider_index = 0
@@ -373,6 +379,8 @@ class ReclaimWindow:
             self._set_status(event.provider, row)
         if event.kind == 'warning':
             self._warnings += 1
+        if event.kind == 'captured' and event.detail:
+            self._captured_path = Path(event.detail)
         line = render.describe(event)
         if line:
             self._append_log(f'{name}: {line}' if event.provider else line)
@@ -401,7 +409,7 @@ class ReclaimWindow:
             self.current.value = f'Starting {event.message}'
         elif kind == 'provider_started':
             self.current.value = f'{name}: starting'
-        elif kind in ('login_needed', 'listing', 'listed'):
+        elif kind in ('login_needed', 'listing', 'listed', 'captured'):
             self.current.value = f'{name}: {event.message}'
         elif kind in CHAT_PROGRESS and event.title:
             self.current.value = f'{name}: {event.title}'
@@ -417,12 +425,15 @@ class ReclaimWindow:
             return f'Error: {event.message}'
         if kind == 'checked':
             return f'Live check: {event.message}'
+        if kind == 'captured':
+            return f'Capture: {event.message}'
         if kind != 'provider_completed':
             return None
-        if event.message == 'exit 0':
-            return 'Completed'
         row = self.provider_status.get(event.provider)
-        if row is not None and str(row.value).startswith('Error:'):
+        current = str(row.value) if row is not None else ''
+        if event.message == 'exit 0':
+            return None if current.startswith(('Live check:', 'Capture:')) else 'Completed'
+        if current.startswith('Error:'):
             return None  # keep the error, which says more than the exit code
         return f'Failed ({event.message})'
 
@@ -436,7 +447,7 @@ class ReclaimWindow:
             return 'Fix the problem shown at the top of the window first.'
         return None
 
-    async def _run(self, providers: list[str], mode: str) -> None:
+    async def _run(self, providers: list[str], mode: str, *, url: str = '') -> None:
         problem = self._cannot_start(providers)
         if problem:
             self._error(problem)
@@ -444,12 +455,14 @@ class ReclaimWindow:
         self._set_running(True)
         self.summary.value = ''
         self._warnings = 0
+        if mode == 'capture':
+            self._captured_path = None
         self._run_events = []
         self._log_lines.clear()
         self.log.value = ''
         self._provider_count = len(providers)
         try:
-            self._show_result(await self._execute(providers, mode), mode)
+            self._show_result(await self._execute(providers, mode, url=url), mode)
         except BusyOperationError as exc:
             self._error(str(exc))
         except locks.LockedError as exc:
@@ -468,11 +481,11 @@ class ReclaimWindow:
             self._error(str(exc))
         finally:
             self._set_running(False)
-            if mode not in ('dry-run', 'check'):  # these write nothing
+            if mode not in ('dry-run', 'check', 'capture'):  # these write nothing
                 await self.refresh_archive()
             self.page.update()
 
-    async def _execute(self, providers: list[str], mode: str) -> RunSummary:
+    async def _execute(self, providers: list[str], mode: str, *, url: str = '') -> RunSummary:
         """Run in a worker thread, showing its events as they arrive."""
         queue: asyncio.Queue[ProgressEvent | None] = asyncio.Queue()
         loop = asyncio.get_running_loop()
@@ -482,6 +495,8 @@ class ReclaimWindow:
 
         def execute() -> RunSummary:
             try:
+                if mode == 'capture':
+                    return self.controller.capture(providers[0], url, receive)
                 return self.controller.run(providers, mode, receive)
             finally:
                 # Use the same thread-safe channel as events so completion
@@ -498,11 +513,13 @@ class ReclaimWindow:
         labels = ', '.join(f'{DISPLAY_NAMES[name]}: {"ok" if code == 0 else "failed"}'
                            for name, code in result.codes)
         action = {'update': 'Update', 'rebuild': 'Rebuild',
-                  'dry-run': 'Dry run', 'check': 'Live check'}[mode]
+                  'dry-run': 'Dry run', 'check': 'Live check', 'capture': 'Capture'}[mode]
         if mode == 'check':
             self._live_results = doctor.checks_from_events(self._run_events)
         state = 'completed successfully' if result.exit_code == 0 else 'completed with errors'
         summary = f'{action} {state} · {labels}'
+        if mode == 'capture' and self._captured_path is not None:
+            summary += f' · {self._captured_path}'
         if self._warnings:
             plural = 's' if self._warnings != 1 else ''
             summary += f' · {self._warnings} warning{plural} (see Details)'
@@ -536,6 +553,48 @@ class ReclaimWindow:
         self.page.show_dialog(dialog)
 
     # Diagnostics: the same checks as `reclaim doctor [--live]`
+
+    def _capture_controls(self) -> list[ft.Control]:
+        """The 'Capture a chat' section of the Diagnostics dialog."""
+        provider_field = ft.Dropdown(
+            label='Provider', value=self._capture_provider, width=210,
+            options=[ft.DropdownOption(key=name, text=DISPLAY_NAMES[name])
+                     for name in ALL_PROVIDERS],
+            key='capture-provider')
+        url_field = ft.TextField(label='Chat URL', value=self._capture_url,
+                                 expand=True, key='capture-url')
+
+        async def capture_chat(_=None) -> None:
+            provider = provider_field.value or ''
+            url = (url_field.value or '').strip()
+            self._capture_provider = provider
+            self._capture_url = url
+            if not provider or not url:
+                self._error('Choose a provider and enter a chat URL.')
+                return
+            self.page.pop_dialog()
+            await self._run([provider], 'capture', url=url)
+            if self._captured_path is not None:
+                await self._diagnostics()
+
+        controls: list[ft.Control] = [
+            ft.Divider(),
+            ft.Text('Capture a chat', weight=ft.FontWeight.BOLD),
+            ft.Text('Record one chat’s provider responses with the chat’s text replaced, '
+                    'to attach to a bug report. Open the file and check it before sharing.'),
+            ft.Row([provider_field, url_field,
+                    ft.Button('Capture', on_click=capture_chat, key='diagnostics-capture',
+                              disabled=self._running or self.blocked)]),
+        ]
+        if self._captured_path is not None:
+            folder = self._captured_path.parent
+            controls.append(ft.Row([
+                ft.Text(f'Saved capture: {self._captured_path}',
+                        selectable=True, expand=True, key='capture-saved'),
+                ft.Button('Open folder', on_click=lambda _: self._open(folder),
+                          key='capture-open-folder'),
+            ]))
+        return controls
 
     async def _diagnostics(self, _=None) -> None:
         try:
@@ -577,7 +636,7 @@ class ReclaimWindow:
             title='Diagnostics',
             content=ft.Container(width=660, content=ft.Column(
                 [ft.Text('Run live check logs in to each enabled provider and lists its '
-                         'chats; it saves nothing.'), *rows],
+                         'chats; it saves nothing.'), *rows, *self._capture_controls()],
                 spacing=10, scroll=ft.ScrollMode.AUTO, height=440)),
             actions=[ft.Button('Run live check', on_click=live, key='diagnostics-live',
                                disabled=self._running or self.blocked or not self.enabled),

@@ -17,16 +17,38 @@ what happens next, the same way for every service:
 
 from __future__ import annotations
 
+import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 
 RATE_LIMIT_WAITS = (15, 30, 60, 120)
 MAX_RATE_LIMIT_WAIT = 300
 TRANSIENT = (500, 502, 503, 504)
+_recorder = threading.local()
 
 
 class AuthError(RuntimeError):
     """The service refused the login (HTTP 401 or 403)."""
+
+
+@contextmanager
+def recording() -> Iterator[list[dict]]:
+    """Record every response `send` receives in this thread during the block."""
+    previous = getattr(_recorder, 'responses', None)
+    responses: list[dict] = []
+    _recorder.responses = responses
+    try:
+        yield responses
+    finally:
+        _recorder.responses = previous
+
+
+def _record(what: str, response: dict) -> None:
+    recorded = getattr(_recorder, 'responses', None)
+    if recorded is not None:
+        recorded.append({'request': what, 'status': response.get('status'),
+                         'text': str(response.get('text') or '')})
 
 
 def rate_limit_wait(retry_after, index: int) -> float:
@@ -46,7 +68,7 @@ def _backoff(attempt: int, retries: int) -> None:
 
 def send(call: Callable[[], dict], *, what: str, retries: int = 3,
          give_back: tuple[int, ...] = (), return_errors: bool = False,
-         auth_retries: int = 0) -> dict:
+         auth_retries: int = 0, record: bool = True) -> dict:
     """Run `call` until it gives a final response, and return that response.
 
     `give_back` lists statuses the caller handles itself (for example a 404
@@ -68,6 +90,8 @@ def send(call: Callable[[], dict], *, what: str, retries: int = 3,
             attempt += 1
             _backoff(attempt, retries)
             continue
+        if record:
+            _record(what, response)
         status = response.get('status')
         if status == 200 or status in give_back:
             return response

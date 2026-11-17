@@ -90,12 +90,9 @@ caught before users see them.
       the window, the terminal and the log file (`core/events.py`,
       `core/render.py`). The window now shows when a provider waits for a
       login.
-- [ ] A capture tool that records a real provider response with every
+- [x] A capture tool that records a real provider response with every
       text value replaced, so a format change becomes a test fixture.
-      Done: the cleaning and the capture file (`core/capture.py`), checked
-      against a real database of 583 chats. Next: recording the responses
-      of one chat, **CLI:** `reclaim capture PROVIDER URL`, and
-      **Window:** *Capture a chat* in Diagnostics.
+      **Window:** *Capture a chat* in Diagnostics. **CLI:** `reclaim capture PROVIDER URL [-o FILE]`.
 - [x] Diagnostics: offline checks (browser, settings, database, locks) and
       a read-only live check that lists every provider. **Window:** a
       Diagnostics panel with *Copy diagnostics*. **CLI:** `reclaim doctor`

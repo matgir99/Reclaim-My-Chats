@@ -174,6 +174,35 @@ def check(provider: Provider, page, sink: EventSink | None = None) -> int:
     return 0
 
 
+def capture(provider: Provider, page, url: str, destination: Path,
+            sink: EventSink | None = None) -> int:
+    """Record one chat's responses with its text replaced (see capture.py)."""
+    from . import capture as capture_mod, retry
+    sink = resolve(sink)
+    error: BaseException | None = None
+    got: Fetched | None = None
+    with routed(sink), retry.recording() as responses:
+        try:
+            session = provider.open(page)
+            ref = provider.from_url(session, url)
+            got = provider.fetch(session, ref)
+        except Exception as exc:
+            error = exc
+    saved = capture_mod.save(destination, provider.name, responses, error)
+    if error is not None:
+        emit(sink, 'warning', provider.name,
+             message=f'fetch failed ({error}); the capture was still saved')
+    elif got is not None and got.extra.get('path') in ('intercept', 'dom'):
+        emit(sink, 'warning', provider.name,
+             message=f'used {got.extra["path"]} fallback; only the direct RPC attempt was recorded')
+    count = len(responses)
+    noun = 'response' if count == 1 else 'responses'
+    state = ', fetch failed' if error is not None else ''
+    emit(sink, 'captured', provider.name,
+         message=f'{count} {noun} recorded{state}', detail=str(saved))
+    return 0
+
+
 def download(provider: Provider, session, refs: list[ChatRef], out_dir: Path, *,
              skip_unchanged: bool = False, save_raw: bool = True, log: bool = False,
              sink: EventSink | None = None) -> list[dict]:

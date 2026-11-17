@@ -17,6 +17,7 @@ import time
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
 from . import browser, config, database, locks, logs
 from .database import PROVIDER_DIRS
@@ -118,6 +119,26 @@ class ArchiveController:
         finally:
             self._lock.release()
 
+    def capture(self, provider: str, url: str, sink: EventSink | None = None,
+                destination: Path | None = None) -> RunSummary:
+        """Fetch one chat by URL and save its sanitized responses (see capture.py)."""
+        if provider not in PROVIDER_DIRS:
+            raise ValueError(f'unknown provider: {provider}')
+        url = url.strip()
+        if not url:
+            raise ValueError('enter a chat URL')
+        if not self._lock.acquire(blocking=False):
+            raise BusyOperationError('another operation is running')
+        try:
+            from . import capture as capture_mod
+            target = (Path(destination) if destination is not None
+                      else capture_mod.default_path(self.root, provider))
+            spec = SimpleNamespace(url=url, destination=target, dry_run=True, list=False)
+            return self._execute([provider], {provider: spec}, 'capture', sink,
+                                 set(), readonly=True)
+        finally:
+            self._lock.release()
+
     def run_cli(self, providers: list[str], argv: list[str], *,
                 headers: bool = True) -> RunSummary:
         """Command-line runs, one or several providers with the same options."""
@@ -191,6 +212,10 @@ class ArchiveController:
             if mode == 'check':  # diagnostics: log in and list, nothing else
                 from . import engine
                 code = engine.check(provider_module(name).SPEC, page, sink)
+            elif mode == 'capture':
+                from . import engine
+                code = engine.capture(provider_module(name).SPEC, page,
+                                      args.url, args.destination, sink)
             else:
                 code = provider_module(name).run_session(page, args, sink=sink)
         except Exception as exc:

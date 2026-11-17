@@ -44,6 +44,7 @@ class _Controller:
 
     def __init__(self, fail=False):
         self.calls = []
+        self.capture_calls = []
         self.fail = fail
 
     def run(self, providers, mode='update', sink=None, *, log=False):
@@ -63,6 +64,17 @@ class _Controller:
                            total=len(providers),
                            message='exit 2' if self.fail else 'exit 0'))
         return RunSummary(((providers[0], 2 if self.fail else 0),))
+
+    def capture(self, provider, url, sink=None, destination=None):
+        self.capture_calls.append((provider, url, destination))
+        assert sink is not None
+        path = Path(destination or (Path(tempfile.gettempdir()) / f'{provider}-capture.json'))
+        sink(ProgressEvent('run_started', total=1, message='capture'))
+        sink(ProgressEvent('provider_started', provider, current=1, total=1))
+        sink(ProgressEvent('captured', provider, message='1 response recorded', detail=str(path)))
+        sink(ProgressEvent('provider_completed', provider, current=1, total=1, message='exit 0'))
+        sink(ProgressEvent('run_completed', current=1, total=1, message='exit 0'))
+        return RunSummary(((provider, 0),))
 
 
 @unittest.skipUnless(gui.ft is not None, 'Flet GUI extra is not installed')
@@ -274,9 +286,36 @@ class TestGuiDiagnostics(unittest.IsolatedAsyncioTestCase):
         dialog = self.page.dialog
         assert dialog is not None
         texts = []
-        for row in dialog.content.content.controls[1:]:
-            texts.extend(c.value for c in row.controls[1].controls)
+
+        def walk(control):
+            if isinstance(control, gui.ft.Text) and control.value:
+                texts.append(control.value)
+            for attr in ('controls', 'content'):
+                child = getattr(control, attr, None)
+                if isinstance(child, list):
+                    for item in child:
+                        walk(item)
+                elif child is not None:
+                    walk(child)
+
+        walk(dialog.content)
         return ' '.join(texts)
+
+    def dialog_control(self, key: str) -> Any:
+        dialog = self.page.dialog
+        assert dialog is not None
+        pending = [dialog.content]
+        while pending:
+            control = pending.pop()
+            if getattr(control, 'key', None) == key:
+                return control
+            for attr in ('controls', 'content'):
+                child = getattr(control, attr, None)
+                if isinstance(child, list):
+                    pending.extend(child)
+                elif child is not None:
+                    pending.append(child)
+        raise AssertionError(f'missing control {key}')
 
     async def test_panel_shows_checks_and_runs_the_live_check(self):
         await self.window._diagnostics()
@@ -296,6 +335,38 @@ class TestGuiDiagnostics(unittest.IsolatedAsyncioTestCase):
             await actions['diagnostics-copy'].on_click(None)
         self.assertIn('Reclaim My Chats diagnostics', _Clipboard.copied[-1])
         self.assertIn('Diagnostics copied', self.window.summary.value)
+
+    async def test_capture_a_chat_runs_controller_and_shows_open_folder(self):
+        await self.window._diagnostics()
+        provider = self.dialog_control('capture-provider')
+        url = self.dialog_control('capture-url')
+        capture_btn = self.dialog_control('diagnostics-capture')
+        self.assertFalse(capture_btn.disabled)
+        provider.value = 'claude'
+        url.value = 'https://claude.ai/chat/1234'
+        await capture_btn.on_click(None)
+        self.assertEqual(self.controller.capture_calls,
+                         [('claude', 'https://claude.ai/chat/1234', None)])
+        self.assertIn('Capture completed successfully', self.window.summary.value)
+        self.assertEqual(self.window.provider_status['claude'].value,
+                         'Capture: 1 response recorded')
+        saved = self.dialog_control('capture-saved')
+        self.assertIn('claude-capture.json', saved.value)
+        open_btn = self.dialog_control('capture-open-folder')
+        with patch.object(gui, 'open_directory') as opener:
+            open_btn.on_click(None)
+        opener.assert_called_once_with(Path(tempfile.gettempdir()))
+
+    async def test_capture_disabled_when_blocked_and_requires_url(self):
+        self.window.blocked = True
+        await self.window._diagnostics()
+        self.assertTrue(self.dialog_control('diagnostics-capture').disabled)
+        self.window.blocked = False
+        await self.window._diagnostics()
+        await self.dialog_control('diagnostics-capture').on_click(None)
+        self.assertEqual(self.controller.capture_calls, [])
+        assert self.page.dialog is not None
+        self.assertEqual(self.page.dialog.title, 'Error')
 
 
 @unittest.skipUnless(gui.ft is not None, 'Flet GUI extra is not installed')
