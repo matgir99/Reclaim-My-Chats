@@ -101,6 +101,10 @@ class ArchiveController:
         """Request the active run to stop after the current chat."""
         self._stop.set()
 
+    def bring_browser_forward(self) -> bool:
+        """Bring the active browser window to the front for login."""
+        return browser.bring_browser_forward()
+
     def run(self, providers: list[str], mode: str = 'update',
             sink: EventSink | None = None, *, log: bool = False) -> RunSummary:
         """Run a selected set in one Playwright session, off the GUI loop."""

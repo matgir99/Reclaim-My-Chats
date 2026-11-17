@@ -27,13 +27,16 @@ profile and uses it for subsequent updates. The desktop download does not
 contain a browser or account credentials. Unsigned Windows and macOS builds
 may show their usual security prompts.
 
-The main window lets you select providers, update selected or all enabled
-providers, stop an active run after the current chat, check for updates without
-writing to the database, download everything again, inspect progress and
-errors, and open or change the database folder. **Download everything again**
-fetches every selected conversation again and overwrites its copy in the
-database. **Check for updates** contacts the providers to list conversations,
-but does not write to the database.
+The main window provides a **First-run setup** wizard (database and login
+folders, Chrome detection, enabled providers, and initial login) and a
+provider table with status chips and per-row **Log in** / **Review** buttons.
+It lets you select providers, update selected or all enabled providers, stop an
+active run after the current chat, check for updates without writing to the
+database, download everything again, bring a browser window awaiting login
+forward, inspect progress and errors, and open or change the database folder.
+**Download everything again** fetches every selected conversation again and
+overwrites its copy in the database. **Check for updates** contacts the
+providers to list conversations, but does not write to the database.
 
 See [GUI usage and testing](docs/GUI.md) for settings, profile migration,
 and development commands.

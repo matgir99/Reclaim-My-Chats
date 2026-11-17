@@ -56,17 +56,8 @@ def ensure_logged_in(page):
     log in in the browser window and wait for one."""
     page.goto(BASE_URL, wait_until='domcontentloaded', timeout=60000)
     time.sleep(3)
-    if page.evaluate(_HAS_TOKEN_JS):
-        return
-    timeout = browser.login_timeout()
-    browser.ask_for_login(page, PROVIDER, 'DeepSeek', timeout)
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if page.evaluate(_HAS_TOKEN_JS):
-            browser.login_done(page, PROVIDER)
-            return
-        time.sleep(3)
-    raise RuntimeError('DeepSeek login timeout')
+    browser.wait_for_login(page, PROVIDER, 'DeepSeek',
+                           lambda: bool(page.evaluate(_HAS_TOKEN_JS)))
 
 
 def _api_get(page, path: str, params: dict | None = None) -> dict:

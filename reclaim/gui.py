@@ -17,7 +17,7 @@ else:
     except ImportError:  # The CLI intentionally has no GUI dependency.
         ft = None
 
-from .core import config, database, doctor, locks, logs, releases, render, status
+from .core import browser, config, database, doctor, locks, logs, releases, render, status
 from .core.events import EventSink, ProgressEvent
 from .core.service import ALL_PROVIDERS, ArchiveController, BusyOperationError, RunSummary
 
@@ -45,6 +45,8 @@ class Controller(Protocol):
                 destination: Path | None = None) -> RunSummary: ...
 
     def stop(self) -> None: ...
+
+    def bring_browser_forward(self) -> bool: ...
 
 
 def configured_providers(root: Path) -> list[str]:
@@ -134,17 +136,32 @@ class ReclaimWindow:
 
         self.checks = {}
         self.provider_status = {}
+        self.provider_chips = {}
+        self.provider_login_buttons = {}
+        self.provider_review_buttons = {}
         rows = []
         for name in ALL_PROVIDERS:
             enabled = name in self.enabled
             check = ft.Checkbox(label=DISPLAY_NAMES[name], value=enabled,
                                 disabled=not enabled, on_change=self._selection_changed,
                                 key=f'provider-{name}')
+            chip = ft.Text('Ready' if enabled else 'Disabled', size=12,
+                           weight=ft.FontWeight.BOLD, key=f'provider-chip-{name}')
+            chip_box = ft.Container(content=chip, bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
+                                    padding=6, border_radius=12)
             text = ft.Text('Loading' if enabled else 'Disabled in settings',
                            key=f'provider-status-{name}', expand=True)
+            login_btn = ft.TextButton('Log in', on_click=self._make_provider_action(name, 'check'),
+                                      key=f'provider-login-{name}', disabled=not enabled)
+            review_btn = ft.TextButton('Review', on_click=self._make_provider_action(name, 'dry-run'),
+                                       key=f'provider-review-{name}', disabled=not enabled)
             self.checks[name] = check
             self.provider_status[name] = text
-            rows.append(ft.Row([check, text], alignment=ft.MainAxisAlignment.SPACE_BETWEEN))
+            self.provider_chips[name] = chip
+            self.provider_login_buttons[name] = login_btn
+            self.provider_review_buttons[name] = review_btn
+            rows.append(ft.Row([check, chip_box, text, login_btn, review_btn],
+                               alignment=ft.MainAxisAlignment.SPACE_BETWEEN))
 
         self.update_selected = ft.FilledButton('Update selected',
                                                on_click=self._update_selected,
@@ -171,6 +188,18 @@ class ReclaimWindow:
             content=self.release_notice_text,
             bgcolor=ft.Colors.SECONDARY_CONTAINER, padding=10, border_radius=8,
             visible=False, key='release-notice')
+        self.setup_banner_text = ft.Text(
+            'New here or moving your database? Run First-run setup to choose providers, '
+            'folders, and browser.',
+            color=ft.Colors.ON_PRIMARY_CONTAINER, key='setup-banner-text', expand=True)
+        self.setup_banner = ft.Container(
+            content=ft.Row([
+                self.setup_banner_text,
+                ft.FilledButton('First-run setup', on_click=self._setup_wizard,
+                                key='start-setup'),
+            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, wrap=True),
+            bgcolor=ft.Colors.PRIMARY_CONTAINER, padding=12, border_radius=8,
+            visible=False, key='setup-banner')
         self.notice_text = ft.Text('', selectable=True, key='notice-text',
                                    color=ft.Colors.ON_ERROR_CONTAINER)
         self.notice_actions = ft.Row([], wrap=True, key='notice-actions')
@@ -178,6 +207,17 @@ class ReclaimWindow:
             content=ft.Column([self.notice_text, self.notice_actions], spacing=10),
             bgcolor=ft.Colors.ERROR_CONTAINER, padding=14, border_radius=8,
             visible=False, key='notice')
+        self.login_banner_text = ft.Text('', selectable=True, key='login-banner-text',
+                                         color=ft.Colors.ON_TERTIARY_CONTAINER, expand=True)
+        self.bring_browser_button = ft.FilledButton('Bring browser forward',
+                                                    on_click=self._bring_browser,
+                                                    key='bring-browser-forward')
+        self.login_banner = ft.Container(
+            content=ft.Row([self.login_banner_text, self.bring_browser_button],
+                           alignment=ft.MainAxisAlignment.SPACE_BETWEEN, wrap=True),
+            bgcolor=ft.Colors.TERTIARY_CONTAINER, padding=14, border_radius=8,
+            visible=False, key='login-banner')
+        self.setup_button = ft.Button('Setup', on_click=self._setup_wizard, key='setup-wizard')
         self.settings_button = ft.Button('Settings', on_click=self._settings,
                                          key='settings')
         self.diagnostics_button = ft.Button('Diagnostics', on_click=self._diagnostics,
@@ -191,11 +231,14 @@ class ReclaimWindow:
                         ft.Text('Reclaim My Chats', size=28, weight=ft.FontWeight.BOLD),
                         self.version_text,
                     ], vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=10),
-                    ft.Row([self.diagnostics_button, self.settings_button], wrap=True),
+                    ft.Row([self.setup_button, self.diagnostics_button,
+                            self.settings_button], wrap=True),
                 ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, wrap=True),
                 ft.Text('Save and synchronize your AI conversations in a local database'),
                 self.release_notice,
+                self.setup_banner,
                 self.notice,
+                self.login_banner,
                 ft.Divider(),
                 ft.Text('Providers', size=20, weight=ft.FontWeight.BOLD),
                 *rows,
@@ -245,6 +288,7 @@ class ReclaimWindow:
             self._hide_notice()
         else:
             self._show_database_problem(state)
+        self.setup_banner.visible = config.needs_first_run_setup(self.root) and not self.blocked
         self.archive_total.value = f'{sum(i.chats for i in infos):,} chats in the database'
         for info in infos:
             current = str(self.provider_status[info.provider].value or '')
@@ -252,9 +296,24 @@ class ReclaimWindow:
                 continue
             if info.provider in self.enabled:
                 self.provider_status[info.provider].value = status_text(info)
+                self._set_chip(info.provider, 'Error' if info.last_error else 'Ready')
             else:
                 self.provider_status[info.provider].value = 'Disabled in settings'
+                self._set_chip(info.provider, 'Disabled')
         self.page.update()
+
+    def _set_chip(self, provider: str, state: str) -> None:
+        chip = self.provider_chips.get(provider)
+        if chip is not None:
+            chip.value = state
+
+    def _make_provider_action(self, provider: str, mode: str):
+        async def act(_=None) -> None:
+            await self._run([provider], mode)
+        return act
+
+    def _bring_browser(self, _=None) -> None:
+        self.controller.bring_browser_forward()
 
     async def check_release_update(self, *, fetcher=None) -> None:
         """Check non-blockingly for a newer GitHub release and show a notice if found."""
@@ -324,8 +383,11 @@ class ReclaimWindow:
             self.settings_error = exc
             self.enabled = []
         for name in ALL_PROVIDERS:
-            self.checks[name].disabled = name not in self.enabled
-            self.checks[name].value = name in self.enabled
+            enabled = name in self.enabled
+            self.checks[name].disabled = not enabled
+            self.checks[name].value = enabled
+            if not enabled:
+                self._set_chip(name, 'Disabled')
         self._selection_changed()
 
     def _confirm_create(self, path: Path, then=None) -> None:
@@ -382,14 +444,20 @@ class ReclaimWindow:
         self.rebuild.disabled = busy or not selected
         self.update_all.disabled = busy or not self.enabled
         self.stop_button.disabled = not self._running or self._stopping
+        for name in ALL_PROVIDERS:
+            disabled_row = busy or name not in self.enabled
+            self.provider_login_buttons[name].disabled = disabled_row
+            self.provider_review_buttons[name].disabled = disabled_row
         # Settings cannot be edited while the settings file itself is broken.
         self.settings_button.disabled = self._running or self.settings_error is not None
+        self.setup_button.disabled = self._running
         self.page.update()
 
     def _set_running(self, running: bool) -> None:
         self._running = running
         if not running:
             self._stopping = False
+            self.login_banner.visible = False
         self._selection_changed()
 
     def _stop_run(self, _=None) -> None:
@@ -421,6 +489,8 @@ class ReclaimWindow:
         row = self._row_status(event)
         if row is not None:
             self._set_status(event.provider, row)
+        self._update_chip_for_event(event)
+        self._update_login_banner(event, name)
         if event.kind == 'warning':
             self._warnings += 1
         if event.kind == 'captured' and event.detail:
@@ -429,6 +499,24 @@ class ReclaimWindow:
         if line:
             self._append_log(f'{name}: {line}' if event.provider else line)
         self.page.update()
+
+    def _update_login_banner(self, event: ProgressEvent, name: str) -> None:
+        if event.kind == 'login_needed':
+            self.login_banner_text.value = f'{name}: {event.message}'
+            self.login_banner.visible = True
+        elif event.kind in ('logged_in', 'provider_completed', 'run_completed', 'error', 'stopped'):
+            self.login_banner.visible = False
+
+    def _update_chip_for_event(self, event: ProgressEvent) -> None:
+        label = {'provider_started': 'Running', 'logged_in': 'Running',
+                 'login_needed': 'Needs login', 'error': 'Error',
+                 'checked': 'Logged in', 'stopped': 'Stopped'}.get(event.kind)
+        if label is not None:
+            self._set_chip(event.provider, label)
+        elif event.kind == 'provider_completed' and event.message == 'exit 0':
+            chip = self.provider_chips.get(event.provider)
+            if chip is not None and chip.value not in ('Logged in', 'Stopped'):
+                self._set_chip(event.provider, 'Ready')
 
     def _show_progress(self, event: ProgressEvent) -> None:
         """The progress bar: each provider is an equal share of the run."""
@@ -844,6 +932,104 @@ class ReclaimWindow:
             self._confirm_create(target, then=commit)
             return
         await commit()
+
+    def _setup_wizard(self, _=None) -> None:
+        """First-run / reconfiguration setup: browser check, folders, providers, and logins."""
+        try:
+            raw = config.load(self.root)
+        except config.SettingsError as exc:
+            self.settings_error = exc
+            self._show_settings_problem(exc)
+            return
+        chrome = browser.find_chrome(self.root)
+        chrome_msg = (f'Chrome detected: {chrome}' if chrome
+                      else 'No Chrome or Chromium found — install Chrome or enter its path below.')
+        active = raw.get('providers') or self.enabled or ALL_PROVIDERS
+        checks = {name: ft.Checkbox(label=DISPLAY_NAMES[name], value=name in active,
+                                    key=f'setup-{name}')
+                  for name in ALL_PROVIDERS}
+        archive_field = ft.TextField(
+            label='Database folder',
+            value=str(self._database_path() or config.default_archive(self.root)),
+            key='setup-archive', expand=True)
+        profile_field = ft.TextField(
+            label='Login data folder (optional)',
+            value=str(raw.get('profile') or ''),
+            hint_text=f'Default: {self.root / ".playwright-profile"}',
+            key='setup-profile', expand=True)
+        chrome_field = ft.TextField(
+            label='Chrome or Chromium location (optional)',
+            value=str(raw.get('chrome_path') or ''),
+            hint_text='Default: automatic detection',
+            key='setup-chrome-path')
+
+        def selected() -> list[str]:
+            return [name for name in ALL_PROVIDERS if checks[name].value]
+
+        async def pick_archive(_=None) -> None:
+            await self._pick_folder(archive_field, 'Choose database folder')
+
+        async def pick_profile(_=None) -> None:
+            await self._pick_folder(profile_field, 'Choose login data folder')
+
+        async def save_only(_=None) -> None:
+            await self._apply_setup(selected(), archive_field.value.strip(),
+                                    profile_field.value.strip(), (chrome_field.value or '').strip(),
+                                    login_after=False)
+
+        async def save_and_login(_=None) -> None:
+            await self._apply_setup(selected(), archive_field.value.strip(),
+                                    profile_field.value.strip(), (chrome_field.value or '').strip(),
+                                    login_after=True)
+
+        self.page.show_dialog(ft.AlertDialog(
+            modal=True,
+            title='Setup Reclaim My Chats',
+            content=ft.Container(
+                width=580,
+                content=ft.Column([
+                    ft.Text(chrome_msg, key='setup-chrome-status'),
+                    ft.Row([archive_field, ft.Button('Browse', on_click=pick_archive)]),
+                    ft.Row([profile_field, ft.Button('Browse', on_click=pick_profile)]),
+                    chrome_field,
+                    ft.Text('Providers to synchronize'),
+                    *(ft.Row([check]) for check in checks.values()),
+                ], scroll=ft.ScrollMode.AUTO, height=430),
+            ),
+            actions=[
+                ft.OutlinedButton('Cancel', on_click=lambda _: self.page.pop_dialog(),
+                                  key='setup-cancel'),
+                ft.Button('Save setup', on_click=save_only, key='setup-save'),
+                ft.FilledButton('Save & log in', on_click=save_and_login,
+                                key='setup-save-login'),
+            ],
+        ))
+
+    async def _apply_setup(self, enabled: list[str], archive: str, profile: str,
+                           chrome_path: str, *, login_after: bool) -> None:
+        if not enabled or not archive:
+            self._error('Choose at least one provider and a database folder.')
+            return
+        target = config.resolve_folder(self.root, archive)
+        choice = None if target == config.default_archive(self.root) else archive
+        state = await asyncio.to_thread(database.inspect, target)
+        if state.kind in ('foreign', 'newer', 'file'):
+            self._error(state.message())
+            return
+        self.page.pop_dialog()
+        try:
+            if state.kind in ('missing', 'empty'):
+                await asyncio.to_thread(database.init, target)
+            config.save(self.root, providers=enabled, archive=choice,
+                        profile=profile, chrome_path=chrome_path)
+        except (database.DatabaseError, OSError, ValueError) as exc:
+            self._error(str(exc))
+            return
+        self.settings_error = None
+        self._reload_providers()
+        await self.refresh_archive()
+        if login_after:
+            await self._run(enabled, 'check')
 
     def _error(self, message: str) -> None:
         self.page.show_dialog(ft.AlertDialog(title='Error', content=ft.Text(message),

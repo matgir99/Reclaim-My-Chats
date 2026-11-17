@@ -13,10 +13,13 @@ import shutil
 import time
 from pathlib import Path
 from collections.abc import Callable
+from typing import Any
 from urllib.parse import urlsplit
 
 from . import config
 from .events import emit
+
+_active_page: Any = None
 
 LAUNCH_ARGS = [
     '--disable-blink-features=AutomationControlled',
@@ -69,6 +72,7 @@ def find_chrome(root: Path | None = None) -> str | None:
 
 def launch(p, headless: bool = False, profile_dir: Path | None = None):
     """Launch the shared persistent profile. Returns (ctx, page)."""
+    global _active_page
     profile = Path(profile_dir) if profile_dir is not None else config.profile_root()
     profile.mkdir(parents=True, exist_ok=True, mode=0o700)
     exe = find_chrome()
@@ -90,6 +94,7 @@ def launch(p, headless: bool = False, profile_dir: Path | None = None):
         kwargs['executable_path'] = exe
     ctx = p.chromium.launch_persistent_context(**kwargs)
     page = ctx.pages[0] if ctx.pages else ctx.new_page()
+    _active_page = page
     return ctx, page
 
 
@@ -124,11 +129,24 @@ def login_timeout(root: Path | None = None) -> int:
     return int(os.environ.get('RECLAIM_LOGIN_TIMEOUT', '900'))
 
 
+def bring_browser_forward(page=None) -> bool:
+    """Bring the active Playwright browser window to the front."""
+    target = page if page is not None else _active_page
+    if target is None:
+        return False
+    with contextlib.suppress(Exception):
+        target.bring_to_front()
+        set_window_bounds(target, state='normal', left=100, top=100)
+        return True
+    return False
+
+
 def ask_for_login(page, provider: str, service: str, seconds: int) -> None:
     """Bring the browser window forward and ask the user to log in to
     `service` (a login_needed event: the window and the terminal show it)."""
-    page.bring_to_front()
-    set_window_bounds(page, state='normal', left=100, top=100)
+    global _active_page
+    _active_page = page
+    bring_browser_forward(page)
     minutes = max(1, round(seconds / 60))
     emit(None, 'login_needed', provider,
          message=f'Log in to {service} in the browser window. '
@@ -142,8 +160,33 @@ def login_done(page, provider: str) -> None:
     time.sleep(2)
 
 
+def _try_probe(probe: Callable[[], Any]) -> Any:
+    try:
+        return probe()
+    except Exception:
+        return None
+
+
+def wait_for_login(page, provider: str, service: str,
+                   probe: Callable[[], Any], *, interval: float = 3.0) -> Any:
+    """Return `probe()` once authenticated, waiting in the browser window if needed."""
+    result = _try_probe(probe)
+    if result:
+        return result
+    timeout = login_timeout()
+    ask_for_login(page, provider, service, timeout)
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        result = _try_probe(probe)
+        if result:
+            login_done(page, provider)
+            return result
+        time.sleep(interval)
+    raise RuntimeError(f'{service} login timeout (Login timeout)')
+
+
 def interactive_login(page, check_url_fragment: str, ready_url: str | Callable[[str], bool],
-                      provider_name: str, timeout_ms: int = 300000, provider: str = ''):
+                      provider_name: str, timeout_ms: int | None = None, provider: str = ''):
     """Bring the window forward for a human login, then hide it again.
 
     No-op when the session is already authenticated (current URL doesn't
@@ -152,6 +195,7 @@ def interactive_login(page, check_url_fragment: str, ready_url: str | Callable[[
     """
     if check_url_fragment not in page.url:
         return
-    ask_for_login(page, provider, provider_name, timeout_ms // 1000)
-    page.wait_for_url(ready_url, timeout=timeout_ms)
+    wait_ms = timeout_ms if timeout_ms is not None else login_timeout() * 1000
+    ask_for_login(page, provider, provider_name, wait_ms // 1000)
+    page.wait_for_url(ready_url, timeout=wait_ms)
     login_done(page, provider)

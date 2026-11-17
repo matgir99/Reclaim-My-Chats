@@ -238,6 +238,12 @@ def uses_default_database(root: Path | None = None) -> bool:
     return 'archive' not in load(base)
 
 
+def needs_first_run_setup(root: Path | None = None) -> bool:
+    """True when neither settings nor the default database marker exists yet."""
+    base = Path(root) if root is not None else default_root()
+    return not (base / CONFIG_NAME).exists() and not (default_archive(base) / '.reclaim-database.json').exists()
+
+
 def reset(root: Path) -> Path | None:
     """Move an unusable settings file aside so the defaults apply.
 

@@ -1,9 +1,15 @@
 # Desktop GUI
 
-The Flet window manages database updates for all six native providers. On
-startup it reads local files only: saved chat counts, last manifest time,
-and the last run result. It shows live changes only after a dry run or update
-contacts a provider.
+The Flet window manages database updates for all six native providers in a
+provider table with per-row status chips, saved chat counts, **last download**
+and **last checked** times, and **Log in** / **Review** buttons. On startup
+without settings or an initialized database, a **First-run setup** banner
+guides folder selection, Chrome detection, provider selection, and logging in.
+When any provider waits for manual sign-in, a banner shows which provider needs
+a login with a **Bring browser forward** button. Startup reads local files
+only and checks for newer GitHub releases non-blockingly. It shows live remote
+changes only after **Check for updates**, **Review**, or an update contacts a
+provider.
 
 Use **Update selected** for checked providers or **Update all** for every
 provider enabled in settings, and **Stop** to end an active run cleanly after

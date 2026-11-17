@@ -73,17 +73,8 @@ def ensure_logged_in(page) -> str:
         with contextlib.suppress(Exception):
             page.goto(BASE_URL, wait_until='domcontentloaded', timeout=60000)
         time.sleep(4)
-    if not _cookies(page).get('sessionKey'):
-        timeout = browser.login_timeout()
-        browser.ask_for_login(page, PROVIDER, 'Claude', timeout)
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            if _cookies(page).get('sessionKey'):
-                browser.login_done(page, PROVIDER)
-                break
-            time.sleep(3)
-        else:
-            raise RuntimeError('Login timeout')
+    browser.wait_for_login(page, PROVIDER, 'Claude',
+                           lambda: bool(_cookies(page).get('sessionKey')))
     org = _cookies(page).get('lastActiveOrg')
     if not org:
         data = _get(page, f'{BASE_URL}/api/organizations', record=False)

@@ -109,12 +109,12 @@ caught before users see them.
 Goal: someone who never opens a terminal can set up the app, log in,
 update the database and solve common problems.
 
-- [ ] First-run setup: find an existing database and login data folder or
+- [x] First-run setup: find an existing database and login data folder or
       create new ones, choose providers, check that Chrome is installed,
       and log in to each provider.
-- [ ] Main window as a provider table: a status chip, chats in the
+- [x] Main window as a provider table: a status chip, chats in the
       database, last checked, and a *Log in* or *Review* button per row.
-- [ ] One shared login check for every provider (a real request, not
+- [x] One shared login check for every provider (a real request, not
       only a cookie or token), run by the engine, and the same login wait
       everywhere. A visible banner says which provider needs a login, with
       a button that brings the browser window forward.

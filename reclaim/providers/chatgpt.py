@@ -107,23 +107,7 @@ def ensure_logged_in(page):
     with contextlib.suppress(Exception):  # navigation quirks are fine; the token probe decides
         page.goto(BASE_URL, wait_until='domcontentloaded', timeout=60000)
     time.sleep(4)
-    try:
-        return get_session_token(page)
-    except Exception:
-        pass
-    # Login may be an SPA flow (no reliable URL marker): show the window
-    # and poll until a session token is available.
-    timeout = browser.login_timeout()
-    browser.ask_for_login(page, PROVIDER, 'ChatGPT', timeout)
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            token = get_session_token(page)
-            browser.login_done(page, PROVIDER)
-            return token
-        except Exception:
-            time.sleep(3)
-    raise RuntimeError('Login timeout')
+    return browser.wait_for_login(page, PROVIDER, 'ChatGPT', lambda: get_session_token(page))
 
 
 def list_conversations(page, token: str) -> list[dict]:

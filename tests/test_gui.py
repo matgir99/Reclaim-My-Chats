@@ -46,6 +46,7 @@ class _Controller:
         self.calls = []
         self.capture_calls = []
         self.stopped = False
+        self.brought_forward = False
         self.fail = fail
 
     def run(self, providers, mode='update', sink=None, *, log=False):
@@ -79,6 +80,10 @@ class _Controller:
 
     def stop(self) -> None:
         self.stopped = True
+
+    def bring_browser_forward(self) -> bool:
+        self.brought_forward = True
+        return True
 
 
 @unittest.skipUnless(gui.ft is not None, 'Flet GUI extra is not installed')
@@ -461,6 +466,45 @@ class TestGuiLoginRequest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(window.provider_status['kimi'].value, 'Running')
             window._event(ProgressEvent('chat_started', 'kimi', 'Example', 1, 2))
             self.assertNotIn('Example', window.log.value)  # progress, not Details
+
+    async def test_login_banner_provider_table_and_first_run_setup(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            page = _Page()
+            controller = _Controller()
+            window = gui.ReclaimWindow(page, root, controller)
+            await window.refresh_archive()
+            self.assertTrue(window.setup_banner.visible)
+
+            # Login banner + Bring browser forward button
+            window._event(ProgressEvent('login_needed', 'chatgpt', message='Log in to ChatGPT...'))
+            self.assertTrue(window.login_banner.visible)
+            self.assertEqual(window.provider_chips['chatgpt'].value, 'Needs login')
+            bring_handler: Any = window.bring_browser_button.on_click
+            assert bring_handler is not None
+            bring_handler(None)
+            self.assertTrue(controller.brought_forward)
+            window._event(ProgressEvent('logged_in', 'chatgpt', message='Logged in.'))
+            self.assertFalse(window.login_banner.visible)
+
+            # Per-row Log in & Review buttons
+            await window.provider_login_buttons['chatgpt'].on_click(None)
+            self.assertEqual(controller.calls[-1], (['chatgpt'], 'check'))
+            await window.provider_review_buttons['chatgpt'].on_click(None)
+            self.assertEqual(controller.calls[-1], (['chatgpt'], 'dry-run'))
+
+            # First-run setup wizard (chrome check + save + login)
+            with patch.object(gui.browser, 'find_chrome', return_value='/usr/bin/chrome'):
+                window._setup_wizard()
+            dialog = page.dialog
+            assert dialog is not None and dialog.actions is not None
+            controls = dialog.content.content.controls
+            self.assertIn('/usr/bin/chrome', controls[0].value)
+            await dialog.actions[2].on_click(None)  # Save & log in
+            self.assertTrue((root / 'chats' / gui.database.MARKER).exists())
+            self.assertTrue((root / '.reclaim.json').exists())
+            self.assertFalse(window.setup_banner.visible)
+            self.assertEqual(controller.calls[-1][1], 'check')
 
 
 class TestOptionalGui(unittest.TestCase):

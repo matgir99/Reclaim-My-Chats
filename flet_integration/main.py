@@ -52,6 +52,9 @@ class FakeController:
     def stop(self) -> None:
         pass
 
+    def bring_browser_forward(self) -> bool:
+        return True
+
 
 async def main(page: ft.Page) -> None:
     root = Path(tempfile.mkdtemp(prefix='reclaim-flet-test-'))

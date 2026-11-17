@@ -116,23 +116,7 @@ def ensure_logged_in(page):
     with contextlib.suppress(Exception):  # navigation quirks are fine; the token probe decides
         page.goto(base_url(), wait_until='domcontentloaded', timeout=60000)
     time.sleep(4)
-    try:
-        return get_token(page)
-    except Exception:
-        pass
-    # Kimi login is an SPA modal (no URL change): show the window and poll
-    # until a valid token appears in localStorage.
-    timeout = browser.login_timeout()
-    browser.ask_for_login(page, PROVIDER, 'Kimi', timeout)
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            token = get_token(page)
-            browser.login_done(page, PROVIDER)
-            return token
-        except Exception:
-            time.sleep(3)
-    raise RuntimeError('Login timeout')
+    return browser.wait_for_login(page, PROVIDER, 'Kimi', lambda: get_token(page))
 
 
 def list_chats(page, token: str) -> list[dict]:
