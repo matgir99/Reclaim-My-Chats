@@ -302,8 +302,14 @@ class ReclaimWindow:
         else:
             self._show_database_problem(state)
         self.setup_banner.visible = config.needs_first_run_setup(self.root) and not self.blocked
+        self._refresh_provider_rows(infos, preserve_prefixes)
+        self.page.update()
+
+    def _refresh_provider_rows(self, infos: list[status.ProviderStatus],
+                               preserve_prefixes: tuple[str, ...]) -> None:
         self.archive_total.value = (
-            f'{sum(i.chats + i.archived_chats + i.deleted_chats for i in infos):,} chats in the database'
+            f'{sum(i.chats + i.archived_chats + i.deleted_chats for i in infos):,} '
+            'chats in the database'
         )
         for info in infos:
             current = str(self.provider_status[info.provider].value or '')
@@ -315,7 +321,6 @@ class ReclaimWindow:
             else:
                 self.provider_status[info.provider].value = 'Disabled in settings'
                 self._set_chip(info.provider, 'Disabled')
-        self.page.update()
 
     def _set_chip(self, provider: str, state: str) -> None:
         chip = self.provider_chips.get(provider)

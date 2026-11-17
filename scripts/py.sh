@@ -9,7 +9,13 @@ pick_python() {
         echo "$PYTHON"
         return
     fi
-    local c
+    local repo_root venv_py c
+    repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+    venv_py="$repo_root/.venv/bin/python"
+    if [[ -x "$venv_py" ]]; then
+        echo "$venv_py"
+        return
+    fi
     for c in $(compgen -c python3. 2>/dev/null | grep -E '^python3\.[0-9]+$' | sort -t. -k2,2nr); do
         if command -v "$c" >/dev/null 2>&1; then
             echo "$c"

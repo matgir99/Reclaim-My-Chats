@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import database, writer
-from .engine import ChatRef
+from .engine import ChatRef, Provider, is_listing_complete
 from .fsutil import atomic_write_text
 from .manifest import SyncState
 
@@ -112,33 +112,57 @@ def move_chat_folder(out_dir: Path, sync: SyncState, chat_id: str, to_state: str
     return target_dir
 
 
+def _ref_move(ref: ChatRef, prev: dict | None, to_state: str, reason: str) -> PlannedMove | None:
+    if prev is None:
+        return None
+    prev_state = str(prev.get('state') or 'active')
+    return PlannedMove(
+        ref.id,
+        ref.title or str(prev.get('title') or ref.id),
+        prev_state,
+        to_state,
+        reason,
+        str(prev.get('md') or ''),
+    )
+
+
 def _collect_ref_actions(refs: list[ChatRef], sync: SyncState,
                          known: dict[str, dict]) -> tuple[list[ChatRef], list[PlannedMove], set[str]]:
     to_download: list[ChatRef] = []
     moves: list[PlannedMove] = []
-    seen_ids: set[str] = set()
     moved_ids: set[str] = set()
     for ref in refs:
-        seen_ids.add(ref.id)
         prev = known.get(ref.id)
         prev_state = str((prev or {}).get('state') or 'active')
         if ref.state == 'archived':
-            if prev is not None and prev_state == 'active' and ref.id not in moved_ids:
-                moves.append(PlannedMove(ref.id, ref.title or str(prev.get('title') or ref.id),
-                                         'active', 'archived', 'archived at provider',
-                                         str(prev.get('md') or '')))
+            if (prev_state == 'active' and ref.id not in moved_ids
+                    and (move := _ref_move(ref, prev, 'archived', 'archived at provider'))):
+                moves.append(move)
                 moved_ids.add(ref.id)
             continue
         status = sync.classify(ref.id, ref.updated_at, title=ref.title or None,
                                project=ref.project, state='active')
-        if status == 'restored' and prev is not None and ref.id not in moved_ids:
-            moves.append(PlannedMove(ref.id, ref.title or str(prev.get('title') or ref.id),
-                                     prev_state, 'active', 'restored at provider',
-                                     str(prev.get('md') or '')))
+        if (status == 'restored' and ref.id not in moved_ids
+                and (move := _ref_move(ref, prev, 'active', 'restored at provider'))):
+            moves.append(move)
             moved_ids.add(ref.id)
         if status != 'unchanged':
             to_download.append(ref)
     return to_download, moves, moved_ids
+
+
+def _collect_archived_moves(archived_refs: list[ChatRef], known: dict[str, dict],
+                            moved_ids: set[str]) -> tuple[list[PlannedMove], set[str]]:
+    moves: list[PlannedMove] = []
+    seen_ids: set[str] = set()
+    for ref in archived_refs:
+        seen_ids.add(ref.id)
+        prev = known.get(ref.id)
+        if (((prev or {}).get('state') or 'active') == 'active' and ref.id not in moved_ids
+                and (move := _ref_move(ref, prev, 'archived', 'archived at provider'))):
+            moves.append(move)
+            moved_ids.add(ref.id)
+    return moves, seen_ids
 
 
 def _collect_absent_actions(known: dict[str, dict], seen_ids: set[str], moved_ids: set[str],
@@ -146,9 +170,7 @@ def _collect_absent_actions(known: dict[str, dict], seen_ids: set[str], moved_id
     moves: list[PlannedMove] = []
     unconfirmed: list[str] = []
     for cid, prev in known.items():
-        if cid in seen_ids or cid in moved_ids:
-            continue
-        if (prev.get('state') or 'active') != 'active':
+        if cid in seen_ids or cid in moved_ids or (prev.get('state') or 'active') != 'active':
             continue
         verdict = confirm(cid) if confirm is not None else 'unconfirmed'
         if verdict in ('deleted', 'archived'):
@@ -162,23 +184,23 @@ def _collect_absent_actions(known: dict[str, dict], seen_ids: set[str], moved_id
 
 
 def plan_lifecycle(out_dir: Path, provider: str, refs: list[ChatRef], sync: SyncState, *,
-                   archived_refs: list[ChatRef] | None = None, complete: bool = True,
-                   confirm: Callable[[str], str] | None = None) -> LifecyclePlan:
+                   archived_refs: list[ChatRef] | None = None,
+                   complete: bool | None = None,
+                   confirm: Callable[[str], str] | None = None,
+                   provider_obj: Provider | None = None,
+                   session=None) -> LifecyclePlan:
     """Build a lifecycle plan (downloads + safe moves) without modifying disk."""
     del out_dir  # kept for symmetric API with apply_moves
     known = sync.records()
+    is_complete = (complete if complete is not None
+                   else is_listing_complete(provider_obj, session)
+                   if provider_obj is not None else True)
     to_download, moves, moved_ids = _collect_ref_actions(refs, sync, known)
-    seen_ids = {ref.id for ref in refs}
-    for ref in archived_refs or ():
-        seen_ids.add(ref.id)
-        prev = known.get(ref.id)
-        if prev is not None and (prev.get('state') or 'active') == 'active' and ref.id not in moved_ids:
-            moves.append(PlannedMove(ref.id, ref.title or str(prev.get('title') or ref.id),
-                                     'active', 'archived', 'archived at provider',
-                                     str(prev.get('md') or '')))
-            moved_ids.add(ref.id)
+    archived_moves, archived_seen = _collect_archived_moves(list(archived_refs or ()), known, moved_ids)
+    moves.extend(archived_moves)
+    seen_ids = {ref.id for ref in refs} | archived_seen
     unconfirmed: list[str] = []
-    if complete:
+    if is_complete:
         absent_moves, unconfirmed = _collect_absent_actions(known, seen_ids, moved_ids, confirm)
         moves.extend(absent_moves)
     total_known = len(known)
@@ -189,7 +211,7 @@ def plan_lifecycle(out_dir: Path, provider: str, refs: list[ChatRef], sync: Sync
               f'archived/deleted; review required.' if brake else '')
     return LifecyclePlan(
         provider=provider, to_download=to_download, moves=moves,
-        unconfirmed=unconfirmed, complete=complete,
+        unconfirmed=unconfirmed, complete=is_complete,
         brake_triggered=brake, brake_reason=reason,
     )
 

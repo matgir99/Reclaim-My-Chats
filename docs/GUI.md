@@ -104,16 +104,20 @@ python scripts/pack_desktop.py --version 0.0.0
 The Flet device tests run the real controls with a deterministic fake
 controller. Linux device tests require Flutter, a display, and the packages
 listed in [Flet's Linux build
-requirements](https://flet.dev/docs/publish/linux/). The separate `flet pack`
-build uses PyInstaller. `scripts/smoke_desktop.py PACKAGE` extracts and launches
-the actual packaged application in an isolated directory, checks its GUI and
-Playwright driver, and closes it. CI uses this on Linux, Windows, and macOS.
+requirements](https://flet.dev/docs/publish/linux/). Packaging CI installs the
+slimmer `gui-pack` extra (excluding test libraries) and builds Linux `.tar.gz`,
+`.AppImage`, and `.deb` packages on Ubuntu 22.04 (`glibc 2.35`), Windows
+portable `.zip` and per-user `-setup.exe` installers, and macOS `.dmg` and
+`.zip` bundles for Apple Silicon (`arm64`) and Intel (`x86_64`).
+`scripts/smoke_desktop.py PACKAGE` extracts or installs and launches each
+packaged application in an isolated directory, checks its GUI and Playwright
+driver, and closes it. CI runs this on Linux, Windows, and macOS.
 These startup checks need no provider accounts. A real authenticated dry run
 and update still need manual testing with your own account.
 
 Flet is pinned to 1.0.5. Version 1.0.4 fixed the Flutter JNI dependency
 conflict that broke fresh integration-test builds with 1.0.0.
 
-The Linux package also contains a `.desktop` template. If you install it in
-your application menu, set its `Exec=` line to the absolute path of the
-extracted `ReclaimMyChats` executable first.
+On Linux, the `.deb` package installs a menu entry and icon automatically, and
+the `.tar.gz` bundle ships a `.desktop` template alongside the icon (set `Exec=`
+to the extracted `ReclaimMyChats` path if installing it manually).

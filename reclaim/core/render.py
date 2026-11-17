@@ -20,31 +20,42 @@ TITLE_WIDTH = 55
 PER_CHAT = frozenset({'chat_started', 'chat_skipped', 'chat_planned', 'chat_listed'})
 
 
-def describe(event: ProgressEvent) -> str | None:
-    """The event in plain words, without the provider's name; None for
-    per-chat progress."""
+_STATIC_KINDS = {
+    'run_started': 'Run started: {message}',
+    'run_completed': 'Run completed: {message}',
+    'provider_started': 'started',
+    'provider_completed': 'finished ({message})',
+}
+
+
+def _describe_titled(title: str, message: str, prefix: str = '') -> str:
+    return f'{prefix}{title} — {message}' if title else f'{prefix}{message}'
+
+
+def _describe_outcome(event: ProgressEvent) -> str:
     kind, title, message = event.kind, event.title, event.message
-    if kind in PER_CHAT:
-        return None
-    if kind == 'run_started':
-        return f'Run started: {message}'
-    if kind == 'run_completed':
-        return f'Run completed: {message}'
-    if kind == 'provider_started':
-        return 'started'
-    if kind == 'provider_completed':
-        return f'finished ({message})'
     if kind == 'chat_completed':
         return f'{title} — saved ({message})'
     if kind == 'error':
         return f'{title} — FAILED: {message}' if title else f'FAILED: {message}'
     if kind == 'warning':
-        return f'warning: {title} — {message}' if title else f'warning: {message}'
+        return _describe_titled(title, message, 'warning: ')
     if kind == 'plan':
         return '\n'.join(part for part in (message, event.detail) if part)
     if kind in ('downloaded', 'captured'):
         return f'{message} · {event.detail}' if message and event.detail else (event.detail or message)
     return message or kind.replace('_', ' ')
+
+
+def describe(event: ProgressEvent) -> str | None:
+    """The event in plain words, without the provider's name; None for
+    per-chat progress."""
+    if event.kind in PER_CHAT:
+        return None
+    template = _STATIC_KINDS.get(event.kind)
+    if template is not None:
+        return template.format(message=event.message)
+    return _describe_outcome(event)
 
 
 def fanout(*sinks: EventSink | None) -> EventSink:

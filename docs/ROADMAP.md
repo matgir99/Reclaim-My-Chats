@@ -247,19 +247,19 @@ one at a time with synthetic tests of each response shape.
 Goal: installing, updating and removing the app works the way people
 expect on each system, and fixes reach users quickly.
 
-- [ ] Build the desktop apps from the GUI dependencies only, removing
+- [x] Build the desktop apps from the GUI dependencies only, removing
       about 20 MB of unused libraries.
-- [ ] Linux: an AppImage with an unpacked folder inside (faster start) and
+- [x] Linux: an AppImage with an unpacked folder inside (faster start) and
       a `.deb` for Debian, Ubuntu and Mint, both with a menu entry and
       icon. Build on an older base (glibc 2.35 or lower) so Ubuntu 22.04,
       Debian 12 and Mint 21 can run it; v3.3.3 needs glibc 2.38.
-- [ ] Windows: a per-user installer that needs no administrator rights,
+- [x] Windows: a per-user installer that needs no administrator rights,
       with a Start menu entry, an uninstaller and the start-at-login
       option.
-- [ ] macOS: a `.dmg` with drag-to-Applications, plus an Intel build.
-- [ ] PyPI releases, so the command line installs with `pipx install
+- [x] macOS: a `.dmg` with drag-to-Applications, plus an Intel build.
+- [x] PyPI releases, so the command line installs with `pipx install
       reclaimmychats`.
-- [ ] Build-provenance attestations on release files.
+- [x] Build-provenance attestations on release files.
 - [ ] Later, if users need it: code signing for Windows and macOS (paid).
 
 Not planned: a Flatpak or Snap, whose sandbox blocks starting the
