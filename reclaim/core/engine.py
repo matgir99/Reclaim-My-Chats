@@ -192,7 +192,7 @@ def _emit_and_apply_lifecycle(plan, out_dir: Path, sync: SyncState, args,
     if plan.brake_triggered and (dry_run or not approved):
         emit(sink, 'warning', provider.name, message=plan.brake_reason)
     if not dry_run:
-        lifecycle.apply_moves(out_dir, sync, plan, approved_ids=approved)
+        lifecycle.apply_moves(out_dir, sync, plan, approved_ids=approved, stop=should_stop)
 
 
 def _archived_refs(provider: Provider, session) -> list[ChatRef] | None:
@@ -213,12 +213,18 @@ def _run_lifecycle(provider: Provider, session, refs: list[ChatRef], out_dir: Pa
     sync = SyncState(out_dir, provider.name, migrate=not dry_run)
     if not sync.records():
         return refs, False
+    archived = _archived_refs(provider, session)
+    if should_stop():
+        return refs, False
     lplan = lifecycle.plan_lifecycle(
         out_dir, provider.name, refs, sync,
-        archived_refs=_archived_refs(provider, session),
+        archived_refs=archived,
         confirm=_confirm_callback(provider, session),
+        stop=should_stop,
         provider_obj=provider, session=session,
     )
+    if should_stop():
+        return refs, False
     _emit_and_apply_lifecycle(lplan, out_dir, sync, args, provider, sink, dry_run=dry_run)
     filtered = [r for r in refs if not (r.state == 'archived' and sync.known(r.id) is not None)]
     return filtered, bool(lplan.moves or lplan.brake_triggered)
@@ -227,6 +233,10 @@ def _run_lifecycle(provider: Provider, session, refs: list[ChatRef], out_dir: Pa
 def _dry_run_session(provider: Provider, session, refs: list[ChatRef], out_dir: Path,
                      args, sink: EventSink, *, skip_unchanged: bool) -> int:
     refs, had_lifecycle = _run_lifecycle(provider, session, refs, out_dir, args, sink, dry_run=True)
+    if should_stop():
+        emit(sink, 'stopped', provider.name, current=0, total=len(refs),
+             message=f'Stopped before reporting plan (0 of {len(refs)} {provider.noun})')
+        return 0
     if not refs and not had_lifecycle:
         emit(sink, 'nothing_matched', provider.name, message='No chats matched.')
         return 1
@@ -266,6 +276,10 @@ def _session(provider: Provider, page, args, sink: EventSink) -> int:
              message=f'Stopped before downloading (0 of {len(refs)} {provider.noun})')
         return 0
     refs, had_lifecycle = _run_lifecycle(provider, session, refs, out_dir, args, sink, dry_run=False)
+    if should_stop():
+        emit(sink, 'stopped', name, current=0, total=len(refs),
+             message=f'Stopped before downloading (0 of {len(refs)} {provider.noun})')
+        return 0
     if not refs and not had_lifecycle:
         emit(sink, 'nothing_matched', name, message='No chats matched.')
         return 1

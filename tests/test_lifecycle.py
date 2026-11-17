@@ -7,6 +7,7 @@ import io
 import json
 import os
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -486,3 +487,74 @@ class TestAllProviderConfirmAndSubsetAndAutostart(unittest.TestCase):
             empty_dry = engine.parse_args(empty_prov, ['--dry-run', '-o', str(out)])
             self.assertEqual(engine.run_session(empty_prov, None, empty_dry, sink=empty_events.append), 0)
             self.assertTrue(any(e.kind == 'chat_planned' and e.detail == 'c2' for e in empty_events))
+
+    def test_lifecycle_reconciliation_stops_on_cancellation(self):
+        stop = threading.Event()
+        confirmed: list[str] = []
+
+        class _CancelProv(engine.Provider):
+            name = 'chatgpt'
+            folder = 'ChatGPT'
+            pace = 0.0
+
+            def __init__(self, stop_in_archived: bool = False):
+                self._stop_in_archived = stop_in_archived
+                self.fetched: list[str] = []
+
+            def open(self, page):
+                return {'page': page, 'listing_complete': True}
+
+            def listing(self, s):
+                return [engine.ChatRef('keep', 'Keep', '1'), engine.ChatRef('new1', 'New One', '1')]
+
+            def archived_listing(self, s):
+                if self._stop_in_archived:
+                    stop.set()
+                    return [engine.ChatRef('a0', 'Arch Zero', '1', state='archived')]
+                return []
+
+            def confirm_status(self, s, cid: str) -> str:
+                confirmed.append(cid)
+                stop.set()
+                return 'deleted'
+
+            def from_url(self, s, url):
+                return engine.ChatRef(id=url.rsplit('/', 1)[-1])
+
+            def fetch(self, s, ref):
+                self.fetched.append(ref.id)
+                return engine.Fetched(_chat(ref.id, ref.title), raw={'id': ref.id})
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / 'chats'
+            database.init(db)
+            out = db / 'ChatGPT'
+            out.mkdir()
+            sync = SyncState(out, 'chatgpt')
+            for cid, title in (('keep', 'Keep'), ('a0', 'Arch Zero'),
+                               ('d1', 'Gone 1'), ('d2', 'Gone 2'), ('d3', 'Gone 3')):
+                save_chat(_chat(cid, title), out, sync, cid, '1')
+
+            # 1) Stop pressed during confirm_status skips remaining confirmations, moves & download.
+            prov1 = _CancelProv(stop_in_archived=False)
+            events1 = []
+            args1 = engine.parse_args(prov1, ['-o', str(out)])
+            with engine.stoppable(stop):
+                self.assertEqual(engine.run_session(prov1, None, args1, sink=events1.append), 0)
+            self.assertEqual(len(confirmed), 1)
+            self.assertEqual(prov1.fetched, [])
+            self.assertFalse((out / '_Deleted').exists())
+            self.assertTrue(any(e.kind == 'stopped' for e in events1))
+
+            # 2) Stop pressed during archived_listing skips confirm_status, moves & download.
+            stop.clear()
+            confirmed.clear()
+            prov2 = _CancelProv(stop_in_archived=True)
+            events2 = []
+            args2 = engine.parse_args(prov2, ['-o', str(out)])
+            with engine.stoppable(stop):
+                self.assertEqual(engine.run_session(prov2, None, args2, sink=events2.append), 0)
+            self.assertEqual(confirmed, [])
+            self.assertEqual(prov2.fetched, [])
+            self.assertFalse((out / '_Archived').exists())
+            self.assertTrue(any(e.kind == 'stopped' for e in events2))
