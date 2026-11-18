@@ -7,6 +7,7 @@ import io
 import json
 import os
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -339,3 +340,221 @@ class TestAllProviderConfirmAndSubsetAndAutostart(unittest.TestCase):
             self.assertEqual(seen_cmds, [['notify-send', 'Reclaim My Chats', 'Update completed']])
         with patch.dict(os.environ, {'RECLAIM_NO_NOTIFY': '1'}):
             self.assertFalse(autostart.notify_desktop('Reclaim My Chats', 'x', runner=seen_cmds.append))
+
+    def test_engine_session_applies_lifecycle_moves_and_honors_brake(self):
+        class _FakeLifecycleProvider(engine.Provider):
+            name = 'chatgpt'
+            folder = 'ChatGPT'
+            pace = 0.0
+
+            def __init__(self, active_refs, archived_refs, verdicts):
+                self._active = active_refs
+                self._archived = archived_refs
+                self._verdicts = verdicts
+                self.fetched: list[str] = []
+
+            def open(self, page):
+                return {'page': page, 'listing_complete': True}
+
+            def listing(self, s):
+                return list(self._active)
+
+            def archived_listing(self, s):
+                return list(self._archived)
+
+            def confirm_status(self, s, cid: str) -> str:
+                return self._verdicts.get(cid, 'unconfirmed')
+
+            def from_url(self, s, url):
+                return engine.ChatRef(id=url.rsplit('/', 1)[-1])
+
+            def fetch(self, s, ref):
+                self.fetched.append(ref.id)
+                return engine.Fetched(_chat(ref.id, ref.title), raw={'id': ref.id})
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / 'chats'
+            database.init(db)
+            out = db / 'ChatGPT'
+            out.mkdir()
+            sync = SyncState(out, 'chatgpt')
+            for cid, title in (('keep', 'Keep'), ('unknown', 'Keep Absent'),
+                               ('arc', 'To Archive'), ('gone', 'To Delete')):
+                save_chat(_chat(cid, title), out, sync, cid, '1')
+
+            prov = _FakeLifecycleProvider(
+                active_refs=[engine.ChatRef('keep', 'Keep', '1'),
+                             engine.ChatRef('new_chat', 'Brand New', '1')],
+                archived_refs=[engine.ChatRef('arc', 'To Archive', '1', state='archived')],
+                verdicts={'gone': 'deleted', 'unknown': 'unconfirmed'},
+            )
+            dry_events = []
+            dry_args = engine.parse_args(prov, ['--dry-run', '-o', str(out)])
+            self.assertEqual(engine.run_session(prov, None, dry_args, sink=dry_events.append), 0)
+            planned = [(e.detail, e.message) for e in dry_events if e.kind == 'chat_planned']
+            self.assertIn(('arc', 'move (archived)'), planned)
+            self.assertIn(('gone', 'move (deleted)'), planned)
+            self.assertFalse((out / '_Archived').exists())
+            self.assertFalse((out / '_Deleted').exists())
+
+            up_args = engine.parse_args(prov, ['-o', str(out)])
+            self.assertEqual(engine.run_session(prov, None, up_args), 0)
+            self.assertEqual(prov.fetched, ['new_chat'])
+            self.assertTrue((out / '_Archived' / 'To Archive').is_dir())
+            self.assertTrue((out / '_Deleted' / 'To Delete').is_dir())
+            self.assertTrue((out / 'Keep').is_dir())
+            self.assertTrue((out / 'Keep Absent').is_dir())
+            self.assertTrue((out / 'Brand New').is_dir())
+
+            braked_out = db / 'ChatGPTBraked'
+            braked_out.mkdir()
+            sync2 = SyncState(braked_out, 'chatgpt')
+            for i in range(6):
+                save_chat(_chat(f'c{i}', f'Chat {i}'), braked_out, sync2, f'c{i}', '1')
+            prov2 = _FakeLifecycleProvider(
+                active_refs=[engine.ChatRef('c0', 'Chat 0', '1')],
+                archived_refs=[],
+                verdicts={f'c{i}': 'deleted' for i in range(1, 6)},
+            )
+            brake_events = []
+            args2 = engine.parse_args(prov2, ['-o', str(braked_out)])
+            self.assertEqual(engine.run_session(prov2, None, args2, sink=brake_events.append), 0)
+            self.assertTrue(any(e.kind == 'warning' and 'Mass-change brake' in e.message
+                                for e in brake_events))
+            self.assertFalse((braked_out / '_Deleted').exists())
+
+    def test_state_folders_dry_run_renames_empty_listing_and_approved_brake(self):
+        class _FakeStateProv(engine.Provider):
+            name = 'chatgpt'
+            folder = 'ChatGPT'
+            pace = 0.0
+
+            def __init__(self, active_refs, verdicts):
+                self._active = active_refs
+                self._verdicts = verdicts
+                self.fetched: list[str] = []
+
+            def open(self, page):
+                return {'page': page, 'listing_complete': True}
+
+            def listing(self, s):
+                return list(self._active)
+
+            def confirm_status(self, s, cid: str) -> str:
+                return self._verdicts.get(cid, 'unconfirmed')
+
+            def from_url(self, s, url):
+                return engine.ChatRef(id=url.rsplit('/', 1)[-1])
+
+            def fetch(self, s, ref):
+                self.fetched.append(ref.id)
+                return engine.Fetched(_chat(ref.id, ref.title, project=ref.project), raw={'id': ref.id})
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / 'chats'
+            database.init(db)
+            out = db / 'ChatGPT'
+            out.mkdir()
+            sync = SyncState(out, 'chatgpt')
+            for i in range(5):
+                save_chat(_chat(f'c{i}', f'Chat {i}', project='OldProj'), out, sync, f'c{i}', '1')
+            # Brand new archived chat lands under _Archived/ when written directly.
+            save_chat(_chat('arc0', 'Pre Archived', project='Work'), out, sync, 'arc0', '1',
+                      state='archived')
+            self.assertTrue((out / '_Archived' / 'Work' / 'Pre Archived').is_dir())
+
+            # Renamed chat with unchanged timestamp shows in dry-run + --only-id confirms braked move.
+            prov = _FakeStateProv(
+                active_refs=[engine.ChatRef('c0', 'Renamed Zero', '1', project='NewProj')],
+                verdicts={f'c{i}': 'deleted' for i in range(1, 5)},
+            )
+            events = []
+            dry = engine.parse_args(prov, ['--dry-run', '-o', str(out)])
+            self.assertEqual(engine.run_session(prov, None, dry, sink=events.append), 0)
+            self.assertIn(('c0', 'fetch (changed)'),
+                          [(e.detail, e.message) for e in events if e.kind == 'chat_planned'])
+            self.assertTrue(any(e.kind == 'plan' and 'would move:' in e.message for e in events))
+
+            approved = engine.parse_args(prov, ['--only-id', 'c0', '--only-id', 'c1', '-o', str(out)])
+            self.assertEqual(engine.run_session(prov, None, approved), 0)
+            self.assertTrue((out / '_Deleted' / 'OldProj' / 'Chat 1').is_dir())
+            self.assertTrue((out / 'NewProj' / 'Renamed Zero').is_dir())
+            self.assertTrue((out / 'OldProj' / 'Chat 2').is_dir())  # unapproved stays put
+
+            # Even when the server listing is completely empty, lifecycle runs instead of failing early.
+            empty_prov = _FakeStateProv(active_refs=[], verdicts={'c2': 'deleted', 'c3': 'deleted'})
+            empty_events = []
+            empty_dry = engine.parse_args(empty_prov, ['--dry-run', '-o', str(out)])
+            self.assertEqual(engine.run_session(empty_prov, None, empty_dry, sink=empty_events.append), 0)
+            self.assertTrue(any(e.kind == 'chat_planned' and e.detail == 'c2' for e in empty_events))
+
+    def test_lifecycle_reconciliation_stops_on_cancellation(self):
+        stop = threading.Event()
+        confirmed: list[str] = []
+
+        class _CancelProv(engine.Provider):
+            name = 'chatgpt'
+            folder = 'ChatGPT'
+            pace = 0.0
+
+            def __init__(self, stop_in_archived: bool = False):
+                self._stop_in_archived = stop_in_archived
+                self.fetched: list[str] = []
+
+            def open(self, page):
+                return {'page': page, 'listing_complete': True}
+
+            def listing(self, s):
+                return [engine.ChatRef('keep', 'Keep', '1'), engine.ChatRef('new1', 'New One', '1')]
+
+            def archived_listing(self, s):
+                if self._stop_in_archived:
+                    stop.set()
+                    return [engine.ChatRef('a0', 'Arch Zero', '1', state='archived')]
+                return []
+
+            def confirm_status(self, s, cid: str) -> str:
+                confirmed.append(cid)
+                stop.set()
+                return 'deleted'
+
+            def from_url(self, s, url):
+                return engine.ChatRef(id=url.rsplit('/', 1)[-1])
+
+            def fetch(self, s, ref):
+                self.fetched.append(ref.id)
+                return engine.Fetched(_chat(ref.id, ref.title), raw={'id': ref.id})
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / 'chats'
+            database.init(db)
+            out = db / 'ChatGPT'
+            out.mkdir()
+            sync = SyncState(out, 'chatgpt')
+            for cid, title in (('keep', 'Keep'), ('a0', 'Arch Zero'),
+                               ('d1', 'Gone 1'), ('d2', 'Gone 2'), ('d3', 'Gone 3')):
+                save_chat(_chat(cid, title), out, sync, cid, '1')
+
+            # 1) Stop pressed during confirm_status skips remaining confirmations, moves & download.
+            prov1 = _CancelProv(stop_in_archived=False)
+            events1 = []
+            args1 = engine.parse_args(prov1, ['-o', str(out)])
+            with engine.stoppable(stop):
+                self.assertEqual(engine.run_session(prov1, None, args1, sink=events1.append), 0)
+            self.assertEqual(len(confirmed), 1)
+            self.assertEqual(prov1.fetched, [])
+            self.assertFalse((out / '_Deleted').exists())
+            self.assertTrue(any(e.kind == 'stopped' for e in events1))
+
+            # 2) Stop pressed during archived_listing skips confirm_status, moves & download.
+            stop.clear()
+            confirmed.clear()
+            prov2 = _CancelProv(stop_in_archived=True)
+            events2 = []
+            args2 = engine.parse_args(prov2, ['-o', str(out)])
+            with engine.stoppable(stop):
+                self.assertEqual(engine.run_session(prov2, None, args2, sink=events2.append), 0)
+            self.assertEqual(confirmed, [])
+            self.assertEqual(prov2.fetched, [])
+            self.assertFalse((out / '_Archived').exists())
+            self.assertTrue(any(e.kind == 'stopped' for e in events2))

@@ -60,12 +60,6 @@ def _update_chat_json_state(chat_dir: Path, to_state: str) -> None:
     atomic_write_text(path, json.dumps(payload, indent=2, ensure_ascii=False, default=str))
 
 
-def _prune_empty_parents(out_dir: Path, parent: Path) -> None:
-    while writer._inside(parent, out_dir) and not any(parent.iterdir()):
-        parent.rmdir()
-        parent = parent.parent
-
-
 def _append_event(out_dir: Path, chat_id: str, old_rel: Path, new_rel: Path,
                   to_state: str, reason: str) -> None:
     entry = {
@@ -102,7 +96,7 @@ def move_chat_folder(out_dir: Path, sync: SyncState, chat_id: str, to_state: str
         if target_dir.exists():
             target_dir = writer._chat_folder(target_dir.parent, target_dir.name, chat_id)
         old_dir.rename(target_dir)
-        _prune_empty_parents(out_dir, old_dir.parent)
+        writer.prune_empty_parents(out_dir, old_dir.parent)
     _update_chat_json_state(target_dir, to_state)
     new_md = target_dir / old_md.name
     sync.mark(chat_id, record.get('updated_at'), str(new_md),
@@ -165,13 +159,20 @@ def _collect_archived_moves(archived_refs: list[ChatRef], known: dict[str, dict]
     return moves, seen_ids
 
 
+def _stopped(stop: Callable[[], bool] | None) -> bool:
+    return bool(stop is not None and stop())
+
+
 def _collect_absent_actions(known: dict[str, dict], seen_ids: set[str], moved_ids: set[str],
-                            confirm: Callable[[str], str] | None) -> tuple[list[PlannedMove], list[str]]:
+                            confirm: Callable[[str], str] | None, *,
+                            stop: Callable[[], bool] | None = None) -> tuple[list[PlannedMove], list[str]]:
     moves: list[PlannedMove] = []
     unconfirmed: list[str] = []
     for cid, prev in known.items():
         if cid in seen_ids or cid in moved_ids or (prev.get('state') or 'active') != 'active':
             continue
+        if _stopped(stop):
+            break
         verdict = confirm(cid) if confirm is not None else 'unconfirmed'
         if verdict in ('deleted', 'archived'):
             reason = ('confirmed missing at provider' if verdict == 'deleted'
@@ -187,6 +188,7 @@ def plan_lifecycle(out_dir: Path, provider: str, refs: list[ChatRef], sync: Sync
                    archived_refs: list[ChatRef] | None = None,
                    complete: bool | None = None,
                    confirm: Callable[[str], str] | None = None,
+                   stop: Callable[[], bool] | None = None,
                    provider_obj: Provider | None = None,
                    session=None) -> LifecyclePlan:
     """Build a lifecycle plan (downloads + safe moves) without modifying disk."""
@@ -200,8 +202,9 @@ def plan_lifecycle(out_dir: Path, provider: str, refs: list[ChatRef], sync: Sync
     moves.extend(archived_moves)
     seen_ids = {ref.id for ref in refs} | archived_seen
     unconfirmed: list[str] = []
-    if is_complete:
-        absent_moves, unconfirmed = _collect_absent_actions(known, seen_ids, moved_ids, confirm)
+    if is_complete and not _stopped(stop):
+        absent_moves, unconfirmed = _collect_absent_actions(known, seen_ids, moved_ids, confirm,
+                                                            stop=stop)
         moves.extend(absent_moves)
     total_known = len(known)
     downward = sum(1 for m in moves if m.to_state in ('archived', 'deleted'))
@@ -217,12 +220,15 @@ def plan_lifecycle(out_dir: Path, provider: str, refs: list[ChatRef], sync: Sync
 
 
 def apply_moves(out_dir: Path, sync: SyncState, plan: LifecyclePlan, *,
-                approved_ids: set[str] | None = None, force: bool = False) -> list[Path]:
+                approved_ids: set[str] | None = None, force: bool = False,
+                stop: Callable[[], bool] | None = None) -> list[Path]:
     """Execute approved moves in `plan`; honors the mass-change brake unless approved."""
-    if plan.brake_triggered and not force and approved_ids is None:
+    if _stopped(stop) or (plan.brake_triggered and not force and approved_ids is None):
         return []
     moved: list[Path] = []
     for move in plan.moves:
+        if _stopped(stop):
+            break
         if approved_ids is not None and move.chat_id not in approved_ids:
             continue
         target = move_chat_folder(out_dir, sync, move.chat_id, move.to_state, reason=move.reason)
@@ -287,7 +293,7 @@ def delete_state_chat_permanently(db: Path, entry: StateChatEntry) -> bool:
     if not rel.parts or rel.parts[0] not in (ARCHIVED_DIR, DELETED_DIR):
         return False
     shutil.rmtree(entry.folder)
-    _prune_empty_parents(pdir, entry.folder.parent)
+    writer.prune_empty_parents(pdir, entry.folder.parent)
     SyncState(pdir, entry.provider).forget(entry.chat_id)
     _append_event(pdir, entry.chat_id, rel, rel, 'permanently_deleted',
                   'deleted permanently by user')

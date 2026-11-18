@@ -303,6 +303,16 @@ def save_chat(chat: Chat, out_dir: Path, sync: SyncState, sync_id: str, updated_
     return stats
 
 
+def _classify_chat(chat: dict, updated_map: dict, sync: SyncState) -> str:
+    return sync.classify(
+        chat['id'],
+        updated_map.get(chat['id']),
+        title=chat.get('title') or None,
+        project=chat.get('project'),
+        state=chat.get('state') or 'active',
+    )
+
+
 def plan_fetch(chats: list[dict], updated_map: dict | None, sync: SyncState,
                skip_unchanged: bool) -> dict:
     """Classify each chat against the sync state and count what a run would do.
@@ -316,10 +326,10 @@ def plan_fetch(chats: list[dict], updated_map: dict | None, sync: SyncState,
     n_new = n_changed = n_unchanged = 0
     titles: list[str] = []
     for c in chats:
-        st = sync.classify(c['id'], updated_map.get(c['id']))
+        st = _classify_chat(c, updated_map, sync)
         if st == 'new':
             n_new += 1
-        elif st == 'changed':
+        elif st in ('changed', 'restored'):
             n_changed += 1
         else:
             n_unchanged += 1
@@ -348,7 +358,7 @@ def report_dry_run(chats: list[dict], updated_map: dict | None, sync: SyncState,
     updated_map = updated_map or {}
     plan = plan_fetch(chats, updated_map, sync, skip_unchanged)
     for i, chat in enumerate(chats, 1):
-        state = sync.classify(chat['id'], updated_map.get(chat['id']))
+        state = _classify_chat(chat, updated_map, sync)
         if not skip_unchanged:
             action = 'fetch (fresh)'
         elif state == 'unchanged':

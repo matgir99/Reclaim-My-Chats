@@ -53,12 +53,13 @@ pyright --pythonpath .venv/bin/python reclaim tests scripts flet_integration
 | Path | Responsibility |
 |:--|:--|
 | `reclaim/core/service.py` | `ArchiveController` (`run`, `run_cli`, `capture`, `_execute`) shared by GUI and CLI. |
-| `reclaim/core/engine.py` | Shared provider engine (`sync`, `check`, `capture`). |
+| `reclaim/core/engine.py` | Shared provider engine (`run_session`, `download`, `check`, `capture`, lifecycle invocation, cancellation). |
+| `reclaim/core/lifecycle.py`, `tidy.py` | Cross-provider `_Archived`/`_Deleted` moves, absence confirmation, mass-change brake, `.reclaim_events.jsonl`, duplicate cleanup (`reclaim tidy`). |
 | `reclaim/core/retry.py` | `send()` request policy and `recording()` capture recorder. |
 | `reclaim/core/events.py`, `render.py`, `progress.py` | `ProgressEvent` routing (`routed()`) and terminal/log/GUI rendering. |
 | `reclaim/core/database.py`, `locks.py`, `config.py`, `logs.py`, `status.py` | Database marker, lock files, `.reclaim.json` settings validation, run logs, offline status. |
-| `reclaim/core/writer.py`, `manifest.py`, `model.py`, `fsutil.py`, `batchexecute.py`, `browser.py` | Atomic chat folder writing, sync records, chat data model, helpers, browser discovery/profile. |
-| `reclaim/core/doctor.py`, `capture.py` | Offline/live diagnostics (`reclaim doctor [--live]`) and response sanitization/capture bundles (`reclaim capture`). |
+| `reclaim/core/writer.py`, `manifest.py`, `model.py`, `fsutil.py`, `batchexecute.py`, `browser.py`, `autostart.py` | Atomic chat folder writing, sync records, chat model, helpers, browser discovery/login wait, OS autostart/notifications. |
+| `reclaim/core/doctor.py`, `capture.py`, `releases.py` | Offline/live diagnostics (`reclaim doctor [--live]`), response sanitization (`reclaim capture`), GitHub update checks. |
 | `reclaim/providers/` | Native providers (`chatgpt.py`, `chatgpt_references.py`, `claude.py`, `deepseek.py`, `googleaistudio.py`, `googlegemini.py`, `kimi.py`) and offline importers (`chatgpt_import.py`, `kept_vault.py`, `aistudio_files.py`). |
 | `reclaim/gui.py`, `reclaim/__main__.py` | Flet desktop window and CLI entry point. |
 | `tests/`, `flet_integration/`, `scripts/` | Offline unit/browser-protocol suites, Flet device integration suite, and release/maintenance scripts. |

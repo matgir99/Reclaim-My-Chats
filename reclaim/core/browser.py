@@ -29,6 +29,15 @@ class LoginRequiredError(RuntimeError):
     """Raised when login is needed while wait-free checks (`no_login_wait`) are active."""
 
 
+class LoginCancelledError(RuntimeError):
+    """Raised when the user stops the run while waiting for a manual login."""
+
+
+def _should_stop() -> bool:
+    from . import engine
+    return engine.should_stop()
+
+
 @contextmanager
 def no_login_wait() -> Iterator[None]:
     """Fail immediately instead of waiting for manual login (e.g. startup checks)."""
@@ -93,12 +102,13 @@ def find_chrome(root: Path | None = None) -> str | None:
     return None
 
 
-def launch(p, headless: bool = False, profile_dir: Path | None = None):
+def launch(p, headless: bool = False, profile_dir: Path | None = None, *,
+           root: Path | None = None):
     """Launch the shared persistent profile. Returns (ctx, page)."""
     global _active_page
-    profile = Path(profile_dir) if profile_dir is not None else config.profile_root()
+    profile = Path(profile_dir) if profile_dir is not None else config.profile_root(root)
     profile.mkdir(parents=True, exist_ok=True, mode=0o700)
-    exe = find_chrome()
+    exe = find_chrome(root)
     if exe:
         emit(None, 'notice', message=f'Using system browser: {exe}')
     else:
@@ -190,6 +200,19 @@ def _try_probe(probe: Callable[[], Any]) -> Any:
         return None
 
 
+def _sleep_stopping(interval: float) -> bool:
+    """Sleep up to `interval` seconds while polling cancellation; True when stopped."""
+    if interval <= 0.5:
+        time.sleep(interval)
+        return _should_stop()
+    end = time.time() + interval
+    while time.time() < end:
+        if _should_stop():
+            return True
+        time.sleep(min(0.5, max(0.0, end - time.time())))
+    return _should_stop()
+
+
 def wait_for_login(page, provider: str, service: str,
                    probe: Callable[[], Any], *, interval: float = 3.0) -> Any:
     """Return `probe()` once authenticated, waiting in the browser window if needed."""
@@ -203,12 +226,27 @@ def wait_for_login(page, provider: str, service: str,
     ask_for_login(page, provider, service, timeout)
     deadline = time.time() + timeout
     while time.time() < deadline:
+        if _should_stop():
+            set_window_bounds(page, state='minimized')
+            raise LoginCancelledError(f'{service} login stopped by user')
         result = _try_probe(probe)
         if result:
             login_done(page, provider)
             return result
-        time.sleep(interval)
+        if _sleep_stopping(interval):
+            set_window_bounds(page, state='minimized')
+            raise LoginCancelledError(f'{service} login stopped by user')
     raise RuntimeError(f'{service} login timeout (Login timeout)')
+
+
+def _wait_url_slice(page, ready_url: str | Callable[[str], bool], chunk_ms: int) -> bool:
+    try:
+        page.wait_for_url(ready_url, timeout=chunk_ms)
+        return True
+    except Exception as exc:
+        if 'timeout' in str(exc).lower() or type(exc).__name__ == 'TimeoutError':
+            return False
+        raise
 
 
 def interactive_login(page, check_url_fragment: str, ready_url: str | Callable[[str], bool],
@@ -226,5 +264,14 @@ def interactive_login(page, check_url_fragment: str, ready_url: str | Callable[[
         raise LoginRequiredError(f'{provider_name} login required')
     wait_ms = timeout_ms if timeout_ms is not None else login_timeout() * 1000
     ask_for_login(page, provider, provider_name, wait_ms // 1000)
-    page.wait_for_url(ready_url, timeout=wait_ms)
+    deadline = time.time() + (wait_ms / 1000)
+    while True:
+        if _should_stop():
+            set_window_bounds(page, state='minimized')
+            raise LoginCancelledError(f'{provider_name} login stopped by user')
+        remaining_ms = max(1, int((deadline - time.time()) * 1000))
+        if _wait_url_slice(page, ready_url, min(1000, remaining_ms)):
+            break
+        if time.time() >= deadline:
+            page.wait_for_url(ready_url, timeout=1)
     login_done(page, provider)

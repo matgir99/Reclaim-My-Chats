@@ -268,9 +268,14 @@ class TestLocks(Temp):
         (self.tmp / locks.LOCK_NAME).write_text(json.dumps(
             {'host': socket.gethostname(), 'pid': 999_999, 'started': 'crashed run'}))
         racers = [self.holder(3) for _ in range(2)]
-        for racer in racers:
-            racer.wait(timeout=60)
-        self.assertEqual(sorted(r.returncode for r in racers), [0, 3])
+        try:
+            for racer in racers:
+                racer.wait(timeout=60)
+            self.assertEqual(sorted(r.returncode for r in racers), [0, 3])
+        finally:
+            for racer in racers:
+                if racer.stdout is not None:
+                    racer.stdout.close()
 
     def test_a_killed_holder_releases_the_lock(self):
         racer = self.holder(60)
@@ -282,6 +287,8 @@ class TestLocks(Temp):
         finally:
             racer.kill()
             racer.wait(timeout=30)
+            if racer.stdout is not None:
+                racer.stdout.close()
         mine = locks.acquire(self.tmp, 'update')  # no cleanup needed after a crash
         locks.release(self.tmp, mine)
 

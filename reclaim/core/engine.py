@@ -16,7 +16,7 @@ import sys
 import threading
 import time
 import traceback
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -159,6 +159,97 @@ def run_session(provider: Provider, page, args, sink: EventSink | None = None) -
         return _session(provider, page, args, sink)
 
 
+def _confirm_callback(provider: Provider, session) -> Callable[[str], str] | None:
+    confirm_api = getattr(provider, 'confirm_status', None)
+    if not callable(confirm_api):
+        return None
+    return lambda cid: str(confirm_api(session, cid))
+
+
+def _move_summary(moves) -> tuple[str, str]:
+    counts: dict[str, int] = {}
+    for move in moves:
+        counts[move.to_state] = counts.get(move.to_state, 0) + 1
+    parts = ', '.join(f'{n} {state}' for state, n in sorted(counts.items()))
+    titles = '\n'.join(f'  - {m.title} ({m.to_state})' for m in moves)
+    return f'would move: {len(moves)} ({parts})', titles
+
+
+def _emit_and_apply_lifecycle(plan, out_dir: Path, sync: SyncState, args,
+                              provider: Provider, sink: EventSink, *, dry_run: bool) -> None:
+    from . import lifecycle
+    only = getattr(args, 'only_ids', None)
+    approved = set(only) if only else None
+    if dry_run:
+        for idx, move in enumerate(plan.moves, 1):
+            emit(sink, 'chat_planned', provider.name, move.title,
+                 idx, len(plan.moves), f'move ({move.to_state})', detail=move.chat_id)
+        if plan.moves:
+            msg, detail = _move_summary(plan.moves)
+            emit(sink, 'plan', provider.name, total=len(plan.moves), message=msg, detail=detail)
+    # Explicit --only-id (e.g. GUI Review confirmation) approves braked moves;
+    # unfiltered updates still stop and warn.
+    if plan.brake_triggered and (dry_run or not approved):
+        emit(sink, 'warning', provider.name, message=plan.brake_reason)
+    if not dry_run:
+        lifecycle.apply_moves(out_dir, sync, plan, approved_ids=approved, stop=should_stop)
+
+
+def _archived_refs(provider: Provider, session) -> list[ChatRef] | None:
+    archived_api = getattr(provider, 'archived_listing', None)
+    if not callable(archived_api):
+        return None
+    refs = archived_api(session)
+    return [r for r in refs if isinstance(r, ChatRef)] if isinstance(refs, list) else None
+
+
+def _run_lifecycle(provider: Provider, session, refs: list[ChatRef], out_dir: Path,
+                   args, sink: EventSink, *, dry_run: bool) -> tuple[list[ChatRef], bool]:
+    """Plan and preview/apply provider lifecycle moves during unfiltered runs."""
+    if (args.url or args.title or args.skip or args.limit or args.rebuild
+            or not out_dir.exists()):
+        return refs, False
+    from . import lifecycle
+    sync = SyncState(out_dir, provider.name, migrate=not dry_run)
+    if not sync.records():
+        return refs, False
+    archived = _archived_refs(provider, session)
+    if should_stop():
+        return refs, False
+    lplan = lifecycle.plan_lifecycle(
+        out_dir, provider.name, refs, sync,
+        archived_refs=archived,
+        confirm=_confirm_callback(provider, session),
+        stop=should_stop,
+        provider_obj=provider, session=session,
+    )
+    if should_stop():
+        return refs, False
+    _emit_and_apply_lifecycle(lplan, out_dir, sync, args, provider, sink, dry_run=dry_run)
+    filtered = [r for r in refs if not (r.state == 'archived' and sync.known(r.id) is not None)]
+    return filtered, bool(lplan.moves or lplan.brake_triggered)
+
+
+def _dry_run_session(provider: Provider, session, refs: list[ChatRef], out_dir: Path,
+                     args, sink: EventSink, *, skip_unchanged: bool) -> int:
+    if should_stop():
+        emit(sink, 'stopped', provider.name, current=0, total=len(refs),
+             message=f'Stopped before reporting plan (0 of {len(refs)} {provider.noun})')
+        return 0
+    refs, had_lifecycle = _run_lifecycle(provider, session, refs, out_dir, args, sink, dry_run=True)
+    if should_stop():
+        emit(sink, 'stopped', provider.name, current=0, total=len(refs),
+             message=f'Stopped before reporting plan (0 of {len(refs)} {provider.noun})')
+        return 0
+    if not refs and not had_lifecycle:
+        emit(sink, 'nothing_matched', provider.name, message='No chats matched.')
+        return 1
+    sync = SyncState(out_dir, provider.name, migrate=False)
+    chats = [{'id': r.id, 'title': r.title, 'project': r.project, 'state': r.state} for r in refs]
+    return report_dry_run(chats, {r.id: r.updated_at for r in refs}, sync,
+                          skip_unchanged, sink=sink, provider=provider.name)
+
+
 def _session(provider: Provider, page, args, sink: EventSink) -> int:
     """Log in, list or take the URL, filter, then list, preview or download."""
     name = provider.name
@@ -172,26 +263,30 @@ def _session(provider: Provider, page, args, sink: EventSink) -> int:
         refs = provider.listing(session)
         emit(sink, 'listed', name, total=len(refs), message=provider.found_text(refs))
     refs = select(refs, args)
-    if not refs:
-        emit(sink, 'nothing_matched', name, message='No chats matched.')
-        return 1
     if args.list:
+        if not refs:
+            emit(sink, 'nothing_matched', name, message='No chats matched.')
+            return 1
         for n, ref in enumerate(refs, 1):
             emit(sink, 'chat_listed', name, ref.title or ref.id, n, len(refs))
         emit(sink, 'notice', name, message=f'-- {len(refs)} chat(s)')
         return 0
     skip_unchanged = not args.rebuild and not args.title
     if args.dry_run:
-        sync = SyncState(out_dir, name, migrate=False)
-        return report_dry_run([{'id': r.id, 'title': r.title} for r in refs],
-                              {r.id: r.updated_at for r in refs}, sync, skip_unchanged,
-                              sink=sink, provider=name)
-
+        return _dry_run_session(provider, session, refs, out_dir, args, sink,
+                                skip_unchanged=skip_unchanged)
     if should_stop():
         emit(sink, 'stopped', name, current=0, total=len(refs),
              message=f'Stopped before downloading (0 of {len(refs)} {provider.noun})')
         return 0
-
+    refs, had_lifecycle = _run_lifecycle(provider, session, refs, out_dir, args, sink, dry_run=False)
+    if should_stop():
+        emit(sink, 'stopped', name, current=0, total=len(refs),
+             message=f'Stopped before downloading (0 of {len(refs)} {provider.noun})')
+        return 0
+    if not refs and not had_lifecycle:
+        emit(sink, 'nothing_matched', name, message='No chats matched.')
+        return 1
     out_dir.mkdir(parents=True, exist_ok=True)
     emit(sink, 'downloading', name, total=len(refs), message=f'{len(refs)} {provider.noun}')
     only = getattr(args, 'only_ids', None)
@@ -251,7 +346,8 @@ def _download_one(provider: Provider, session, ref: ChatRef, index: int, total: 
     try:
         got = provider.fetch(session, ref)
         stats = save_chat(got.chat, out_dir, sync, ref.id, ref.updated_at,
-                          got.raw if save_raw else None, sink=sink, provider=name)
+                          got.raw if save_raw else None, sink=sink, provider=name,
+                          state=ref.state)
         detail = got.detail or f'assets: {stats["images"] + stats["docs"]}'
         emit(sink, 'chat_completed', name, got.chat.title or label, index, total,
              stats_text(stats), f'{detail} · {time.time() - t0:.1f}s')
