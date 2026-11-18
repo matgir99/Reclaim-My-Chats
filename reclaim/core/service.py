@@ -178,6 +178,7 @@ class ArchiveController:
         self._stop.clear()
         label = f'{mode} {", ".join(chosen)}'
         with ExitStack() as stack:
+            stack.enter_context(config.use_root(self.root))
             sink = stack.enter_context(_reporting(self.root, label, sink))
             # Validate first (creating the default location on first use): the
             # lock file lives inside the database folder.
@@ -202,7 +203,7 @@ class ArchiveController:
         emit(sink, 'run_started', total=len(chosen), message=mode)
         codes: list[tuple[str, int]] = []
         with sync_playwright() as playwright, engine.stoppable(self._stop):
-            ctx, page = browser.launch(playwright, profile_dir=profile)
+            ctx, page = browser.launch(playwright, profile_dir=profile, root=self.root)
             try:
                 for index, name in enumerate(chosen, 1):
                     if index > 1 and self._stop.is_set():
@@ -234,6 +235,12 @@ class ArchiveController:
                                       args.url, args.destination, sink)
             else:
                 code = provider_module(name).run_session(page, args, sink=sink)
+        except browser.LoginCancelledError:
+            code = 0
+            emit(sink, 'stopped', name, message='Stopped while waiting for login')
+        except browser.LoginRequiredError as exc:
+            code = 2
+            error = str(exc)  # login_needed event was already emitted by the browser helper
         except Exception as exc:
             code = 2
             error = str(exc)

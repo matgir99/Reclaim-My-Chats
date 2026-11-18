@@ -14,7 +14,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from reclaim.core import browser, engine
+from reclaim.core import browser, config, engine
 from reclaim.core.events import ProgressEvent
 from reclaim.core.manifest import SyncState
 from reclaim.core.model import Chat, Turn
@@ -266,6 +266,77 @@ class TestEngine(unittest.TestCase):
               patch.object(browser, 'ask_for_login'),
               self.assertRaisesRegex(RuntimeError, 'Login timeout')):
             browser.wait_for_login(page, 'kimi', 'Kimi', lambda: None)
+
+    def test_login_wait_cancellation_and_controller_root_isolation(self):
+        stop = threading.Event()
+        events: list[ProgressEvent] = []
+
+        class _Page:
+            url = 'https://accounts.google.com/signin'
+            context = None
+
+            def bring_to_front(self):
+                pass
+
+            def wait_for_url(self, ready_url, timeout=0):
+                stop.set()
+                raise TimeoutError('timeout')
+
+        page = _Page()
+        with (patch.object(browser, 'set_window_bounds') as bounds,
+              patch.object(browser, 'login_timeout', return_value=30),
+              patch('reclaim.core.browser.emit'),
+              engine.stoppable(stop)):
+            with self.assertRaises(browser.LoginCancelledError):
+                browser.interactive_login(page, 'accounts.google.com', lambda _: False, 'Google')
+            with self.assertRaises(browser.LoginCancelledError):
+                browser.wait_for_login(page, 'kimi', 'Kimi', lambda: None, interval=0)
+        bounds.assert_called_with(page, state='minimized')
+
+        # ArchiveController(custom_root) binds config.use_root and passes root to browser.launch.
+        with tempfile.TemporaryDirectory() as root_dir:
+            root = Path(root_dir)
+            config.save(root, providers=['kimi'], archive=None,
+                        kimi_region='mainland', chrome_path='/custom/chrome', login_timeout=180)
+            observed: dict = {}
+
+            class _FakeCtx:
+                def close(self):
+                    pass
+
+            class _FakePlaywright:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_):
+                    pass
+
+            class _Mod:
+                def parse_args(self, argv):
+                    return engine.parse_args(FakeProvider({}), argv)
+
+                def run_session(self, page, args, sink=None):
+                    observed['kimi'] = config.kimi_base_url()
+                    observed['timeout'] = browser.login_timeout()
+                    observed['chrome'] = browser.find_chrome()
+                    raise browser.LoginCancelledError('stopped')
+
+            ctrl = ArchiveController(root)
+
+            def fake_launch(pw, headless=False, profile_dir=None, *, root=None):
+                observed['launch_root'] = root
+                return _FakeCtx(), object()
+
+            with (patch('reclaim.core.service.provider_module', return_value=_Mod()),
+                  patch('reclaim.core.service.browser.launch', side_effect=fake_launch),
+                  patch('playwright.sync_api.sync_playwright', return_value=_FakePlaywright())):
+                summary = ctrl.run(['kimi'], sink=events.append)
+            self.assertEqual(summary.codes, (('kimi', 0),))
+            self.assertEqual(observed['launch_root'], root)
+            self.assertEqual(observed['kimi'], 'https://www.kimi.com')
+            self.assertEqual(observed['timeout'], 180)
+            self.assertEqual(observed['chrome'], '/custom/chrome')
+            self.assertTrue(any(e.kind == 'stopped' and e.provider == 'kimi' for e in events))
 
 
 if __name__ == '__main__':

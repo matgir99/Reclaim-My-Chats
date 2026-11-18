@@ -232,6 +232,10 @@ def _run_lifecycle(provider: Provider, session, refs: list[ChatRef], out_dir: Pa
 
 def _dry_run_session(provider: Provider, session, refs: list[ChatRef], out_dir: Path,
                      args, sink: EventSink, *, skip_unchanged: bool) -> int:
+    if should_stop():
+        emit(sink, 'stopped', provider.name, current=0, total=len(refs),
+             message=f'Stopped before reporting plan (0 of {len(refs)} {provider.noun})')
+        return 0
     refs, had_lifecycle = _run_lifecycle(provider, session, refs, out_dir, args, sink, dry_run=True)
     if should_stop():
         emit(sink, 'stopped', provider.name, current=0, total=len(refs),

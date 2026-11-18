@@ -585,27 +585,30 @@ class ReclaimWindow:
         elif kind in CHAT_PROGRESS and event.title:
             self.current.value = f'{name}: {event.title}'
 
+    def _completed_row_status(self, event: ProgressEvent) -> str | None:
+        row = self.provider_status.get(event.provider)
+        current = str(row.value) if row is not None else ''
+        if event.message == 'exit 0':
+            return None if current.startswith(('Live check:', 'Capture:', 'Stopped')) else 'Completed'
+        if current.startswith(('Error:', 'Needs login:')):
+            return None  # keep the error or login prompt, which says more than the exit code
+        return f'Failed ({event.message})'
+
     def _row_status(self, event: ProgressEvent) -> str | None:
         """The new text of the provider's row, or None to leave it."""
         kind = event.kind
         if kind in ('provider_started', 'logged_in'):
             return 'Running'
         if kind == 'login_needed':
+            if 'requires a login' in event.message:
+                return f'Needs login: {event.message}'
             return 'Waiting for login in the browser window'
         prefixes = {'error': 'Error', 'checked': 'Live check', 'captured': 'Capture'}
         if kind in prefixes:
             return f'{prefixes[kind]}: {event.message}'
         if kind == 'stopped':
             return event.message or 'Stopped'
-        if kind != 'provider_completed':
-            return None
-        row = self.provider_status.get(event.provider)
-        current = str(row.value) if row is not None else ''
-        if event.message == 'exit 0':
-            return None if current.startswith(('Live check:', 'Capture:', 'Stopped')) else 'Completed'
-        if current.startswith('Error:'):
-            return None  # keep the error, which says more than the exit code
-        return f'Failed ({event.message})'
+        return self._completed_row_status(event) if kind == 'provider_completed' else None
 
     def _cannot_start(self, providers: list[str]) -> str | None:
         """Why a run cannot start now, or None when it can."""
@@ -620,11 +623,11 @@ class ReclaimWindow:
     async def run_startup_check_if_enabled(self) -> None:
         """Run a non-blocking update check on startup when opted in by settings."""
         if not self.blocked and self.enabled and config.check_on_startup(self.root):
-            with browser.no_login_wait():
-                await self._run(list(self.enabled), 'dry-run')
+            await self._run(list(self.enabled), 'dry-run', no_login_wait=True)
 
     async def _run(self, providers: list[str], mode: str, *, url: str = '',
-                   only_ids: list[str] | None = None) -> None:
+                   only_ids: list[str] | None = None,
+                   no_login_wait: bool = False) -> None:
         problem = self._cannot_start(providers)
         if problem:
             self._error(problem)
@@ -640,7 +643,9 @@ class ReclaimWindow:
         self._provider_count = len(providers)
         completed_ok = False
         try:
-            self._show_result(await self._execute(providers, mode, url=url, only_ids=only_ids), mode)
+            result = await self._execute(providers, mode, url=url, only_ids=only_ids,
+                                         no_login_wait=no_login_wait)
+            self._show_result(result, mode)
             completed_ok = True
         except BusyOperationError as exc:
             self._error(str(exc))
@@ -661,13 +666,15 @@ class ReclaimWindow:
         finally:
             self._set_running(False)
             if mode != 'capture' and not self.blocked:
-                await self.refresh_archive(preserve_prefixes=('Live check:', 'Capture:'))
+                await self.refresh_archive(
+                    preserve_prefixes=('Live check:', 'Capture:', 'Needs login:'))
             self.page.update()
         if completed_ok and mode == 'dry-run':
             self._maybe_show_review_dialog(providers)
 
     async def _execute(self, providers: list[str], mode: str, *, url: str = '',
-                       only_ids: list[str] | None = None) -> RunSummary:
+                       only_ids: list[str] | None = None,
+                       no_login_wait: bool = False) -> RunSummary:
         """Run in a worker thread, showing its events as they arrive."""
         queue: asyncio.Queue[ProgressEvent | None] = asyncio.Queue()
         loop = asyncio.get_running_loop()
@@ -676,12 +683,14 @@ class ReclaimWindow:
             loop.call_soon_threadsafe(queue.put_nowait, event)
 
         def execute() -> RunSummary:
+            wait_ctx = browser.no_login_wait() if no_login_wait else contextlib.nullcontext()
             try:
-                if mode == 'capture':
-                    return self.controller.capture(providers[0], url, receive)
-                if only_ids is not None:
-                    return self.controller.run(providers, mode, receive, only_ids=only_ids)
-                return self.controller.run(providers, mode, receive)
+                with wait_ctx:
+                    if mode == 'capture':
+                        return self.controller.capture(providers[0], url, receive)
+                    if only_ids is not None:
+                        return self.controller.run(providers, mode, receive, only_ids=only_ids)
+                    return self.controller.run(providers, mode, receive)
             finally:
                 # Use the same thread-safe channel as events so completion
                 # cannot overtake progress/error messages still in transit.

@@ -226,6 +226,31 @@ class TestGui(unittest.IsolatedAsyncioTestCase):
         await dialog.actions[2].on_click(None)  # Merge all passes confirmed IDs past brake
         self.assertEqual(ctrl.only_ids, ['id-gone', 'id-rest'])
 
+    async def test_startup_check_disables_login_wait_in_worker_and_keeps_needs_login(self):
+        observed_wait_disabled: list[bool] = []
+
+        class _StartupController(_Controller):
+            def run(self, providers, mode='update', sink=None, *, log=False, only_ids=None):
+                observed_wait_disabled.append(gui.browser.login_wait_disabled())
+                assert sink is not None
+                sink(ProgressEvent('run_started', total=len(providers), message=mode))
+                sink(ProgressEvent('provider_started', 'chatgpt', current=1, total=len(providers)))
+                sink(ProgressEvent('login_needed', 'chatgpt', message='ChatGPT requires a login.'))
+                sink(ProgressEvent('provider_completed', 'chatgpt', current=1,
+                                   total=len(providers), message='exit 2'))
+                sink(ProgressEvent('run_completed', current=1, total=len(providers),
+                                   message='exit 2'))
+                return RunSummary((('chatgpt', 2),))
+
+        gui.config.save(self.root, providers=['chatgpt'], archive=None, check_on_startup=True)
+        self.window._reload_providers()
+        self.window.controller = _StartupController()
+        await self.window.run_startup_check_if_enabled()
+        self.assertEqual(observed_wait_disabled, [True])
+        self.assertEqual(self.window.provider_chips['chatgpt'].value, 'Needs login')
+        self.assertEqual(self.window.provider_status['chatgpt'].value,
+                         'Needs login: ChatGPT requires a login.')
+
     async def test_archived_deleted_dialog_restores_and_deletes(self):
         from reclaim.core import lifecycle
         from reclaim.core.model import Chat, Turn

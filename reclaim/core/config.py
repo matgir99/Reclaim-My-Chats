@@ -30,7 +30,10 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -60,6 +63,18 @@ class SettingsError(ValueError):
 # directory (Syncthing), so the chats are available on every device while
 # the repo itself stays clean (the folder is gitignored).
 ARCHIVE_DIR = 'chats'
+_root_ctx = threading.local()
+
+
+@contextmanager
+def use_root(root: Path) -> Iterator[None]:
+    """Bind the active configuration root on the current thread."""
+    previous = getattr(_root_ctx, 'path', None)
+    _root_ctx.path = Path(root)
+    try:
+        yield
+    finally:
+        _root_ctx.path = previous
 
 
 def default_root() -> Path:
@@ -69,6 +84,9 @@ def default_root() -> Path:
     use an OS user-data directory instead of writing beside package code.
     RECLAIM_HOME can point either frontend at an existing checkout.
     """
+    active = getattr(_root_ctx, 'path', None)
+    if active is not None:
+        return active
     override = os.environ.get('RECLAIM_HOME')
     if override:
         return Path(override).expanduser().resolve()

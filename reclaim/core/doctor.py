@@ -128,7 +128,7 @@ def run_checks(root: Path | None = None) -> list[Check]:
     else:
         checks += [Check('Database', INFO, 'Not checked until the settings are fixed.'),
                    Check('Login data', INFO, 'Not checked until the settings are fixed.')]
-    chrome = browser.find_chrome()
+    chrome = browser.find_chrome(root)
     checks.append(Check('Browser', OK, chrome) if chrome else
                   Check('Browser', WARNING, 'No Chrome or Chromium was found.',
                         'Install Google Chrome or Chromium, or set RECLAIM_CHROME_PATH.'))
