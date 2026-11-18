@@ -12,9 +12,12 @@ changes only after **Check for updates**, **Review**, or an update contacts a
 provider.
 
 Use **Update selected** for checked providers or **Update all** for every
-provider enabled in settings, and **Stop** to end an active run cleanly after
-the current chat finishes saving. **Check for updates** lists current provider
-chats and previews changes without writing to the database. **Download
+provider enabled in settings, and **Stop** to end an active run cleanly (during
+a login wait, lifecycle reconciliation, or after the current chat finishes
+saving). **Check for updates** lists current provider chats and previews
+changes without writing to the database. Startup checks configured in Settings
+never block on a browser login: any provider needing authentication stays marked
+**Needs login** next to its **Log in** button. **Download
 everything again** asks for confirmation, then fetches all selected chats
 again. Provider rows show both **last download** and **last checked** times,
 and the header shows the installed version and a banner when a newer GitHub
@@ -43,9 +46,9 @@ scans for multiple folders belonging to the same chat, previews them, and retire
 safe duplicates while preserving copies that contain unique branch text
 (`reclaim tidy [--apply]`). **Archived & deleted** opens a review dialog for
 chats in `_Archived` and `_Deleted` to open their folders, restore them to
-active folders, or permanently delete them after confirmation. When **Check for
-updates** finds new or changed chats, a review dialog lets you merge all, merge
-a checked subset, or skip.
+active folders, or permanently delete them after confirmation. When **Check for updates** finds downloads or lifecycle moves (`_Archived`,
+`_Deleted`, or restores), the **Review updates** dialog shows any mass-change
+brake warning and lets you merge all, merge a checked subset, or skip.
 
 **Diagnostics** lists the state of this computer: version, settings,
 database (location, chat count, write access, free space), the database and

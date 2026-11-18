@@ -165,15 +165,15 @@ them.
 |:--|:--|:--|
 | New chat | Listed, no sync record | Download (today) |
 | Edited chat | Listed, newer timestamp | Download again (today) |
-| Renamed, or moved to another project | Listed title or project differs from the record | Download again and move the folder (done when the timestamp also changes) |
+| Renamed, or moved to another project | Listed title or project differs from the record | Download again and move the folder |
 | Archived | In the provider's archived listing | Move to `_Archived/` |
 | Unarchived or restored | Listed again with an `_Archived`/`_Deleted` record | Move back, then update normally |
 | Deleted | Missing from a complete listing and confirmed missing | Move to `_Deleted/` |
 
-When a chat is saved in a new folder, its previous folder is already
-retired (`retire_previous`). Still missing: the sync record does not store
-the title or project, so a rename that leaves the provider timestamp
-unchanged is skipped. Store both, and treat a difference as a change.
+When a chat is saved in a new folder, its previous folder is retired
+(`retire_previous`). Sync records store `title`, `project`, and `state`, so
+renames and project moves are detected in both updates and `--dry-run`
+previews even when the provider timestamp stays unchanged.
 
 ### Safety rules
 
@@ -201,11 +201,11 @@ listings look broken.
 | Provider | Archive feature | Deletion signal | Grouping |
 |:--|:--|:--|:--|
 | ChatGPT | Yes: `is_archived` on conversations; archived listing to confirm | Conversation request fails | Projects (supported) |
-| Claude | None known for chats | HTTP 404 on the conversation | Projects exist; not yet mapped to folders |
-| Gemini | None known | Absent from listing; read request to confirm | Gems/notebooks: to investigate |
-| AI Studio | None | Absent from `ListPrompts` (Drive file trashed) | None |
+| Claude | None known for chats | HTTP 404 on the conversation | Projects: mapped when present in conversation list metadata |
+| Gemini | None known | Absent from listing; read request (`hNvQHb`) to confirm | Gems/notebooks: mapped when present in listing metadata |
+| AI Studio | None | Absent from `ListPrompts` (`ResolveDriveResource` to confirm) | None |
 | DeepSeek | None | Absent from listing; history request to confirm | None (pinned only) |
-| Kimi | None known | Absent from listing; message request to confirm | Projects: listing uses `project_id: ""`; check whether project chats are included |
+| Kimi | None known | Absent from listing; `GetChat` request to confirm | Projects: listing uses `project_id: ""`; mapped when present on chat metadata |
 
 Start with ChatGPT, which has the clearest signals, then add the others
 one at a time with synthetic tests of each response shape.

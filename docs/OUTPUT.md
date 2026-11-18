@@ -21,6 +21,10 @@ chats/
 ├── ChatGPT/
 │   ├── .last_sync_chatgpt.json    sync records
 │   ├── .reclaim_manifest.json     last run
+│   ├── .reclaim_last_attempt.json last write-capable run attempt status
+│   ├── .reclaim_events.jsonl      audit log of _Archived/_Deleted moves
+│   ├── _Archived/                 archived at the provider (mirroring path)
+│   ├── _Deleted/                  confirmed deleted at the provider
 │   └── Example project/
 │       ├── Example conversation/
 │       │   ├── Example conversation.md
@@ -122,4 +126,5 @@ so an interruption leaves either the old file or the new one.
 Each run copies what it prints, including warnings and error details, to
 `logs/reclaim.log` in the data folder. The log rotates at 1 MB and keeps five
 older files. It contains chat titles and error details, never chat text or
-login data.
+login data. Successful check and update timestamps are also stored per provider
+in `.reclaim_checks.json` in the data folder for the GUI and `reclaim status`.
