@@ -341,6 +341,32 @@ class TestAllProviderConfirmAndSubsetAndAutostart(unittest.TestCase):
         with patch.dict(os.environ, {'RECLAIM_NO_NOTIFY': '1'}):
             self.assertFalse(autostart.notify_desktop('Reclaim My Chats', 'x', runner=seen_cmds.append))
 
+        headless_env = {
+            k: v for k, v in os.environ.items()
+            if k not in ('DISPLAY', 'WAYLAND_DISPLAY', 'DBUS_SESSION_BUS_ADDRESS')
+        }
+        headless_env['RECLAIM_NO_NOTIFY'] = ''
+        with (patch.dict(os.environ, headless_env, clear=True),
+              patch.object(autostart.shutil, 'which', return_value='/usr/bin/notify-send'),
+              patch.object(autostart.subprocess, 'run') as mock_run):
+            self.assertFalse(autostart.notify_desktop('Reclaim My Chats', 'x', system='linux'))
+            mock_run.assert_not_called()
+
+        with (patch.dict(os.environ, {**headless_env, 'DISPLAY': ':0'}, clear=True),
+              patch.object(autostart.shutil, 'which', return_value='/usr/bin/notify-send'),
+              patch.object(autostart.subprocess, 'run') as mock_run):
+            mock_run.return_value = type('R', (), {'returncode': 0})()
+            self.assertTrue(autostart.notify_desktop('Reclaim My Chats', 'ok', system='linux'))
+            mock_run.assert_called_once_with(
+                ['notify-send', 'Reclaim My Chats', 'ok'],
+                stdout=autostart.subprocess.DEVNULL,
+                stderr=autostart.subprocess.DEVNULL,
+                check=False,
+                timeout=2,
+            )
+            mock_run.return_value = type('R', (), {'returncode': 1})()
+            self.assertFalse(autostart.notify_desktop('Reclaim My Chats', 'fail', system='linux'))
+
     def test_engine_session_applies_lifecycle_moves_and_honors_brake(self):
         class _FakeLifecycleProvider(engine.Provider):
             name = 'chatgpt'

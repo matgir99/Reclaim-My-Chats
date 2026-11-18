@@ -10,10 +10,33 @@
 4. Wait for **Release** to finish. It chooses the next patch version and
    publishes the downloads. You do not need to edit a version or create a tag.
 5. Bring the release merge commit from `main` back into `develop` before the next release, so histories stay synchronized. Use a normal merge or a verified fast-forward as appropriate.
+6. Delete merged feature branches locally and on GitHub (or enable **Automatically delete head branches** in the repository's GitHub Settings under **General**).
 
 All changes, including contributor and Dependabot updates, must reach `main` through a PR from this repository's `develop` branch. Target `develop` for ordinary contributor and Dependabot version-update PRs. GitHub may open Dependabot security updates against the default branch (`main`) even when version updates target `develop`; retarget those security PRs to `develop` before merging them. Never bypass this policy for routine changes.
 Every merge to `main`, including a documentation change, currently triggers
 a release. A manual release button is an optional future preference.
+
+## Setting up another development computer
+
+1. Clone the repository and check out `develop`:
+   ```bash
+   git clone https://github.com/matgir99/Reclaim-My-Chats.git
+   cd Reclaim-My-Chats
+   git checkout develop
+   ```
+2. Install the pinned environment and the isolated Chromium test shell:
+   ```bash
+   uv sync --extra gui-test
+   .venv/bin/python -m playwright install --only-shell chromium
+   ```
+3. Connect untracked local state without committing it: `.reclaim.json`, `.playwright-profile/`, `chats/`, `logs/`, and `docs/status_and_plan/` are gitignored. Point `.reclaim.json`, `RECLAIM_HOME`, or a local `chats` symlink at your synced database folder, and either sign in to providers again or privately copy `.playwright-profile/` from your previous machine.
+4. Run the checks matching CI before branching or editing:
+   ```bash
+   .venv/bin/python -W error::ResourceWarning -m unittest discover -s tests -q
+   .venv/bin/python -m unittest discover -s tests -p browser_protocols.py
+   .venv/bin/ruff check reclaim tests scripts flet_integration
+   pyright --pythonpath .venv/bin/python reclaim tests scripts flet_integration
+   ```
 
 ## Branch rules
 

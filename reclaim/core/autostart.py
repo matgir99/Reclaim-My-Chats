@@ -16,6 +16,7 @@ from xml.sax.saxutils import escape
 
 APP_ID = 'org.reclaimmychats.app'
 WINDOWS_RUN_KEY = r'Software\Microsoft\Windows\CurrentVersion\Run'
+_LINUX_DISPLAY_VARS = ('DISPLAY', 'WAYLAND_DISPLAY', 'DBUS_SESSION_BUS_ADDRESS')
 
 
 def default_command() -> str:
@@ -107,23 +108,43 @@ def set_autostart(enabled: bool, *, command: str | None = None,
     return None
 
 
+def _has_linux_display() -> bool:
+    return any(os.environ.get(name) for name in _LINUX_DISPLAY_VARS)
+
+
+def _notification_command(title: str, message: str, *,
+                          sys_name: str, has_runner: bool) -> list[str] | None:
+    if sys_name.startswith('linux'):
+        if has_runner or (shutil.which('notify-send') and _has_linux_display()):
+            return ['notify-send', title, message]
+        return None
+    if sys_name == 'darwin':
+        safe_title = title.replace('"', '\\"')
+        safe_msg = message.replace('"', '\\"')
+        return ['osascript', '-e', f'display notification "{safe_msg}" with title "{safe_title}"']
+    return None
+
+
 def notify_desktop(title: str, message: str, *,
                    runner: Callable[[list[str]], Any] | None = None,
                    system: str | None = None) -> bool:
     """Send a best-effort desktop notification; never raises."""
     if os.environ.get('RECLAIM_NO_NOTIFY'):
         return False
-    sys_name = (system or sys.platform).lower()
-    cmd: list[str] | None = None
-    if sys_name.startswith('linux') and (runner is not None or shutil.which('notify-send')):
-        cmd = ['notify-send', title, message]
-    elif sys_name == 'darwin':
-        safe_title = title.replace('"', '\\"')
-        safe_msg = message.replace('"', '\\"')
-        cmd = ['osascript', '-e', f'display notification "{safe_msg}" with title "{safe_title}"']
+    cmd = _notification_command(
+        title, message,
+        sys_name=(system or sys.platform).lower(),
+        has_runner=runner is not None,
+    )
     if cmd is None:
         return False
     with contextlib.suppress(Exception):
-        (runner or subprocess.Popen)(cmd)
-        return True
+        if runner is not None:
+            runner(cmd)
+            return True
+        completed = subprocess.run(
+            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            check=False, timeout=2,
+        )
+        return completed.returncode == 0
     return False
