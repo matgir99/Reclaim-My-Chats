@@ -186,9 +186,12 @@ listings look broken.
    provider listing finished every page without errors, rate limits or
    truncation. Otherwise no lifecycle move happens and the run says why.
 3. **Confirm each absence.** Before moving a chat to `_Deleted`, fetch it
-   directly: "not found" confirms deletion, an archived flag or archived
-   listing means `_Archived`, and any other result leaves it in place as
-   "unconfirmed".
+   directly: an HTTP 404 answer confirms deletion, an archived flag or
+   archived listing means `_Archived`, and any other result leaves it in
+   place as "unconfirmed". Only the status counts: a rate limit, server
+   error, refused login or dropped connection never confirms a deletion,
+   whatever its message says (an error message can contain "404" in a chat
+   id).
 4. **Mass-change brake.** If a run would move more than a small share of a
    provider's chats (proposed: 10% or 20 chats, whichever is smaller), it
    moves nothing until the user confirms in the review.
@@ -200,7 +203,7 @@ listings look broken.
 
 | Provider | Archive feature | Deletion signal | Grouping |
 |:--|:--|:--|:--|
-| ChatGPT | Yes: `is_archived` on conversations; archived listing to confirm | Conversation request fails | Projects (supported) |
+| ChatGPT | Yes: `is_archived` on conversations; archived listing to confirm | HTTP 404 on the conversation request (verified live) | Projects (supported) |
 | Claude | None known for chats | HTTP 404 on the conversation | Projects: mapped when present in conversation list metadata |
 | Gemini | None known | Absent from listing; read request (`hNvQHb`) to confirm | Gems/notebooks: mapped when present in listing metadata |
 | AI Studio | None | Absent from `ListPrompts` (`ResolveDriveResource` to confirm) | None |

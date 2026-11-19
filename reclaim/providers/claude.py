@@ -51,7 +51,7 @@ def _get(page, url: str, retries: int = 3, *, record: bool = True) -> dict:
                           what=f'Claude GET {url[:80]}', retries=retries, give_back=(404,),
                           record=record)
     if response['status'] == 404:
-        raise RuntimeError('HTTP 404 — chat deleted?')
+        raise retry.RequestFailed('HTTP 404 — chat deleted?', 404)
     return json.loads(response['text'])
 
 
@@ -275,8 +275,7 @@ class Claude(engine.Provider):
             data = _get(s.page, f'{BASE_URL}/api/organizations/{s.org}/chat_conversations/'
                                 f'{chat_id}?tree=true&rendering_mode=messages', retries=1)
         except Exception as exc:
-            msg = str(exc).lower()
-            return 'deleted' if ('http 404' in msg or '404' in msg) else 'unconfirmed'
+            return 'deleted' if retry.is_not_found(exc) else 'unconfirmed'
         if isinstance(data, dict) and ('chat_messages' in data or 'uuid' in data):
             return 'active'
         return 'unconfirmed'
