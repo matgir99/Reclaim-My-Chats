@@ -384,8 +384,11 @@ class TestGuiSafeguards(unittest.IsolatedAsyncioTestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.page = _Page()
+        self.notify_patch = patch.object(gui.autostart, 'notify_desktop', return_value=True)
+        self.notify_patch.start()
 
     async def asyncTearDown(self):
+        self.notify_patch.stop()
         self.temp.cleanup()
 
     async def open(self, controller=None):

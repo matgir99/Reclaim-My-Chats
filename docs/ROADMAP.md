@@ -207,8 +207,8 @@ listings look broken.
 | DeepSeek | None | Absent from listing; history request to confirm | None (pinned only) |
 | Kimi | None known | Absent from listing; `GetChat` request to confirm | Projects: listing uses `project_id: ""`; mapped when present on chat metadata |
 
-Start with ChatGPT, which has the clearest signals, then add the others
-one at a time with synthetic tests of each response shape.
+All six providers are implemented with synthetic tests; verify each live with
+`reclaim doctor --live` before releasing.
 
 ### Tasks
 
@@ -258,7 +258,8 @@ expect on each system, and fixes reach users quickly.
       option.
 - [x] macOS: a `.dmg` with drag-to-Applications, plus an Intel build.
 - [x] PyPI releases, so the command line installs with `pipx install
-      reclaimmychats`.
+      reclaimmychats` (workflow step wired with `continue-on-error: true` until
+      PyPI Trusted Publishing is configured on `pypi.org`).
 - [x] Build-provenance attestations on release files.
 - [ ] Later, if users need it: code signing for Windows and macOS (paid).
 

@@ -35,11 +35,12 @@ folders, Chrome detection, enabled providers, and initial login) and a
 provider table with status chips and per-row **Log in** / **Review** buttons.
 It lets you select providers, update selected or all enabled providers, stop an
 active run after the current chat, check for updates without writing to the
-database, download everything again, bring a browser window awaiting login
-forward, inspect progress and errors, and open or change the database folder.
-**Download everything again** fetches every selected conversation again and
-overwrites its copy in the database. **Check for updates** contacts the
-providers to list conversations, but does not write to the database.
+database, confirm changes in **Review updates**, manage **Archived & deleted**
+chats, retire duplicates with **Tidy duplicates**, inspect **Diagnostics**, bring a
+browser window awaiting login forward, inspect progress and errors, and open or
+change the database folder. **Download everything again** fetches every selected
+conversation again and overwrites its copy in the database. **Check for updates**
+contacts the providers to list conversations, but does not write to the database.
 
 See [GUI usage and testing](docs/GUI.md) for settings, profile migration,
 and development commands.
@@ -230,6 +231,8 @@ project with no guaranteed response time.
 uv sync --extra gui-test      # the versions pinned in uv.lock, plus build, ruff, pyright
 # or: python -m pip install -e '.[gui-test]' build ruff pyright   (newest versions)
 python -m unittest discover -s tests -q
+python -m playwright install --only-shell chromium
+python -m unittest discover -s tests -p browser_protocols.py
 ruff check reclaim tests scripts flet_integration
 pyright reclaim tests scripts flet_integration
 python -m build

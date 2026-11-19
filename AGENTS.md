@@ -13,7 +13,7 @@ Read in this order:
 7. [`docs/UPSTREAM_REVIEW.md`](docs/UPSTREAM_REVIEW.md) — provider formats and upstream reference projects.
 8. [`docs/CLI_REDESIGN.md`](docs/CLI_REDESIGN.md) — CLI contract and offline modes.
 
-If local files exist in `docs/status_and_plan/` from August 2026 (`v3.0.0`), they are out of date; do not plan from them.
+If local files exist in `docs/status_and_plan/` from August 2026 (`v3.0.0`), they are out of date; do not plan from them. A current local `docs/status_and_plan/HANDOVER.md` (when present) tracks local handover state and stays gitignored.
 
 ## Rules
 
@@ -61,5 +61,6 @@ pyright --pythonpath .venv/bin/python reclaim tests scripts flet_integration
 | `reclaim/core/writer.py`, `manifest.py`, `model.py`, `fsutil.py`, `batchexecute.py`, `browser.py`, `autostart.py` | Atomic chat folder writing, sync records, chat model, helpers, browser discovery/login wait, OS autostart/notifications. |
 | `reclaim/core/doctor.py`, `capture.py`, `releases.py` | Offline/live diagnostics (`reclaim doctor [--live]`), response sanitization (`reclaim capture`), GitHub update checks. |
 | `reclaim/providers/` | Native providers (`chatgpt.py`, `chatgpt_references.py`, `claude.py`, `deepseek.py`, `googleaistudio.py`, `googlegemini.py`, `kimi.py`) and offline importers (`chatgpt_import.py`, `kept_vault.py`, `aistudio_files.py`). |
-| `reclaim/gui.py`, `reclaim/__main__.py` | Flet desktop window and CLI entry point. |
+| `reclaim/exporters/haevn_md.py` | Offline HAEVN Markdown archive exporter (`reclaim export haevn-md`). |
+| `reclaim/gui.py`, `reclaim/__main__.py`, `reclaim/desktop_smoke.py` | Flet desktop window, CLI entry point, and isolated packaged-app startup check. |
 | `tests/`, `flet_integration/`, `scripts/` | Offline unit/browser-protocol suites, Flet device integration suite, and release/maintenance scripts. |

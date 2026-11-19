@@ -29,7 +29,9 @@ without opening a browser or contacting a provider).
 Only then does it generate `SHA256SUMS` and GitHub build-provenance
 attestations, create or reuse the tag, create a draft release, upload and
 verify assets, publish the GitHub Release, and publish Python distributions
-to PyPI (`pypa/gh-action-pypi-publish` with Trusted Publishing).
+to PyPI (`pypa/gh-action-pypi-publish` with Trusted Publishing; this step uses
+`continue-on-error: true` in `.github/workflows/release.yml` so GitHub Releases
+succeed until Trusted Publishing is configured on `pypi.org`).
 Rerunning a failed workflow at the same `main` commit reuses its tag and
 resumes an incomplete draft. Published release downloads are never replaced.
 Draft lookup uses the authenticated release list when GitHub's tag endpoint
