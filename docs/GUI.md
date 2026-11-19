@@ -52,11 +52,14 @@ brake warning and lets you merge all, merge a checked subset, or skip.
 
 **Diagnostics** lists the state of this computer: version, settings,
 database (location, chat count, write access, free space), the database and
-login data locks, the browser, the login data folder (readable by other
+login data locks, the browser (a system Chrome or Chromium, or the Chromium
+in Playwright's browser cache), the login data folder (readable by other
 users, or inside a synced folder such as Dropbox or Syncthing) and the log
 file, each with advice when something is wrong. *Run live check* logs in to
 each enabled provider and lists its chats, writing nothing; each provider's
-row then shows "Live check: logged in · N chats listed" or the error.
+row then shows "Live check: logged in · N chats listed" or the error. A
+provider's own **Log in** button runs the same check for that provider alone
+and adds its result to the list, keeping the results already there.
 *Copy diagnostics* copies the results as text for a bug report. They contain
 folder paths, which can include your user name, but never chat content.
 `reclaim doctor [--live]` prints the same report. **Capture a chat** lets
