@@ -108,6 +108,20 @@ class TestDoctor(unittest.TestCase):
               patch.object(doctor.browser, '_playwright_chromium_revision', return_value='9999')):
             self.assertIsNone(doctor.browser.find_playwright_chromium())
 
+    def test_find_playwright_chromium_supports_frozen_and_relative_env_path(self):
+        frozen_pkg = self.root / 'meipass' / 'playwright'
+        frozen_pkg.mkdir(parents=True)
+        with patch.object(doctor.browser.sys, '_MEIPASS', str(self.root / 'meipass'), create=True):
+            self.assertEqual(doctor.browser._playwright_package_dir(), frozen_pkg)
+
+        exe = self.root / 'rel-cache' / 'chromium-9999' / 'chrome-linux64' / 'chrome'
+        exe.parent.mkdir(parents=True)
+        exe.write_text('stub')
+        with (patch.dict(os.environ, {'HOME': str(self.root),
+                                      'PLAYWRIGHT_BROWSERS_PATH': '~/rel-cache'}),
+              patch.object(doctor.browser, '_playwright_chromium_revision', return_value='9999')):
+            self.assertEqual(doctor.browser.find_playwright_chromium(), str(exe.resolve()))
+
     def test_database_locks_and_synced_login_data(self):
         db = self.root / 'chats'
         write_chat(Chat(id='a', title='A', source_url='', provider='test',

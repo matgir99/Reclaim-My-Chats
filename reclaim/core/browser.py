@@ -26,6 +26,7 @@ from .events import emit
 
 _active_page: Any = None
 _active_owner: int | None = None
+_active_lock = threading.Lock()
 _bring_forward_requested = threading.Event()
 _no_wait = threading.local()
 
@@ -121,10 +122,16 @@ def find_chrome(root: Path | None = None) -> str | None:
 
 
 def _playwright_package_dir() -> Path | None:
-    spec = importlib.util.find_spec('playwright')
-    if spec is None or not spec.origin:
-        return None
-    return Path(spec.origin).resolve().parent
+    meipass = getattr(sys, '_MEIPASS', None)
+    if meipass:
+        frozen_pkg = Path(meipass) / 'playwright'
+        if frozen_pkg.is_dir():
+            return frozen_pkg
+    with contextlib.suppress(ValueError):
+        spec = importlib.util.find_spec('playwright')
+        if spec is not None and spec.origin and spec.origin != 'frozen':
+            return Path(spec.origin).resolve().parent
+    return None
 
 
 def _playwright_chromium_revision() -> str | None:
@@ -146,7 +153,7 @@ def _playwright_cache_dir() -> Path | None:
         pkg_dir = _playwright_package_dir()
         return (pkg_dir / 'driver' / 'package' / '.local-browsers') if pkg_dir else None
     if env:
-        return Path(env)
+        return Path(env).expanduser().resolve()
     if sys.platform == 'darwin':
         return Path.home() / 'Library' / 'Caches' / 'ms-playwright'
     if os.name == 'nt' or sys.platform in ('win32', 'nt', 'cygwin'):
@@ -231,17 +238,19 @@ def login_timeout(root: Path | None = None) -> int:
 
 def _register_active_page(page) -> None:
     global _active_page, _active_owner
-    _active_page = page
-    _active_owner = threading.get_ident()
-    _bring_forward_requested.clear()
+    with _active_lock:
+        _active_page = page
+        _active_owner = threading.get_ident()
+        _bring_forward_requested.clear()
 
 
 def clear_active_page() -> None:
     """Clear the active Playwright page reference when a browser session ends."""
     global _active_page, _active_owner
-    _active_page = None
-    _active_owner = None
-    _bring_forward_requested.clear()
+    with _active_lock:
+        _active_page = None
+        _active_owner = None
+        _bring_forward_requested.clear()
 
 
 def _focus_page(page) -> bool:
@@ -268,12 +277,13 @@ def bring_browser_forward(page=None) -> bool:
     if page is not None:
         _bring_forward_requested.clear()
         return _focus_page(page)
-    target = _active_page
-    if target is None:
-        return False
-    if _active_owner is not None and threading.get_ident() != _active_owner:
-        _bring_forward_requested.set()
-        return True
+    with _active_lock:
+        target, owner = _active_page, _active_owner
+        if target is None:
+            return False
+        if owner is not None and threading.get_ident() != owner:
+            _bring_forward_requested.set()
+            return True
     _bring_forward_requested.clear()
     return _focus_page(target)
 

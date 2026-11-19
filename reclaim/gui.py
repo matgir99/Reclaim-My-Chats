@@ -689,22 +689,24 @@ class ReclaimWindow:
         queue: asyncio.Queue[ProgressEvent | None] = asyncio.Queue()
         loop = asyncio.get_running_loop()
 
-        def receive(event: ProgressEvent) -> None:
-            loop.call_soon_threadsafe(queue.put_nowait, event)
+        def enqueue(item: ProgressEvent | None) -> None:
+            if not loop.is_closed():
+                with contextlib.suppress(RuntimeError):
+                    loop.call_soon_threadsafe(queue.put_nowait, item)
 
         def execute() -> RunSummary:
             wait_ctx = browser.no_login_wait() if no_login_wait else contextlib.nullcontext()
             try:
                 with wait_ctx:
                     if mode == 'capture':
-                        return self.controller.capture(providers[0], url, receive)
+                        return self.controller.capture(providers[0], url, enqueue)
                     if only_ids is not None:
-                        return self.controller.run(providers, mode, receive, only_ids=only_ids)
-                    return self.controller.run(providers, mode, receive)
+                        return self.controller.run(providers, mode, enqueue, only_ids=only_ids)
+                    return self.controller.run(providers, mode, enqueue)
             finally:
                 # Use the same thread-safe channel as events so completion
                 # cannot overtake progress/error messages still in transit.
-                loop.call_soon_threadsafe(queue.put_nowait, None)
+                enqueue(None)
 
         task = asyncio.create_task(asyncio.to_thread(execute))
         while (event := await queue.get()) is not None:
