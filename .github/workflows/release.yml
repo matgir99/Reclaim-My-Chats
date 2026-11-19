@@ -181,6 +181,7 @@ jobs:
       - name: Publish or safely resume the draft
         run: python scripts/publish_release.py --repo "$GITHUB_REPOSITORY" --tag "v$VERSION" release-assets
       - name: Publish Python packages to PyPI
+        if: vars.PYPI_PUBLISH == 'true'
         continue-on-error: true
         uses: pypa/gh-action-pypi-publish@release/v1
         with:

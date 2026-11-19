@@ -28,10 +28,15 @@ installer, and macOS Apple Silicon (`arm64`) and Intel (`x86_64`) `.dmg` and
 without opening a browser or contacting a provider).
 Only then does it generate `SHA256SUMS` and GitHub build-provenance
 attestations, create or reuse the tag, create a draft release, upload and
-verify assets, publish the GitHub Release, and publish Python distributions
-to PyPI (`pypa/gh-action-pypi-publish` with Trusted Publishing; this step uses
-`continue-on-error: true` in `.github/workflows/release.yml` so GitHub Releases
-succeed until Trusted Publishing is configured on `pypi.org`).
+verify assets, and publish the GitHub Release, which carries the Python wheel
+and source distribution. Uploading them to PyPI is switched off (decided on 20
+November 2026): that step, `pypa/gh-action-pypi-publish` with Trusted
+Publishing, runs only when the repository variable `PYPI_PUBLISH` is `true`,
+so a release shows it as skipped. To turn it on, register a Trusted Publisher
+on `pypi.org` for the project `reclaimmychats` (workflow `release.yml`,
+environment left blank), then set the variable under **Settings → Secrets and
+variables → Actions → Variables**. The step keeps `continue-on-error: true`,
+so a PyPI problem never blocks the GitHub Release.
 Rerunning a failed workflow at the same `main` commit reuses its tag and
 resumes an incomplete draft. Published release downloads are never replaced.
 Draft lookup uses the authenticated release list when GitHub's tag endpoint
