@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
-import shutil
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -74,6 +74,43 @@ def _append_event(out_dir: Path, chat_id: str, old_rel: Path, new_rel: Path,
         fh.write(json.dumps(entry, ensure_ascii=False) + '\n')
 
 
+def _has_subfolders(folder: Path) -> bool:
+    return any(entry.is_dir() for entry in folder.iterdir())
+
+
+def _move_chat_files(old_dir: Path, target_dir: Path) -> None:
+    """Move the files directly inside `old_dir` into `target_dir`; subfolders stay.
+
+    Nothing is moved, and `FileExistsError` is raised, when a file of the same
+    name is already in `target_dir`: an existing file is never overwritten.
+    `chat.json` moves last, so an interrupted move can be repeated."""
+    files = [entry for entry in old_dir.iterdir() if not entry.is_dir()]
+    clashes = sorted(entry.name for entry in files if (target_dir / entry.name).exists())
+    if clashes:
+        raise FileExistsError(
+            f'Cannot move the chat folder "{old_dir.name}" into "{target_dir.name}": '
+            f'these files already exist there: {", ".join(clashes)}. '
+            'Rename or move them, then try again.')
+    target_dir.mkdir(parents=True, exist_ok=True)
+    for entry in sorted(files, key=lambda path: path.name == writer.CHAT_JSON):
+        entry.rename(target_dir / entry.name)
+    with contextlib.suppress(OSError):  # not empty: subfolders stay in the old place
+        old_dir.rmdir()
+
+
+def _relocate_chat_folder(old_dir: Path, target_dir: Path) -> None:
+    """Move one chat's folder, and nothing that is not part of that chat.
+
+    A folder with only the chat's own files is renamed as a whole. When it
+    also holds subfolders, or the target already exists, only the chat's files
+    move. Subfolders are other chats (a project named like a chat saves its
+    chats inside that chat's folder) or folders the owner added; they stay."""
+    if target_dir.exists() or _has_subfolders(old_dir):
+        _move_chat_files(old_dir, target_dir)
+    else:
+        old_dir.rename(target_dir)
+
+
 def move_chat_folder(out_dir: Path, sync: SyncState, chat_id: str, to_state: str,
                      *, reason: str = '') -> Path | None:
     """Move one saved chat folder between active, `_Archived`, and `_Deleted`."""
@@ -95,7 +132,7 @@ def move_chat_folder(out_dir: Path, sync: SyncState, chat_id: str, to_state: str
         target_dir.parent.mkdir(parents=True, exist_ok=True)
         if target_dir.exists():
             target_dir = writer._chat_folder(target_dir.parent, target_dir.name, chat_id)
-        old_dir.rename(target_dir)
+        _relocate_chat_folder(old_dir, target_dir)
         writer.prune_empty_parents(out_dir, old_dir.parent)
     _update_chat_json_state(target_dir, to_state)
     new_md = target_dir / old_md.name
@@ -284,15 +321,32 @@ def restore_state_chat(db: Path, entry: StateChatEntry) -> Path | None:
     return move_chat_folder(pdir, sync, entry.chat_id, 'active', reason='restored by user')
 
 
+def _remove_chat_files(folder: Path) -> None:
+    """Delete the files directly inside a chat folder, then the folder if it is empty.
+
+    These are the chat's Markdown, `chat.json`, `raw.json` and saved media.
+    Subfolders are never removed: they hold other chats (a project named like
+    a chat saves its chats inside that chat's folder) or folders the owner
+    added, and neither was chosen for deletion."""
+    for entry in folder.iterdir():
+        if not entry.is_dir():
+            entry.unlink()
+    with contextlib.suppress(OSError):  # not empty: subfolders remain
+        folder.rmdir()
+
+
 def delete_state_chat_permanently(db: Path, entry: StateChatEntry) -> bool:
-    """Permanently delete a confirmed `_Archived` or `_Deleted` chat folder."""
+    """Permanently delete a confirmed `_Archived` or `_Deleted` chat.
+
+    Removes the chat's own files and its folder. Chats and folders inside that
+    folder are left untouched."""
     pdir = Path(db) / database.PROVIDER_DIRS[entry.provider]
     if not entry.folder.is_dir() or not writer._inside(entry.folder, pdir):
         return False
     rel = entry.folder.resolve().relative_to(pdir.resolve())
     if not rel.parts or rel.parts[0] not in (ARCHIVED_DIR, DELETED_DIR):
         return False
-    shutil.rmtree(entry.folder)
+    _remove_chat_files(entry.folder)
     writer.prune_empty_parents(pdir, entry.folder.parent)
     SyncState(pdir, entry.provider).forget(entry.chat_id)
     _append_event(pdir, entry.chat_id, rel, rel, 'permanently_deleted',
