@@ -76,7 +76,8 @@ class TestDoctor(unittest.TestCase):
 
     def test_problems_come_with_advice(self):
         (self.root / '.reclaim.json').write_text('{"archive": 42}')
-        with patch.object(doctor.browser, 'find_chrome', return_value=None):
+        with (patch.object(doctor.browser, 'find_chrome', return_value=None),
+              patch.object(doctor.browser, 'find_playwright_chromium', return_value=None)):
             checks = doctor.run_checks(self.root)
         areas = self.by_area(checks)
         self.assertEqual(areas['Settings'].status, doctor.PROBLEM)
@@ -86,6 +87,26 @@ class TestDoctor(unittest.TestCase):
         text = doctor.report(checks)
         self.assertIn('PROBLEM  Settings', text)
         self.assertIn('→ Install Google Chrome', text)
+
+    def test_playwright_chromium_fallback_is_reported_as_ok(self):
+        with (patch.object(doctor.browser, 'find_chrome', return_value=None),
+              patch.object(doctor.browser, 'find_playwright_chromium',
+                           return_value='/cache/ms-playwright/chromium-1248/chrome-linux64/chrome')):
+            checks = self.by_area(doctor.run_checks(self.root))
+        self.assertEqual(checks['Browser'].status, doctor.OK)
+        self.assertIn('Playwright Chromium', checks['Browser'].detail)
+        self.assertIn('RECLAIM_CHROME_PATH', checks['Browser'].advice)
+
+    def test_find_playwright_chromium_reads_cache(self):
+        exe = self.root / 'ms-playwright' / 'chromium-9999' / 'chrome-linux64' / 'chrome'
+        exe.parent.mkdir(parents=True)
+        exe.write_text('stub')
+        with (patch.dict(os.environ, {'PLAYWRIGHT_BROWSERS_PATH': str(self.root / 'ms-playwright')}),
+              patch.object(doctor.browser, '_playwright_chromium_revision', return_value='9999')):
+            self.assertEqual(doctor.browser.find_playwright_chromium(), str(exe))
+        with (patch.dict(os.environ, {'PLAYWRIGHT_BROWSERS_PATH': str(self.root / 'empty')}),
+              patch.object(doctor.browser, '_playwright_chromium_revision', return_value='9999')):
+            self.assertIsNone(doctor.browser.find_playwright_chromium())
 
     def test_database_locks_and_synced_login_data(self):
         db = self.root / 'chats'

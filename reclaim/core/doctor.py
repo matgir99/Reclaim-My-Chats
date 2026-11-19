@@ -113,6 +113,23 @@ def _profile_checks(root: Path) -> list[Check]:
     return checks
 
 
+def _browser_check(root: Path) -> Check:
+    chrome = browser.find_chrome(root)
+    if chrome:
+        return Check('Browser', OK, chrome)
+    bundled = browser.find_playwright_chromium()
+    if bundled:
+        return Check(
+            'Browser', OK, f'Playwright Chromium ({bundled})',
+            'Optional: install Google Chrome or Chromium, or set RECLAIM_CHROME_PATH, '
+            'if a provider blocks Playwright Chromium.',
+        )
+    return Check(
+        'Browser', WARNING, 'No Chrome or Chromium was found.',
+        'Install Google Chrome or Chromium, or set RECLAIM_CHROME_PATH.',
+    )
+
+
 def run_checks(root: Path | None = None) -> list[Check]:
     """Everything that can be checked without contacting a provider."""
     root = Path(root) if root is not None else config.default_root()
@@ -128,10 +145,7 @@ def run_checks(root: Path | None = None) -> list[Check]:
     else:
         checks += [Check('Database', INFO, 'Not checked until the settings are fixed.'),
                    Check('Login data', INFO, 'Not checked until the settings are fixed.')]
-    chrome = browser.find_chrome(root)
-    checks.append(Check('Browser', OK, chrome) if chrome else
-                  Check('Browser', WARNING, 'No Chrome or Chromium was found.',
-                        'Install Google Chrome or Chromium, or set RECLAIM_CHROME_PATH.'))
+    checks.append(_browser_check(root))
     log_dir = logs.log_dir(root)
     writable = os.access(log_dir if log_dir.exists() else root, os.W_OK)
     checks.append(Check('Log file', OK if writable else WARNING, str(logs.log_file(root)),

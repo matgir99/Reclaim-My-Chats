@@ -267,6 +267,91 @@ class TestEngine(unittest.TestCase):
               self.assertRaisesRegex(RuntimeError, 'Login timeout')):
             browser.wait_for_login(page, 'kimi', 'Kimi', lambda: None)
 
+    def test_cross_thread_bring_browser_forward_wait_for_login_and_clear(self):
+        worker_tid = threading.get_ident()
+        owner_calls: list[int] = []
+        caller_results: list[bool] = []
+        calls_before_sleep = [0]
+        attempts = 0
+
+        class _Page:
+            context = None
+
+            def bring_to_front(self):
+                owner_calls.append(threading.get_ident())
+
+        def probe():
+            nonlocal attempts
+            attempts += 1
+            if attempts == 2:
+                t = threading.Thread(target=lambda: caller_results.append(
+                    browser.bring_browser_forward()))
+                t.start()
+                t.join(timeout=2)
+                calls_before_sleep[0] = len(owner_calls)
+            return 'tok' if attempts >= 3 else None
+
+        page = _Page()
+        try:
+            with (patch.object(browser, 'login_timeout', return_value=30),
+                  patch.object(browser, 'set_window_bounds'),
+                  patch.object(browser.time, 'sleep'),
+                  patch('reclaim.core.browser.emit')):
+                got = browser.wait_for_login(page, 'chatgpt', 'ChatGPT', probe, interval=0)
+            self.assertEqual(got, 'tok')
+            self.assertEqual(caller_results, [True])
+            self.assertEqual(calls_before_sleep[0], 1)  # caller thread did not touch page
+            self.assertEqual(owner_calls, [worker_tid, worker_tid])
+            browser.clear_active_page()
+            self.assertFalse(browser.bring_browser_forward())
+        finally:
+            browser.clear_active_page()
+
+    def test_cross_thread_bring_browser_forward_interactive_login(self):
+        worker_tid = threading.get_ident()
+        owner_calls: list[int] = []
+        caller_results: list[bool] = []
+        ready = threading.Event()
+        caller_done = threading.Event()
+        slices = 0
+
+        class _Page:
+            url = 'https://accounts.google.com/signin'
+            context = None
+
+            def bring_to_front(self):
+                owner_calls.append(threading.get_ident())
+
+            def wait_for_url(self, ready_url, timeout=0):
+                nonlocal slices
+                slices += 1
+                if slices == 1:
+                    ready.set()
+                    caller_done.wait(timeout=2)
+                    raise TimeoutError('timeout')
+                return True
+
+        def caller():
+            ready.wait(timeout=2)
+            caller_results.append(browser.bring_browser_forward())
+            caller_done.set()
+
+        page = _Page()
+        t = threading.Thread(target=caller)
+        t.start()
+        try:
+            with (patch.object(browser, 'login_timeout', return_value=30),
+                  patch.object(browser, 'set_window_bounds'),
+                  patch.object(browser.time, 'sleep'),
+                  patch('reclaim.core.browser.emit')):
+                browser.interactive_login(page, 'accounts.google.com', lambda _: True, 'Google')
+            t.join(timeout=2)
+            self.assertEqual(caller_results, [True])
+            self.assertEqual(owner_calls, [worker_tid, worker_tid])
+        finally:
+            caller_done.set()
+            browser.clear_active_page()
+
     def test_login_wait_cancellation_and_controller_root_isolation(self):
         stop = threading.Event()
         events: list[ProgressEvent] = []

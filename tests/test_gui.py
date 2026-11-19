@@ -555,6 +555,17 @@ class TestGuiDiagnostics(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.window.provider_status['kimi'].value,
                          'Live check: logged in · 3 chats listed')
 
+    async def test_per_provider_live_checks_accumulate_in_provider_order(self):
+        await self.window.provider_login_buttons['chatgpt'].on_click(None)
+        await self.window.provider_login_buttons['googleaistudio'].on_click(None)
+        await self.window.provider_login_buttons['chatgpt'].on_click(None)
+        self.assertEqual([c.area for c in self.window._live_results],
+                         ['googleaistudio', 'chatgpt'])
+        await self.window._diagnostics()
+        text = self.dialog_text()
+        self.assertIn('Google AI Studio: logged in · 3 chats listed', text)
+        self.assertIn('ChatGPT: logged in · 3 chats listed', text)
+
     async def test_copy_diagnostics(self):
         await self.window._diagnostics()
         actions = self.dialog_actions()
@@ -641,7 +652,17 @@ class TestGuiLoginRequest(unittest.IsolatedAsyncioTestCase):
             await window.provider_review_buttons['chatgpt'].on_click(None)
             self.assertEqual(controller.calls[-1], (['chatgpt'], 'dry-run'))
 
-            # First-run setup wizard (chrome check + save + login)
+            # First-run setup wizard (chrome check + Playwright fallback + save + login)
+            with (patch.object(gui.browser, 'find_chrome', return_value=None),
+                  patch.object(gui.browser, 'find_playwright_chromium',
+                               return_value='/cache/ms-playwright/chromium-1248/chrome-linux64/chrome')):
+                window._setup_wizard()
+            fallback_dialog = page.dialog
+            assert fallback_dialog is not None
+            self.assertIn('Playwright Chromium detected:',
+                          fallback_dialog.content.content.controls[0].value)
+            page.pop_dialog()
+
             with patch.object(gui.browser, 'find_chrome', return_value='/usr/bin/chrome'):
                 window._setup_wizard()
             dialog = page.dialog
