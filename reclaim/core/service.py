@@ -211,6 +211,7 @@ class ArchiveController:
                     codes.append((name, self._run_one(name, parsed[name], mode, sink,
                                                       page, index, len(chosen))))
             finally:
+                browser.clear_active_page()
                 ctx.close()
         summary = RunSummary(tuple(codes))
         emit(sink, 'run_completed', current=len(chosen), total=len(chosen),

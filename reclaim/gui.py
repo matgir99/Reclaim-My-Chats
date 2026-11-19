@@ -108,6 +108,16 @@ def _review_items(events: list[ProgressEvent]) -> tuple[list[tuple[ProgressEvent
     return [(ev, ' + '.join(acts)) for ev, acts in by_key.values()], warnings
 
 
+def _browser_status_text(root: Path) -> str:
+    chrome = browser.find_chrome(root)
+    if chrome:
+        return f'Chrome detected: {chrome}'
+    bundled = browser.find_playwright_chromium()
+    if bundled:
+        return f'Playwright Chromium detected: {bundled}'
+    return 'No Chrome or Chromium found — install Chrome or enter its path below.'
+
+
 class ReclaimWindow:
     def __init__(self, page, root: Path | None = None,
                  controller: Controller | None = None):
@@ -679,22 +689,24 @@ class ReclaimWindow:
         queue: asyncio.Queue[ProgressEvent | None] = asyncio.Queue()
         loop = asyncio.get_running_loop()
 
-        def receive(event: ProgressEvent) -> None:
-            loop.call_soon_threadsafe(queue.put_nowait, event)
+        def enqueue(item: ProgressEvent | None) -> None:
+            if not loop.is_closed():
+                with contextlib.suppress(RuntimeError):
+                    loop.call_soon_threadsafe(queue.put_nowait, item)
 
         def execute() -> RunSummary:
             wait_ctx = browser.no_login_wait() if no_login_wait else contextlib.nullcontext()
             try:
                 with wait_ctx:
                     if mode == 'capture':
-                        return self.controller.capture(providers[0], url, receive)
+                        return self.controller.capture(providers[0], url, enqueue)
                     if only_ids is not None:
-                        return self.controller.run(providers, mode, receive, only_ids=only_ids)
-                    return self.controller.run(providers, mode, receive)
+                        return self.controller.run(providers, mode, enqueue, only_ids=only_ids)
+                    return self.controller.run(providers, mode, enqueue)
             finally:
                 # Use the same thread-safe channel as events so completion
                 # cannot overtake progress/error messages still in transit.
-                loop.call_soon_threadsafe(queue.put_nowait, None)
+                enqueue(None)
 
         task = asyncio.create_task(asyncio.to_thread(execute))
         while (event := await queue.get()) is not None:
@@ -758,13 +770,23 @@ class ReclaimWindow:
             ],
         ))
 
+    def _merge_live_results(self, fresh: list[doctor.Check]) -> list[doctor.Check]:
+        """Merge latest live check results with prior providers, keeping provider order."""
+        by_area = {check.area: check for check in self._live_results}
+        for check in fresh:
+            by_area[check.area] = check
+        ordered = [by_area.pop(name) for name in ALL_PROVIDERS if name in by_area]
+        ordered.extend(by_area.values())
+        return ordered
+
     def _show_result(self, result: RunSummary, mode: str) -> None:
         labels = ', '.join(f'{DISPLAY_NAMES[name]}: {"ok" if code == 0 else "failed"}'
                            for name, code in result.codes)
         action = {'update': 'Update', 'rebuild': 'Rebuild',
                   'dry-run': 'Dry run', 'check': 'Live check', 'capture': 'Capture'}[mode]
         if mode == 'check':
-            self._live_results = doctor.checks_from_events(self._run_events)
+            self._live_results = self._merge_live_results(
+                doctor.checks_from_events(self._run_events))
         stopped = self._stopping or any(e.kind == 'stopped' for e in self._run_events)
         if result.exit_code != 0:
             state = 'completed with errors'
@@ -1234,9 +1256,7 @@ class ReclaimWindow:
             self.settings_error = exc
             self._show_settings_problem(exc)
             return
-        chrome = browser.find_chrome(self.root)
-        chrome_msg = (f'Chrome detected: {chrome}' if chrome
-                      else 'No Chrome or Chromium found — install Chrome or enter its path below.')
+        chrome_msg = _browser_status_text(self.root)
         active = raw.get('providers') or self.enabled or ALL_PROVIDERS
         checks = {name: ft.Checkbox(label=DISPLAY_NAMES[name], value=name in active,
                                     key=f'setup-{name}')

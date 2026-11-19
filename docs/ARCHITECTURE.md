@@ -57,7 +57,11 @@ their tracebacks), and the window's `_event`. The log and the window's
 Details share one wording, `render.describe`. Anything else printed during a
 run, such as a library warning, still reaches the log. The Flet GUI receives
 events from a worker thread through an asyncio queue, then updates controls
-on its own event loop. Status is read from local manifests, chat files, and `.reclaim_checks.json`
+on its own event loop. Playwright objects belong to the worker thread that
+launched the browser, so the window never calls them directly: its *Bring
+browser forward* button only sets a flag (`browser.bring_browser_forward`),
+which the shared login waits (`wait_for_login`, `interactive_login`) act on
+from the worker thread within a fraction of a second. Status is read from local manifests, chat files, and `.reclaim_checks.json`
 (recorded when a provider check or update succeeds without modifying the database)
 on another worker thread. Startup checks for a newer GitHub release non-blockingly
 (`core/releases.py`), and never guesses whether a remote chat changed; dry run or
@@ -86,6 +90,9 @@ The desktop package is made with `flet pack` and PyInstaller. The native
 provider imports in `core/service.py` are explicit so PyInstaller can include
 them. Chrome or Chromium comes from the user's system, or from an existing
 Playwright browser installation; it is not bundled in the desktop download.
+`browser.find_chrome` looks for the system browser and
+`browser.find_playwright_chromium` for Playwright's cached one; `reclaim
+doctor` and the setup wizard report whichever a run would use.
 Flet's `flet test` uses a different Flutter host, so a separate packaged-app
 smoke test is part of release verification.
 

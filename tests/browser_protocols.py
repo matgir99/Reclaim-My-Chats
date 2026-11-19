@@ -12,12 +12,14 @@ from __future__ import annotations
 
 import json
 import unittest
+from pathlib import Path
 from typing import ClassVar
 from unittest.mock import patch
 from urllib.parse import urlsplit
 
 from playwright.sync_api import Browser, Playwright, Route, sync_playwright
 
+from reclaim.core import browser as reclaim_browser
 from reclaim.providers import chatgpt, claude, deepseek
 
 
@@ -169,6 +171,23 @@ class TestBrowserProtocols(unittest.TestCase):
         })""")
         self.assertEqual(deepseek.read_summaries(self.page),
                          [{'id': 'synthetic-cached', 'title': 'Synthetic cached title', 'updated_at': 100}])
+
+    def test_playwright_chromium_lookup_agrees_with_playwright(self):
+        """Diagnostics locate Playwright's Chromium without starting Node, and
+        Playwright's own answer is the truth. A mismatch after a Playwright
+        upgrade would bring back a false "No Chrome or Chromium was found" in
+        Diagnostics and the setup wizard. The path is computed, so the browser
+        need not be installed (CI installs only the headless shell)."""
+        revision = reclaim_browser._playwright_chromium_revision()
+        cache_dir = reclaim_browser._playwright_cache_dir()
+        self.assertIsNotNone(revision, 'browsers.json no longer lists a chromium revision')
+        self.assertIsNotNone(cache_dir, 'the Playwright browser cache folder was not located')
+        assert cache_dir is not None
+        install_dir = cache_dir / f'chromium-{revision}'
+        candidates = [install_dir.joinpath(*parts).resolve()
+                      for parts in reclaim_browser._PLAYWRIGHT_CHROMIUM_PATHS]
+        expected = Path(self.playwright.chromium.executable_path).resolve()
+        self.assertIn(expected, candidates)
 
 
 if __name__ == '__main__':
