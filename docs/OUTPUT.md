@@ -70,6 +70,14 @@ underscore. Files with the same name within one chat get `_1`, `_2`
 suffixes, compared without case; an attachment can never replace the chat's
 own Markdown, `chat.json` or `raw.json`.
 
+A project can have the same name as a chat. The project's chats are then
+saved in a folder inside that chat's folder. Moving a chat to `_Archived/` or
+`_Deleted/`, restoring it, and deleting it permanently from **Archived &
+deleted** only ever touch the files directly inside its own folder (its
+Markdown, `chat.json`, `raw.json` and media). Chats and folders you added
+inside it stay where they are. A move never overwrites a file: it stops and
+names the files in the way.
+
 The Markdown contains turns in order, preserving LaTeX text and local links
 to saved media. Provider thought content is omitted where the provider
 identifies it; a structural marker can indicate that omission. `raw.json`

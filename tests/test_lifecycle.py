@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 from reclaim import __main__ as cli
 from reclaim import gui
-from reclaim.core import autostart, browser, database, engine, lifecycle, status, tidy
+from reclaim.core import autostart, browser, database, engine, lifecycle, status, tidy, writer
 from reclaim.core.manifest import SyncState, save_chat
 from reclaim.core.model import Chat, Turn
 from reclaim.core.writer import read_chat_json, write_chat, write_raw
@@ -115,6 +115,107 @@ class TestLifecycleAndSyncRecords(unittest.TestCase):
         self.assertEqual(len(moved), 1)
         self.assertTrue((self.out / '_Deleted' / 'Chat 1').exists())
         self.assertTrue((self.out / 'Chat 2').exists())
+
+
+class TestNestedChatFolders(unittest.TestCase):
+    """A project named like a chat saves its chats inside that chat's folder.
+
+    Moving or permanently deleting the outer chat must never take the chats
+    inside it, or folders the owner added, along with it."""
+
+    def setUp(self):
+        self._temp = tempfile.TemporaryDirectory()
+        self.db = Path(self._temp.name) / 'chats'
+        database.init(self.db)
+        self.out = self.db / 'ChatGPT'
+        self.out.mkdir()
+        self.sync = SyncState(self.out, 'chatgpt')
+        save_chat(_chat('outer', 'Foo', 'outer answer'), self.out, self.sync, 'outer', '1')
+        save_chat(_chat('inner', 'Bar', 'inner answer', project='Foo'),
+                  self.out, self.sync, 'inner', '1')
+
+    def tearDown(self):
+        self._temp.cleanup()
+
+    def _entry(self, chat_id: str) -> lifecycle.StateChatEntry:
+        return next(e for e in lifecycle.list_state_chats(self.db) if e.chat_id == chat_id)
+
+    def test_the_layout_nests_the_project_chat_inside_the_chat_folder(self):
+        # The layout the other tests protect; the writer produces it today.
+        self.assertTrue((self.out / 'Foo' / 'chat.json').is_file())
+        self.assertTrue((self.out / 'Foo' / 'Bar' / 'chat.json').is_file())
+
+    def test_moving_a_chat_leaves_the_chats_inside_its_folder_in_place(self):
+        target = lifecycle.move_chat_folder(self.out, self.sync, 'outer', 'deleted', reason='gone')
+        self.assertEqual(target, self.out / '_Deleted' / 'Foo')
+        payload = read_chat_json(self.out / '_Deleted' / 'Foo')
+        assert payload is not None
+        self.assertEqual(payload['state'], 'deleted')
+        self.assertTrue((self.out / '_Deleted' / 'Foo' / 'Foo.md').is_file())
+        self.assertFalse((self.out / 'Foo' / 'chat.json').exists())
+        # The inner chat is untouched and its sync record still finds it.
+        self.assertTrue((self.out / 'Foo' / 'Bar' / 'chat.json').is_file())
+        record = SyncState(self.out, 'chatgpt').known('inner')
+        assert record is not None
+        self.assertEqual(record['state'], 'active')
+        self.assertTrue(writer.locate_recorded(self.out, record['md'], 'inner').is_file())
+        outer = SyncState(self.out, 'chatgpt').known('outer')
+        assert outer is not None
+        self.assertEqual(outer['state'], 'deleted')
+
+    def test_restoring_a_chat_merges_into_a_folder_that_holds_other_chats(self):
+        lifecycle.move_chat_folder(self.out, self.sync, 'outer', 'deleted', reason='gone')
+        sync = SyncState(self.out, 'chatgpt')
+        restored = lifecycle.move_chat_folder(self.out, sync, 'outer', 'active', reason='back')
+        self.assertEqual(restored, self.out / 'Foo')
+        self.assertTrue((self.out / 'Foo' / 'chat.json').is_file())
+        self.assertTrue((self.out / 'Foo' / 'Foo.md').is_file())
+        self.assertTrue((self.out / 'Foo' / 'Bar' / 'chat.json').is_file())
+        self.assertFalse((self.out / '_Deleted').exists())
+
+    def test_a_move_never_overwrites_a_file_that_is_already_there(self):
+        lifecycle.move_chat_folder(self.out, self.sync, 'outer', 'deleted', reason='gone')
+        (self.out / 'Foo' / 'Foo.md').write_text('the owner wrote this', encoding='utf-8')
+        sync = SyncState(self.out, 'chatgpt')
+        with self.assertRaisesRegex(FileExistsError, r'Foo\.md'):
+            lifecycle.move_chat_folder(self.out, sync, 'outer', 'active', reason='back')
+        self.assertEqual((self.out / 'Foo' / 'Foo.md').read_text(encoding='utf-8'),
+                         'the owner wrote this')
+        self.assertTrue((self.out / '_Deleted' / 'Foo' / 'chat.json').is_file())
+        self.assertTrue((self.out / '_Deleted' / 'Foo' / 'Foo.md').is_file())
+
+    def test_permanent_delete_keeps_the_chats_inside_the_folder(self):
+        # Older versions moved the whole folder, leaving both chats under _Deleted.
+        (self.out / '_Deleted').mkdir()
+        (self.out / 'Foo').rename(self.out / '_Deleted' / 'Foo')
+        self.assertEqual({e.chat_id for e in lifecycle.list_state_chats(self.db)},
+                         {'outer', 'inner'})
+        self.assertTrue(lifecycle.delete_state_chat_permanently(self.db, self._entry('outer')))
+        self.assertFalse((self.out / '_Deleted' / 'Foo' / 'chat.json').exists())
+        self.assertFalse((self.out / '_Deleted' / 'Foo' / 'Foo.md').exists())
+        self.assertTrue((self.out / '_Deleted' / 'Foo' / 'Bar' / 'chat.json').is_file())
+        self.assertTrue((self.out / '_Deleted' / 'Foo' / 'Bar' / 'Bar.md').is_file())
+        # Deleting the inner chat afterwards leaves nothing behind.
+        self.assertTrue(lifecycle.delete_state_chat_permanently(self.db, self._entry('inner')))
+        self.assertFalse((self.out / '_Deleted').exists())
+
+    def test_permanent_delete_keeps_folders_the_owner_added(self):
+        lifecycle.move_chat_folder(self.out, self.sync, 'inner', 'deleted', reason='gone')
+        notes = self.out / '_Deleted' / 'Foo' / 'Bar' / 'my notes'
+        notes.mkdir()
+        (notes / 'todo.txt').write_text('mine', encoding='utf-8')
+        self.assertTrue(lifecycle.delete_state_chat_permanently(self.db, self._entry('inner')))
+        self.assertEqual((notes / 'todo.txt').read_text(encoding='utf-8'), 'mine')
+        self.assertFalse((self.out / '_Deleted' / 'Foo' / 'Bar' / 'chat.json').exists())
+
+    def test_permanent_delete_of_a_plain_chat_removes_its_whole_folder(self):
+        lifecycle.move_chat_folder(self.out, self.sync, 'inner', 'archived', reason='archived')
+        folder = self.out / '_Archived' / 'Foo' / 'Bar'
+        (folder / 'photo.png').write_bytes(b'png')  # a saved attachment
+        self.assertTrue(lifecycle.delete_state_chat_permanently(self.db, self._entry('inner')))
+        self.assertFalse((self.out / '_Archived').exists())
+        self.assertTrue((self.out / 'Foo' / 'chat.json').is_file())  # the outer chat is untouched
+        self.assertIsNone(SyncState(self.out, 'chatgpt').known('inner'))
 
 
 class TestTidyDuplicates(unittest.TestCase):
