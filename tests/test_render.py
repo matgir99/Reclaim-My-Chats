@@ -32,6 +32,11 @@ class TestWording(unittest.TestCase):
         self.assertEqual(render.describe(event('error', message='timeout')), 'FAILED: timeout')
         self.assertEqual(render.describe(event('plan', message='would fetch: 1', detail='  - A')),
                          'would fetch: 1\n  - A')
+        self.assertEqual(render.describe(event('moved', message='filed 1 chat (1 as deleted)',
+                                               detail='  - A (deleted)')),
+                         'filed 1 chat (1 as deleted)\n  - A (deleted)')
+        self.assertEqual(render.describe(event('replaced', message='replaced 1 older copy', detail='  - A')),
+                         'replaced 1 older copy\n  - A')
         self.assertEqual(render.describe(event('downloaded', message='Done: 1 ok, 0 failed',
                                                detail='Manifest: m.json')),
                          'Done: 1 ok, 0 failed · Manifest: m.json')
@@ -65,8 +70,14 @@ class TestTerminal(unittest.TestCase):
                event('captured', provider='kimi', message='1 response recorded',
                      detail='/tmp/c.json'),
                event('stopped', provider='kimi', current=1, total=3,
-                     message='Stopped after 1 of 3 chats')]
+                     message='Stopped after 1 of 3 chats'),
+               event('moved', provider='kimi', total=1, message='filed 1 chat (1 as deleted)',
+                     detail='  - D (deleted)'),
+               event('replaced', provider='kimi', total=1, message='replaced 1 older copy',
+                     detail='  - E')]
         text = self.lines(render.TerminalRenderer(), *evs)
+        self.assertIn('filed 1 chat (1 as deleted)\n  - D (deleted)', text)
+        self.assertIn('replaced 1 older copy\n  - E', text)
         self.assertNotIn('kimi', text)          # no heading for a single provider
         self.assertNotIn('2t, 9 chars', text)   # per-chat lines need --log
         self.assertIn(f'[2/2] {"B" * 55} -> FAILED: HTTP 500', text)

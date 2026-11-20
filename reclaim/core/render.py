@@ -40,7 +40,7 @@ def _describe_outcome(event: ProgressEvent) -> str:
         return f'{title} — FAILED: {message}' if title else f'FAILED: {message}'
     if kind == 'warning':
         return _describe_titled(title, message, 'warning: ')
-    if kind == 'plan':
+    if kind in ('plan', 'moved', 'replaced'):
         return '\n'.join(part for part in (message, event.detail) if part)
     if kind in ('downloaded', 'captured'):
         return f'{message} · {event.detail}' if message and event.detail else (event.detail or message)
@@ -98,9 +98,14 @@ class TerminalRenderer:
         special = {'provider_started': self._heading, 'login_needed': self._banner,
                    'downloading': self._download_start, 'downloaded': self._download_end,
                    'error': self._failure, 'warning': self._warning, 'plan': self._plan,
+                   'moved': self._with_titles, 'replaced': self._with_titles,
                    'checked': lambda e: f'{e.provider}: {e.message}',
                    'captured': self._captured}.get(kind)
         return special(event) if special else event.message or None
+
+    @staticmethod
+    def _with_titles(event: ProgressEvent) -> str:
+        return '\n'.join(part for part in (event.message, event.detail) if part)
 
     @staticmethod
     def _captured(event: ProgressEvent) -> str:

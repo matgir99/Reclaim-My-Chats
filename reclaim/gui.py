@@ -779,6 +779,12 @@ class ReclaimWindow:
         ordered.extend(by_area.values())
         return ordered
 
+    def _changes_text(self) -> str:
+        """What the run filed away or replaced, as ' · ChatGPT: filed 3 chats (...)'."""
+        parts = [f'{DISPLAY_NAMES.get(e.provider, e.provider)}: {e.message}'
+                 for e in self._run_events if e.kind in ('moved', 'replaced') and e.total]
+        return ''.join(f' · {part}' for part in parts)
+
     def _show_result(self, result: RunSummary, mode: str) -> None:
         labels = ', '.join(f'{DISPLAY_NAMES[name]}: {"ok" if code == 0 else "failed"}'
                            for name, code in result.codes)
@@ -794,7 +800,7 @@ class ReclaimWindow:
             state = 'stopped'
         else:
             state = 'completed successfully'
-        summary = f'{action} {state} · {labels}'
+        summary = f'{action} {state} · {labels}{self._changes_text()}'
         if mode == 'capture' and self._captured_path is not None:
             summary += f' · {self._captured_path}'
         if self._warnings:
@@ -1144,6 +1150,10 @@ class ReclaimWindow:
             label='Start Reclaim My Chats when I log in',
             value=config.start_at_login(self.root),
             key='settings-start-at-login')
+        retire_check = ft.Checkbox(
+            label='Replace older copies of a chat automatically after an update',
+            value=config.retire_older_copies(self.root),
+            key='settings-retire-older-copies')
 
         async def choose_archive(_=None) -> None:
             await self._pick_folder(archive_field, 'Choose database folder')
@@ -1159,7 +1169,8 @@ class ReclaimWindow:
                 chrome_path=(chrome_field.value or '').strip(),
                 login_timeout=(timeout_field.value or '').strip(),
                 check_on_startup=bool(startup_check.value),
-                start_at_login=bool(autostart_check.value))
+                start_at_login=bool(autostart_check.value),
+                retire_older_copies=bool(retire_check.value))
 
         dialog = ft.AlertDialog(
             modal=True,
@@ -1181,6 +1192,7 @@ class ReclaimWindow:
                     timeout_field,
                     startup_check,
                     autostart_check,
+                    retire_check,
                 ], scroll=ft.ScrollMode.AUTO, height=430),
             ),
             actions=[ft.OutlinedButton('Cancel', on_click=lambda _: self.page.pop_dialog()),
@@ -1204,7 +1216,8 @@ class ReclaimWindow:
                              kimi_region: str = 'international', chrome_path: str = '',
                              login_timeout: str | int = config.DEFAULT_LOGIN_TIMEOUT,
                              check_on_startup: bool | None = None,
-                             start_at_login: bool | None = None) -> None:
+                             start_at_login: bool | None = None,
+                             retire_older_copies: bool | None = None) -> None:
         """Check the chosen database folder, then save. A new or empty folder
         becomes a database only after the user confirms."""
         if not enabled or not archive:
@@ -1231,7 +1244,8 @@ class ReclaimWindow:
                 config.save(self.root, providers=enabled, archive=choice, profile=profile,
                             kimi_region=kimi_region, chrome_path=chrome_path,
                             login_timeout=timeout, check_on_startup=check_on_startup,
-                            start_at_login=start_at_login)
+                            start_at_login=start_at_login,
+                            retire_older_copies=retire_older_copies)
                 if start_at_login is not None:
                     with contextlib.suppress(OSError):
                         autostart.set_autostart(start_at_login)

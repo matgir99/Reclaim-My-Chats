@@ -125,6 +125,35 @@ class TestGui(unittest.IsolatedAsyncioTestCase):
         await self.window._update_all()
         self.assertEqual(self.controller.calls[0], (gui.ALL_PROVIDERS, 'update'))
 
+    async def test_summary_and_notification_say_what_a_run_filed_and_replaced(self):
+        class _Filing(_Controller):
+            def run(self, providers, mode='update', sink=None, **kwargs):
+                summary = super().run(providers, mode, sink, **kwargs)
+                assert sink is not None
+                sink(ProgressEvent('moved', providers[0], total=3,
+                                   message='filed 3 chats (1 as archived, 2 as deleted)'))
+                sink(ProgressEvent('replaced', providers[0], total=2,
+                                   message='replaced 2 older copies of chats that were saved '
+                                           'in more than one folder'))
+                sink(ProgressEvent('moved', providers[0], total=0, message=''))  # nothing: not shown
+                return summary
+
+        self.window.controller = _Filing()
+        await self.window._update_all()
+        name = gui.DISPLAY_NAMES[gui.ALL_PROVIDERS[0]]
+        summary = self.window.summary.value
+        self.assertIn(f' · {name}: filed 3 chats (1 as archived, 2 as deleted)', summary)
+        self.assertIn(f' · {name}: replaced 2 older copies of chats', summary)
+        self.assertNotIn(f'{name}:  ·', summary)
+        self.assertIn('filed 3 chats', self.notify_mock.call_args.args[1])  # the notification says it too
+        details = self.window.log.value
+        self.assertIn('filed 3 chats (1 as archived, 2 as deleted)', details)
+
+    async def test_a_run_that_changed_nothing_keeps_the_plain_summary(self):
+        await self.window._update_all()
+        self.assertEqual(self.window._changes_text(), '')
+        self.assertNotIn('filed', self.window.summary.value)
+
     async def test_rebuild_requires_confirmation(self):
         self.window._confirm_rebuild()
         self.assertEqual(self.controller.calls, [])
@@ -145,10 +174,13 @@ class TestGui(unittest.IsolatedAsyncioTestCase):
         dialog.content.content.controls[12].value = '180'              # Login wait
         dialog.content.content.controls[13].value = True               # Check on startup
         dialog.content.content.controls[14].value = True               # Start at login
+        self.assertFalse(dialog.content.content.controls[15].value)    # Replace older copies: off
+        dialog.content.content.controls[15].value = True               # Replace older copies
         with patch.object(gui.autostart, 'set_autostart') as set_auto:
             await dialog.actions[1].on_click(None)
         set_auto.assert_called_once_with(True)
         saved = gui.config.load(self.root)
+        self.assertTrue(saved['retire_older_copies'])
         self.assertNotIn('googleaistudio', saved['providers'])
         self.assertEqual(saved['kimi_region'], 'mainland')
         self.assertEqual(saved['chrome_path'], '/usr/bin/chrome')

@@ -225,6 +225,13 @@ All six providers are implemented with synthetic tests; verify each live with
       copies after a preview. Covers the duplicates created before
       November 2026. **Window:** a *Tidy* action with a preview.
       **CLI:** `reclaim tidy`.
+- [x] Replace older copies of a chat automatically after an update of every
+      chat, with Tidy's safe rules (an older copy goes only when everything it
+      says is in the current copy; its media is moved over, never dropped), as
+      a setting that is off by default. A run also reports what it filed away
+      or replaced, in the window's summary and notification, the terminal and
+      the log, and records a replacement in the audit trail. **Window:** a
+      Settings option. **CLI:** `"retire_older_copies": true` in `.reclaim.json`.
 - [x] **Window:** the review dialog (per-provider lists with checkboxes,
       merge all, merge selected, skip); a review screen for `_Archived`
       and `_Deleted` to open, restore or permanently delete chats with

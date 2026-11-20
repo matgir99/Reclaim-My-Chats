@@ -22,7 +22,13 @@ commands, the window for the app, and the log file for both. The kinds:
   chat_started / chat_skipped / chat_completed
                                       one chat (current/total, title; message:
                                       the outcome; detail: timing)
-  warning                             something was not saved; the run goes on
+  moved                               a run filed chats under _Archived or
+                                      _Deleted, or restored them (total: how
+                                      many; message: the counts; detail: titles)
+  replaced                            a run replaced older copies of a chat by
+                                      the current copy (total: how many;
+                                      message: the count; detail: the titles)
+  warning                            something was not saved; the run goes on
   error                               a chat or a provider failed (detail: the
                                       traceback, for the log)
   checked                             the live check's result for a provider

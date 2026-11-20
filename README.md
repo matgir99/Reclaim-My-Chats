@@ -179,9 +179,11 @@ checkout or another data folder. In the GUI, **Settings** configures enabled pro
 optional login data folder (for reusing login sessions from a checkout without
 copying cookies), the Kimi region (`international` or `mainland`), an optional
 Chrome or Chromium executable path, the manual login wait time, whether to
-check for updates on startup without blocking on logins, and whether to start
-the app at system login (desktop notifications are sent when merges complete
-unless `RECLAIM_NO_NOTIFY=1` is set). Environment variables
+check for updates on startup without blocking on logins, whether to start
+the app at system login, and whether an update replaces older copies of a chat
+automatically (off by default; an older copy is removed only when everything it
+says is in the current copy). Desktop notifications are sent when merges
+complete unless `RECLAIM_NO_NOTIFY=1` is set. Environment variables
 (`RECLAIM_KIMI_URL`, `RECLAIM_CHROME_PATH`, `RECLAIM_LOGIN_TIMEOUT`)
 remain available as overrides. Do not open two Reclaim processes with the same
 profile simultaneously.
@@ -199,7 +201,8 @@ database folder for compatibility):
   "chrome_path": "/usr/bin/google-chrome",
   "login_timeout": 900,
   "check_on_startup": false,
-  "start_at_login": false
+  "start_at_login": false,
+  "retire_older_copies": false
 }
 ```
 

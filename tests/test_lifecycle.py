@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 from reclaim import __main__ as cli
 from reclaim import gui
-from reclaim.core import autostart, browser, database, engine, lifecycle, status, tidy, writer
+from reclaim.core import autostart, browser, config, database, engine, lifecycle, status, tidy, writer
 from reclaim.core.manifest import SyncState, save_chat
 from reclaim.core.model import Chat, Turn
 from reclaim.core.writer import read_chat_json, write_chat, write_raw
@@ -261,6 +261,188 @@ class TestTidyDuplicates(unittest.TestCase):
         self.assertFalse(old_safe['dir'].exists())
         self.assertTrue(old_uniq['dir'].exists())
         self.assertIn('Retired 1 stale duplicate folder', buf.getvalue())
+
+
+class _Listed(engine.Provider):
+    """A provider whose listing, archived listing and verdicts the test chooses."""
+    name = 'chatgpt'
+    folder = 'ChatGPT'
+    pace = 0.0
+
+    def __init__(self, refs, *, verdicts=None, archived=()):
+        self._refs = list(refs)
+        self._verdicts = verdicts or {}
+        self._archived = list(archived)
+
+    def open(self, page):
+        return {'page': page, 'listing_complete': True}
+
+    def listing(self, s):
+        return list(self._refs)
+
+    def archived_listing(self, s):
+        return list(self._archived)
+
+    def confirm_status(self, s, cid: str) -> str:
+        return self._verdicts.get(cid, 'unconfirmed')
+
+    def from_url(self, s, url):
+        return engine.ChatRef(id=url.rsplit('/', 1)[-1])
+
+    def fetch(self, s, ref):
+        return engine.Fetched(_chat(ref.id, ref.title, project=ref.project), raw={'id': ref.id})
+
+
+class _TempDatabase(unittest.TestCase):
+    def setUp(self):
+        self._temp = tempfile.TemporaryDirectory()
+        self.root = Path(self._temp.name)
+        self.db = self.root / 'chats'
+        database.init(self.db)
+        self.out = self.db / 'ChatGPT'
+        self.out.mkdir()
+        self.sync = SyncState(self.out, 'chatgpt')
+
+    def tearDown(self):
+        self._temp.cleanup()
+
+    def update(self, provider, *args: str, replace_older: bool = False):
+        """One run of `provider` with the given options and the setting on or off."""
+        config.save(self.root, providers=['chatgpt'], archive=None, retire_older_copies=replace_older)
+        events: list = []
+        parsed = engine.parse_args(provider, [*args, '-o', str(self.out)])
+        with config.use_root(self.root):
+            code = engine.run_session(provider, None, parsed, sink=events.append)
+        return code, events
+
+
+class TestReplaceOlderCopies(_TempDatabase):
+    """An update can replace older copies of a chat by the current one."""
+
+    def duplicate(self, cid='dup', *, old_text='same answer', new_text='same answer', raw=None):
+        """One chat saved in two folders; the sync record names the newer one."""
+        old = write_chat(_chat(cid, 'Old Name', old_text, project='OldProj'), self.out, updated_at='1')
+        new = write_chat(_chat(cid, 'New Name', new_text, project='NewProj'), self.out, updated_at='2')
+        if raw is not None:
+            write_raw(new['dir'], raw)
+        self.sync.mark(cid, '2', str(new['md']), title='New Name', project='NewProj')
+        return old['dir'], new['dir']
+
+    def listed(self, cid='dup'):
+        return _Listed([engine.ChatRef(cid, 'New Name', '2', project='NewProj')])
+
+    def test_an_older_copy_is_replaced_and_the_audit_log_says_so(self):
+        old, new = self.duplicate()
+        replaced, kept = tidy.retire_older_copies(self.out, 'chatgpt')
+        self.assertEqual(([c.stale_dir for c in replaced], kept), ([old], []))
+        self.assertFalse(old.exists())
+        self.assertTrue((new / 'chat.json').is_file())
+        log = [json.loads(line)
+               for line in (self.out / lifecycle.EVENTS_LOG).read_text().splitlines()]
+        self.assertEqual([(e['chat_id'], e['state'], e['from'], e['to']) for e in log],
+                         [('dup', 'replaced', 'OldProj/Old Name', 'NewProj/New Name')])
+
+    def test_an_older_copy_with_text_the_current_copy_lacks_is_kept(self):
+        old, _new = self.duplicate(old_text='only the older copy says this', new_text='another answer')
+        replaced, kept = tidy.retire_older_copies(self.out, 'chatgpt')
+        self.assertEqual((replaced, [c.stale_dir for c in kept]), ([], [old]))
+        self.assertTrue(old.is_dir())
+        self.assertFalse((self.out / lifecycle.EVENTS_LOG).exists())
+
+    def test_text_found_only_in_the_current_raw_data_is_not_missing(self):
+        # Older versions showed progress notes that the current version hides;
+        # the current copy still holds them in raw.json.
+        old, _new = self.duplicate(old_text='a progress note', new_text='the answer',
+                                   raw={'message': {'parts': ['a progress note']}})
+        replaced, kept = tidy.retire_older_copies(self.out, 'chatgpt')
+        self.assertEqual((len(replaced), kept), (1, []))
+        self.assertFalse(old.exists())
+
+    def test_copies_filed_as_archived_or_deleted_are_never_replaced(self):
+        current = write_chat(_chat('dup', 'Current', 'same answer'), self.out, updated_at='2')
+        self.sync.mark('dup', '2', str(current['md']), title='Current')
+        write_chat(_chat('dup', 'Filed', 'same answer'), self.out, updated_at='1', state='deleted')
+        self.assertEqual(tidy.retire_older_copies(self.out, 'chatgpt'), ([], []))
+        self.assertTrue((self.out / '_Deleted' / 'Filed').is_dir())
+
+    def test_an_update_replaces_older_copies_only_when_the_setting_is_on(self):
+        old, new = self.duplicate()
+        code, events = self.update(self.listed(), replace_older=False)
+        self.assertEqual(code, 0)
+        self.assertTrue(old.is_dir())
+        self.assertFalse([e for e in events if e.kind == 'replaced'])
+
+        code, events = self.update(self.listed(), replace_older=True)
+        self.assertEqual(code, 0)
+        self.assertFalse(old.exists())
+        self.assertTrue(new.is_dir())
+        (event,) = [e for e in events if e.kind == 'replaced']
+        self.assertEqual((event.provider, event.total), ('chatgpt', 1))
+        self.assertEqual(event.message, 'replaced 1 older copy of chats that were saved in more than one folder')
+        self.assertIn('New Name', event.detail)
+
+    def test_a_run_that_did_not_see_every_chat_never_replaces(self):
+        old, _new = self.duplicate()
+        for options in (['--only-id', 'dup'], ['--limit', '1'], ['--skip', '0', '--limit', '5'],
+                        ['New Name'], ['--dry-run']):
+            with self.subTest(options):
+                code, events = self.update(self.listed(), *options, replace_older=True)
+                self.assertIn(code, (0, 1))
+                self.assertTrue(old.is_dir())
+                self.assertFalse([e for e in events if e.kind == 'replaced'])
+
+    def test_older_copies_that_cannot_be_replaced_are_reported_not_hidden(self):
+        old, _new = self.duplicate(old_text='only the older copy says this', new_text='another answer')
+        _code, events = self.update(self.listed(), replace_older=True)
+        self.assertTrue(old.is_dir())
+        (warning,) = [e for e in events if e.kind == 'warning']
+        self.assertIn('kept 1 older copy', warning.message)
+        self.assertIn('Tidy duplicates', warning.message)
+
+
+class TestUpdateReport(_TempDatabase):
+    """A run says what it filed away or restored; the moves print nothing themselves."""
+
+    def test_a_run_reports_the_chats_it_filed(self):
+        for i in range(8):
+            save_chat(_chat(f'c{i}', f'Chat {i}', project='P'), self.out, self.sync, f'c{i}', '1')
+        provider = _Listed(
+            [engine.ChatRef(f'c{i}', f'Chat {i}', '1', project='P') for i in (6, 7)],
+            archived=[engine.ChatRef('c0', 'Chat 0', '1', state='archived')],
+            verdicts={f'c{i}': 'deleted' for i in range(1, 6)})
+        approve = [arg for i in range(6) for arg in ('--only-id', f'c{i}')]
+        code, events = self.update(provider, *approve)
+        self.assertEqual(code, 0)
+        (moved,) = [e for e in events if e.kind == 'moved']
+        self.assertEqual((moved.provider, moved.total), ('chatgpt', 6))
+        self.assertEqual(moved.message, 'filed 6 chats (1 as archived, 5 as deleted)')
+        self.assertIn('  - Chat 0 (archived)', moved.detail.splitlines())
+        self.assertIn('  - Chat 3 (deleted)', moved.detail.splitlines())
+        self.assertTrue((self.out / '_Deleted' / 'P' / 'Chat 3').is_dir())
+
+    def test_a_run_reports_a_chat_that_came_back(self):
+        save_chat(_chat('r1', 'Came back'), self.out, self.sync, 'r1', '1')
+        lifecycle.move_chat_folder(self.out, self.sync, 'r1', 'deleted', reason='gone')
+        provider = _Listed([engine.ChatRef('r1', 'Came back', '1')])
+        _code, events = self.update(provider)
+        (moved,) = [e for e in events if e.kind == 'moved']
+        self.assertEqual(moved.message, 'restored 1 chat')
+        self.assertIn('  - Came back (restored)', moved.detail.splitlines())
+
+    def test_a_run_that_moved_nothing_says_nothing(self):
+        save_chat(_chat('c1', 'Chat 1'), self.out, self.sync, 'c1', '1')
+        _code, events = self.update(_Listed([engine.ChatRef('c1', 'Chat 1', '1')]))
+        self.assertFalse([e for e in events if e.kind in ('moved', 'replaced')])
+
+    def test_apply_moves_hands_back_the_moves_it_carried_out(self):
+        for cid in ('a', 'b'):
+            save_chat(_chat(cid, f'Chat {cid}'), self.out, self.sync, cid, '1')
+        moves = [lifecycle.PlannedMove('a', 'Chat a', 'active', 'deleted', 'gone'),
+                 lifecycle.PlannedMove('missing', 'No record', 'active', 'deleted', 'gone')]
+        applied: list[lifecycle.PlannedMove] = []
+        lifecycle.apply_moves(self.out, self.sync, lifecycle.LifecyclePlan('chatgpt', moves=moves),
+                              applied=applied)
+        self.assertEqual([m.chat_id for m in applied], ['a'])
 
 
 @unittest.skipUnless(gui.ft is not None, 'Flet GUI extra is not installed')

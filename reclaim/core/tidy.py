@@ -8,7 +8,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import config, database, writer
+from . import config, database, lifecycle, writer
 from .manifest import SyncState
 from .service import offline_session
 
@@ -118,20 +118,51 @@ def find_duplicates(db: Path) -> list[DuplicateCopy]:
     return found
 
 
+def _retire_one(pdir: Path, copy: DuplicateCopy) -> bool:
+    """Remove one older copy through `writer.retire_previous`, and log it."""
+    keep_payload = writer.read_chat_json(copy.keep_dir) or {}
+    stale_payload = writer.read_chat_json(copy.stale_dir) or {}
+    keep_md = copy.keep_dir / str(keep_payload.get('markdown') or f'{copy.keep_dir.name}.md')
+    stale_md = copy.stale_dir / str(stale_payload.get('markdown') or f'{copy.stale_dir.name}.md')
+    old_rel = copy.stale_dir.resolve().relative_to(pdir.resolve())
+    new_rel = copy.keep_dir.resolve().relative_to(pdir.resolve())
+    if not writer.retire_previous(pdir, copy.chat_id, stale_md, keep_md):
+        return False
+    lifecycle.log_replaced(pdir, copy.chat_id, old_rel, new_rel)
+    return True
+
+
+def retire_older_copies(pdir: Path, provider: str, *, include_unique: bool = False
+                        ) -> tuple[list[DuplicateCopy], list[DuplicateCopy]]:
+    """Replace each older copy of a chat in `pdir` by the copy the program keeps.
+
+    The copy kept is the one the sync record names, that is, the one saved from
+    the provider's latest version of the chat. An older copy is removed only
+    when `has_unique_turns` is false (everything it says is in the kept copy)
+    and `writer.retire_previous` agrees it holds nothing but that chat's own
+    files; its media the kept copy lacks is moved over, never dropped. Copies
+    in `_Archived` and `_Deleted` are never touched.
+
+    Returns (replaced, kept): `kept` are older copies left in place because
+    they hold something the kept copy lacks."""
+    pdir = Path(pdir)
+    replaced: list[DuplicateCopy] = []
+    kept: list[DuplicateCopy] = []
+    for copy in _provider_duplicates(pdir, provider):
+        if (include_unique or not copy.has_unique_turns) and _retire_one(pdir, copy):
+            replaced.append(copy)
+        else:
+            kept.append(copy)
+    return replaced, kept
+
+
 def retire_duplicates(db: Path, *, include_unique: bool = False) -> list[DuplicateCopy]:
     """Retire stale duplicate folders; keeps copies with unique turns unless requested."""
     db = Path(db)
     retired: list[DuplicateCopy] = []
-    for copy in find_duplicates(db):
-        if copy.has_unique_turns and not include_unique:
-            continue
-        pdir = db / database.PROVIDER_DIRS[copy.provider]
-        keep_payload = writer.read_chat_json(copy.keep_dir) or {}
-        stale_payload = writer.read_chat_json(copy.stale_dir) or {}
-        keep_md = copy.keep_dir / str(keep_payload.get('markdown') or f'{copy.keep_dir.name}.md')
-        stale_md = copy.stale_dir / str(stale_payload.get('markdown') or f'{copy.stale_dir.name}.md')
-        if writer.retire_previous(pdir, copy.chat_id, stale_md, keep_md):
-            retired.append(copy)
+    for provider, dirname in database.PROVIDER_DIRS.items():
+        replaced, _kept = retire_older_copies(db / dirname, provider, include_unique=include_unique)
+        retired.extend(replaced)
     return retired
 
 
