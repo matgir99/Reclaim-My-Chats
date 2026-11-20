@@ -562,6 +562,64 @@ class TestUpdateReport(_TempDatabase):
         self.assertEqual([m.chat_id for m in applied], ['a'])
 
 
+class TestProjectChanges(_TempDatabase):
+    """A chat moved into or out of a project at the provider; its timestamp does not change."""
+
+    @staticmethod
+    def ref(project: str | None) -> engine.ChatRef:
+        return engine.ChatRef(id='c1', title='Alpha', updated_at='1', project=project)
+
+    def record(self) -> dict:
+        record = SyncState(self.out, 'chatgpt').known('c1')
+        assert record is not None
+        return record
+
+    def test_a_chat_moved_out_of_its_project_follows_on_the_next_update(self):
+        save_chat(_chat('c1', 'Alpha', project='Work'), self.out, self.sync, 'c1', '1')
+        code, _ = self.update(_Listed([self.ref(None)]))
+        self.assertEqual(code, 0)
+        self.assertTrue((self.out / 'Alpha' / 'Alpha.md').is_file())
+        self.assertFalse((self.out / 'Work').exists())
+        self.assertNotIn('project', self.record())
+        _, events = self.update(_Listed([self.ref(None)]))
+        self.assertFalse([e for e in events if e.kind == 'chat_completed'])
+
+    def test_a_chat_moved_into_a_project_follows_on_the_next_update(self):
+        save_chat(_chat('c1', 'Alpha'), self.out, self.sync, 'c1', '1')
+        self.update(_Listed([self.ref('Work')]))
+        self.assertTrue((self.out / 'Work' / 'Alpha' / 'Alpha.md').is_file())
+        self.assertFalse((self.out / 'Alpha').exists())
+        self.assertEqual(self.record()['project'], 'Work')
+
+    def _v3_3_4_record(self) -> Path:
+        # Records from v3.3.4 and earlier held neither a title nor a project.
+        save_chat(_chat('c1', 'Alpha', project='Work'), self.out, self.sync, 'c1', '1')
+        self.sync._state['c1'] = {'updated_at': '1', 'md': 'Work/Alpha/Alpha.md'}
+        return self.out / 'Work' / 'Alpha'
+
+    def test_an_older_record_is_compared_with_the_chats_own_chat_json(self):
+        self._v3_3_4_record()
+        self.assertEqual(self.sync.classify('c1', '1', title='Alpha', project='Work'), 'unchanged')
+        self.assertEqual(self.sync.classify('c1', '1', title='Alpha', project=None), 'changed')
+        self.assertEqual(self.sync.classify('c1', '1', title='Alpha', project='Other'), 'changed')
+
+    def test_an_older_record_whose_chat_json_names_no_project_causes_no_download(self):
+        folder = self._v3_3_4_record()
+        payload = read_chat_json(folder) or {}
+        del payload['project']
+        (folder / 'chat.json').write_text(json.dumps(payload), encoding='utf-8')
+        for project in (None, 'Work', 'Other'):
+            self.assertEqual(self.sync.classify('c1', '1', title='Alpha', project=project),
+                             'unchanged')
+
+    def test_a_chat_taken_from_a_url_keeps_its_project(self):
+        # A chat taken from a URL comes with no project, which is not "in no project".
+        save_chat(_chat('c1', 'Alpha', project='Work'), self.out, self.sync, 'c1', '1')
+        self.update(_Listed([]), '--url', 'https://example.test/c1')
+        self.assertTrue((self.out / 'Work' / 'Alpha' / 'Alpha.md').is_file())
+        self.assertEqual(self.record()['project'], 'Work')
+
+
 @unittest.skipUnless(gui.ft is not None, 'Flet GUI extra is not installed')
 class TestGuiTidy(unittest.IsolatedAsyncioTestCase):
     async def test_tidy_dialog_previews_and_retires_duplicates(self):
