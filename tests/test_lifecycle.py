@@ -476,10 +476,23 @@ class TestProjectChanges(_TempDatabase):
         self.assertFalse((self.out / 'Alpha').exists())
         self.assertEqual(self.record()['project'], 'Work')
 
-    def test_records_from_v3_3_4_cause_no_downloads(self):
-        # Those records held neither a title nor a project: the project is unknown.
+    def _v3_3_4_record(self) -> Path:
+        # Records from v3.3.4 and earlier held neither a title nor a project.
         save_chat(_chat('c1', 'Alpha', project='Work'), self.out, self.sync, 'c1', '1')
         self.sync._state['c1'] = {'updated_at': '1', 'md': 'Work/Alpha/Alpha.md'}
+        return self.out / 'Work' / 'Alpha'
+
+    def test_an_older_record_is_compared_with_the_chats_own_chat_json(self):
+        self._v3_3_4_record()
+        self.assertEqual(self.sync.classify('c1', '1', title='Alpha', project='Work'), 'unchanged')
+        self.assertEqual(self.sync.classify('c1', '1', title='Alpha', project=None), 'changed')
+        self.assertEqual(self.sync.classify('c1', '1', title='Alpha', project='Other'), 'changed')
+
+    def test_an_older_record_whose_chat_json_names_no_project_causes_no_download(self):
+        folder = self._v3_3_4_record()
+        payload = read_chat_json(folder) or {}
+        del payload['project']
+        (folder / 'chat.json').write_text(json.dumps(payload), encoding='utf-8')
         for project in (None, 'Work', 'Other'):
             self.assertEqual(self.sync.classify('c1', '1', title='Alpha', project=project),
                              'unchanged')

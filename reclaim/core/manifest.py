@@ -205,23 +205,29 @@ class SyncState:
         if not self.readonly and self._state.pop(chat_id, None) is not None:
             self.save()
 
-    @staticmethod
-    def _saved_project(prev: dict) -> tuple[bool, str | None]:
-        """Whether the record knows the chat's project, and that project.
+    def _saved_project(self, chat_id: str, prev: dict) -> tuple[bool, str | None]:
+        """Whether the chat's project is known, and that project.
 
         Records written since v3.3.5 always hold a title, and a project only
         when the chat is in one, so a title without a project means none.
-        Records from v3.3.4 and earlier hold neither: their project is unknown."""
-        return ('project' in prev or 'title' in prev), (prev.get('project') or None)
+        Records from v3.3.4 and earlier hold neither; the chat's own chat.json
+        then says which project it was saved in. Without one it is unknown."""
+        if 'project' in prev or 'title' in prev:
+            return True, prev.get('project') or None
+        md = prev.get('md')
+        payload = (read_chat_json(self._resolve(md, chat_id).parent)
+                   if isinstance(md, str) and md else None)
+        if payload is None or 'project' not in payload:
+            return False, None
+        return True, payload.get('project') or None
 
-    @classmethod
-    def _metadata_changed(cls, prev: dict, title: str | None,
+    def _metadata_changed(self, chat_id: str, prev: dict, title: str | None,
                           project: str | None | _Keep) -> bool:
         if title is not None and prev.get('title') and prev.get('title') != title:
             return True
         if project is KEEP:
             return False
-        known, saved = cls._saved_project(prev)
+        known, saved = self._saved_project(chat_id, prev)
         return known and saved != (project or None)
 
     def classify(self, chat_id: str, updated_at, *, title: str | None = None,
@@ -233,7 +239,7 @@ class SyncState:
         prev_state = prev.get('state') or 'active'
         if prev_state != state:
             return 'restored' if state == 'active' else 'archived'
-        if self._metadata_changed(prev, title, project):
+        if self._metadata_changed(chat_id, prev, title, project):
             return 'changed'
         if updated_at is None:
             return 'unchanged'
