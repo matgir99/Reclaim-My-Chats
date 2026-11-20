@@ -64,7 +64,12 @@ A chat folder contains its Markdown, `chat.json`, an optional
 media-stripped `raw.json`, and the chat's images and attachments. ChatGPT
 Projects add a project folder. A folder belongs to exactly one chat (the id
 in its `chat.json`): another chat with the same title gets `Title (2)`,
-`Title (3)` and so on. Names are valid on Windows, macOS and Linux: no
+`Title (3)` and so on. A folder without a readable `chat.json` is used only
+when it holds no files, or clearly holds an interrupted save or move of the
+same chat (its Markdown carries that chat's Source line, or it holds only files
+the chat's `chat.json` names); otherwise the chat gets the next free name and
+the folder is left as it is. Subfolders do not count, since they are other
+chats or your own folders and are never touched. Names are valid on Windows, macOS and Linux: no
 trailing dots or spaces, and names Windows reserves, such as `CON`, get an
 underscore. Files with the same name within one chat get `_1`, `_2`
 suffixes, compared without case; an attachment can never replace the chat's

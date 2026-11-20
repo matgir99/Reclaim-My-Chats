@@ -131,7 +131,10 @@ def move_chat_folder(out_dir: Path, sync: SyncState, chat_id: str, to_state: str
     if old_dir.resolve() != target_dir.resolve():
         target_dir.parent.mkdir(parents=True, exist_ok=True)
         if target_dir.exists():
-            target_dir = writer._chat_folder(target_dir.parent, target_dir.name, chat_id)
+            # A target holding only this chat's own files is an interrupted move: finish it.
+            own = writer.own_file_names(writer.read_chat_json(old_dir))
+            target_dir = writer._chat_folder(target_dir.parent, target_dir.name, chat_id,
+                                             own_names=own)
         _relocate_chat_folder(old_dir, target_dir)
         writer.prune_empty_parents(out_dir, old_dir.parent)
     _update_chat_json_state(target_dir, to_state)

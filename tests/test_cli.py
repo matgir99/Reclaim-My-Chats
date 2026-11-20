@@ -141,6 +141,63 @@ class TestWriterOverwrite(unittest.TestCase):
         self.assertIn('one again', (first / 'Foo.md').read_text())
         self.assertEqual(sorted(p.name for p in second.glob('*.md')), ['Foo (2).md'])
 
+    def _folder_without_chat_json(self, files: dict[str, bytes]) -> dict[str, bytes]:
+        folder = self.tmp / 'Foo'
+        folder.mkdir()
+        for name, data in files.items():
+            (folder / name).write_bytes(data)
+        return files
+
+    def _write_foo(self, cid: str = 'x1') -> None:
+        write_chat(Chat(id=cid, title='Foo', source_url=f'https://x/{cid}',
+                        turns=[Turn('user', 'new chat', images=[b'\x89PNG new'])],
+                        provider='test'), self.tmp)
+
+    def _assert_untouched(self, files: dict[str, bytes]) -> None:
+        folder = self.tmp / 'Foo'
+        self.assertEqual({p.name: p.read_bytes() for p in folder.iterdir()}, files)
+        self.assertEqual(json.loads((self.tmp / 'Foo (2)' / 'chat.json').read_text())['id'], 'x1')
+
+    def test_a_folder_without_chat_json_holding_another_chat_is_left_alone(self):
+        # Its chat.json was lost or damaged: nothing proves the folder is this chat's.
+        files = self._folder_without_chat_json({
+            'Foo.md': b'# Foo\n\n**Source:** https://x/other\n\nanother chat',
+            'image_1.png': b'\x89PNG other',
+        })
+        self._write_foo()
+        self._assert_untouched(files)
+
+    def test_a_folder_of_the_owners_own_files_is_left_alone(self):
+        files = self._folder_without_chat_json({'Foo.md': b'my notes', 'notes.txt': b'more'})
+        self._write_foo()
+        self._assert_untouched(files)
+
+    def test_an_interrupted_first_save_of_the_same_chat_is_finished_in_place(self):
+        # chat.json is written last: the Markdown, with this chat's Source line, is there.
+        self._folder_without_chat_json({
+            'Foo.md': b'# Foo\n\n**Source:** https://x/x1\n\npartial',
+            'image_1.png': b'\x89PNG new',
+        })
+        self._write_foo()
+        self.assertFalse((self.tmp / 'Foo (2)').exists())
+        self.assertEqual(json.loads((self.tmp / 'Foo' / 'chat.json').read_text())['id'], 'x1')
+        self.assertIn('new chat', (self.tmp / 'Foo' / 'Foo.md').read_text())
+
+    def test_a_folder_holding_only_other_chats_folders_is_used(self):
+        # A project named like the chat was saved first: its chats are subfolders.
+        write_chat(Chat(id='x2', title='Bar', project='Foo', source_url='https://x/x2',
+                        turns=[Turn('user', 'in the project')], provider='test'), self.tmp)
+        self._write_foo()
+        self.assertFalse((self.tmp / 'Foo (2)').exists())
+        self.assertEqual(json.loads((self.tmp / 'Foo' / 'chat.json').read_text())['id'], 'x1')
+        self.assertEqual(json.loads((self.tmp / 'Foo' / 'Bar' / 'chat.json').read_text())['id'], 'x2')
+
+    def test_an_empty_folder_is_used(self):
+        self._folder_without_chat_json({})
+        self._write_foo()
+        self.assertFalse((self.tmp / 'Foo (2)').exists())
+        self.assertEqual(json.loads((self.tmp / 'Foo' / 'chat.json').read_text())['id'], 'x1')
+
     def test_uploaded_markdown_and_reserved_names_are_kept(self):
         chat = Chat(id='x1', title='Plan', source_url='https://x/1', provider='test', turns=[
             Turn('user', 'files', attachments=[
