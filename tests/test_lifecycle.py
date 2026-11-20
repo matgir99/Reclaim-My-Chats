@@ -656,6 +656,29 @@ class TestAllProviderConfirmAndSubsetAndAutostart(unittest.TestCase):
             self.assertFalse((pdir / '_Deleted').exists())
             self.assertIsNone(SyncState(pdir, 'chatgpt').known('arc'))
 
+    def test_start_at_login_quotes_a_path_with_spaces_the_way_each_system_reads_it(self):
+        # The Windows installer's default location has spaces; Windows reads only
+        # double quotes, as in the installer's own entry ("{app}\ReclaimMyChats.exe").
+        exe = r'C:\Users\A User\AppData\Local\Programs\Reclaim My Chats\ReclaimMyChats.exe'
+        written: list[str] = []
+        with patch.object(autostart.sys, 'executable', exe), \
+                patch.object(autostart.sys, 'frozen', True, create=True):
+            autostart.set_autostart(True, system='win32',
+                                    win_setter=lambda on, cmd: written.append(cmd))
+        self.assertEqual(written, [f'"{exe}"'])
+        python = r'C:\Program Files\Python312\python.exe'
+        with patch.object(autostart.sys, 'executable', python):
+            self.assertEqual(autostart.default_command('win32'), f'"{python}" -m reclaim gui')
+
+        app = '/Applications/Reclaim My Chats.app/Contents/MacOS/ReclaimMyChats'
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(autostart.sys, 'executable', app), \
+                patch.object(autostart.sys, 'frozen', True, create=True):
+            plist = autostart.set_autostart(True, home=Path(tmp), system='darwin')
+            assert isinstance(plist, Path)
+            self.assertIn(f'<string>{app}</string>', plist.read_text(encoding='utf-8'))
+            self.assertEqual(autostart.default_command('linux'), f"'{app}'")
+
     def test_autostart_cross_platform_and_desktop_notification(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
