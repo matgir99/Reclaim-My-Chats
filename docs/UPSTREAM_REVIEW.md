@@ -213,9 +213,14 @@ the markers: `reclaim chatgpt --rebuild`, or Rebuild in the GUI.
 
 `scripts/upstream_watch.py` compares every project linked above with the
 revision last reviewed here, and the weekly workflow
-`.github/workflows/upstream-watch.yml` opens or updates one issue when a
-project has new commits. Record each review below with a link pinned to the
-reviewed revision; the latest link of a project counts.
+`.github/workflows/upstream-watch.yml` opens or updates one issue, "Upstream
+changes to review", when a project has new commits. Record each review below
+with a link pinned to the reviewed revision; the latest link of a project
+counts. The same issue lists runtime dependencies with a newer minor or major
+release than `uv.lock` installs: Flet at once, since it is upgraded by hand
+(see [GUI.md](GUI.md)), and Playwright only when Dependabot's monthly update
+is more than 45 days late. The workflow checks out `develop`, so reviews and
+updates count as soon as they are merged there.
 
 **9 November 2026.** The first run found three new commits in
 [chatgpt-exporter, 023cf2b](https://github.com/pionxzh/chatgpt-exporter/tree/023cf2b1ece2d41d9be326c026f7ae6ae10c9ae5).
