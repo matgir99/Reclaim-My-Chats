@@ -8,7 +8,10 @@
 # limited to APT_ATTEMPT_LIMIT (default 4 minutes; it normally takes about one).
 # A failed or stalled attempt is retried, up to APT_ATTEMPTS (default 3) in
 # all, and from the second attempt on apt uses archive.ubuntu.com instead of
-# the runner's own Azure mirror, which is the one seen stalling. Packages that
+# the runner's own Azure mirror, which is the one seen stalling. GitHub's
+# Ubuntu images point apt at a mirror list, /etc/apt/apt-mirrors.txt, with the
+# Azure mirror first, so that list is switched as well as the source files
+# (which name the Azure mirror directly only on older images). Packages that
 # finished downloading stay in apt's cache, so a retry continues where the last
 # attempt stopped. Installing then runs from that cache without a time limit,
 # so a limit never interrupts dpkg half-way.
@@ -21,7 +24,7 @@ attempts=${APT_ATTEMPTS:-3}
 limit=${APT_ATTEMPT_LIMIT:-4m}
 sudo=${SUDO-sudo}
 apt_get=${APT_GET:-apt-get}
-read -r -a sources <<< "${APT_SOURCES:-/etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources}"
+read -r -a sources <<< "${APT_SOURCES:-/etc/apt/apt-mirrors.txt /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources}"
 
 if [ $# -eq 0 ]; then
   echo "usage: $0 PACKAGE..." >&2
