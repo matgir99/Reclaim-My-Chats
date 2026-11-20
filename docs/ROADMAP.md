@@ -204,11 +204,11 @@ listings look broken.
 | Provider | Archive feature | Deletion signal | Grouping |
 |:--|:--|:--|:--|
 | ChatGPT | Yes: `is_archived` on conversations; archived listing to confirm | HTTP 404 on the conversation request (verified live) | Projects (supported) |
-| Claude | None known for chats | HTTP 404 on the conversation | Projects: mapped when present in conversation list metadata |
+| Claude | None known for chats | HTTP 404 on the conversation (verified live with a missing id) | Projects: mapped when present in conversation list metadata |
 | Gemini | None known | Absent from listing; read request (`hNvQHb`) to confirm | Gems/notebooks: mapped when present in listing metadata |
 | AI Studio | None | Absent from `ListPrompts` (`ResolveDriveResource` to confirm) | None |
-| DeepSeek | None | Absent from listing; history request to confirm | None (pinned only) |
-| Kimi | None known | Absent from listing; `GetChat` request to confirm | Projects: listing uses `project_id: ""`; mapped when present on chat metadata |
+| DeepSeek | None | Absent from listing; the history request answers HTTP 200 with "invalid chat session id" (verified live with a missing id) | None (pinned only) |
+| Kimi | None known | Absent from listing; `GetChat` answers HTTP 404 `not_found` (verified live with a missing id) | Projects: listing uses `project_id: ""`; mapped when present on chat metadata |
 
 All six providers are implemented with synthetic tests; verify each live with
 `reclaim doctor --live` before releasing.

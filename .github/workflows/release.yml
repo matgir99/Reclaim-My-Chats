@@ -100,9 +100,8 @@ jobs:
         run: python scripts/pack_desktop.py --version "${{ needs.prepare.outputs.version }}" --arch "${{ matrix.arch }}"
       - name: Install Linux desktop dependencies
         if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y xvfb $(flet --version --json | python -c "import json,sys; print(' '.join(json.load(sys.stdin)['linux_dependencies']))")
+        timeout-minutes: 16
+        run: bash scripts/apt_install.sh xvfb $(flet --version --json | python -c "import json,sys; print(' '.join(json.load(sys.stdin)['linux_dependencies']))")
       - name: Launch the extracted desktop application
         shell: bash
         run: |
@@ -153,7 +152,7 @@ jobs:
           python scripts/verify_desktop_artifacts.py --version "$VERSION" release-assets
           python scripts/write_checksums.py release-assets
       - name: Attest build provenance for release files
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: 'release-assets/*'
       - name: Check commit and create or reuse its tag
