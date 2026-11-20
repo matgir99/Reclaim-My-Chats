@@ -152,7 +152,7 @@ jobs:
           python scripts/verify_desktop_artifacts.py --version "$VERSION" release-assets
           python scripts/write_checksums.py release-assets
       - name: Attest build provenance for release files
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: 'release-assets/*'
       - name: Check commit and create or reuse its tag
