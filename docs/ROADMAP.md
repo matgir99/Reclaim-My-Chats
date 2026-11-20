@@ -260,9 +260,11 @@ expect on each system, and fixes reach users quickly.
       with a Start menu entry, an uninstaller and the start-at-login
       option.
 - [x] macOS: a `.dmg` with drag-to-Applications, plus an Intel build.
-- [x] PyPI releases, so the command line installs with `pipx install
-      reclaimmychats` (workflow step wired with `continue-on-error: true` until
-      PyPI Trusted Publishing is configured on `pypi.org`).
+- [x] The Python wheel and source distribution on every GitHub Release, so
+      the command line installs with `pipx install` of the wheel. A PyPI
+      upload step exists but is switched off (decided on 20 November 2026): it
+      runs only when the repository variable `PYPI_PUBLISH` is `true` and
+      Trusted Publishing is registered on `pypi.org` ([releasing](RELEASING.md)).
 - [x] Build-provenance attestations on release files.
 - [ ] Later, if users need it: code signing for Windows and macOS (paid).
 

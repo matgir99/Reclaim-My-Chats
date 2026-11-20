@@ -48,10 +48,12 @@ and development commands.
 ## Install and use the CLI
 
 The CLI requires Python 3.12 or newer and a Chrome or Chromium browser.
-Install from PyPI with `pipx`:
+It is not published on PyPI. Download `reclaimmychats-VERSION-py3-none-any.whl`
+from the [latest release](https://github.com/matgir99/Reclaim-My-Chats/releases/latest)
+and install it with `pipx`, replacing `VERSION` with the number in the file name:
 
 ```bash
-pipx install reclaimmychats
+pipx install ./reclaimmychats-VERSION-py3-none-any.whl
 reclaim --version
 reclaim status
 ```
