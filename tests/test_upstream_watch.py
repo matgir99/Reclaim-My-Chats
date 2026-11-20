@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import json
 import subprocess
 import unittest
@@ -77,10 +79,21 @@ class TestDependencyReleases(unittest.TestCase):
 
     def test_the_lock_installs_every_watched_package(self):
         locked = watch.locked_versions(watch.LOCK.read_text(encoding='utf-8'))
-        self.assertLessEqual(set(watch.WATCHED), set(locked))
+        self.assertTrue(all(len(set(locked.get(name, []))) == 1 for name in watch.WATCHED))
         self.assertNotIn('reclaimmychats', locked)  # its version comes from git tags
-        with self.assertRaisesRegex(ValueError, 'does not install flet'):
-            watch.releases_behind({'playwright': '1.65.2'}, TODAY)
+
+    def test_a_watched_package_missing_or_locked_twice_stops_the_watch(self):
+        with self.assertRaisesRegex(ValueError, 'installs flet nowhere'):
+            watch.releases_behind({'playwright': ['1.65.2']}, TODAY)
+        forked = {'flet': ['1.0.5', '1.1.2'], 'playwright': ['1.65.2', '1.65.2']}
+        with self.assertRaisesRegex(ValueError, 'installs flet 1.0.5 and 1.1.2'):
+            watch.releases_behind(forked, TODAY)
+
+    def test_a_package_locked_for_two_platforms_keeps_both_versions(self):
+        text = ('[[package]]\nname = "x"\nversion = "1.0"\n'
+                '[[package]]\nname = "x"\nversion = "2.0"\n'
+                '[[package]]\nname = "reclaimmychats"\nsource = { editable = "." }\n')
+        self.assertEqual(watch.locked_versions(text), {'x': ['1.0', '2.0']})
 
     def test_report_lists_releases_on_their_own(self):
         body = watch.report([], [{'package': 'flet', 'locked': '1.0.5', 'newest': '1.1.2',
@@ -118,6 +131,33 @@ class TestIssue(unittest.TestCase):
         result, calls = self.run_gh({})
         self.assertEqual(result, 'opened https://github.com/o/r/issues/12')
         self.assertEqual(calls[-1][:5], ['gh', 'issue', 'create', '--title', watch.TITLE])
+
+    def test_issues_under_either_title_close_when_nothing_is_left(self):
+        open_issues = {watch.TITLE: [{'number': 8, 'title': watch.TITLE}],
+                       watch.OLD_TITLE: [{'number': 7, 'title': watch.OLD_TITLE}]}
+        calls = []
+
+        def fake(args, **_kwargs):
+            calls.append(args)
+            title = args[args.index('--search') + 1].split('"')[1] if '--search' in args else ''
+            return subprocess.CompletedProcess(args, 0, json.dumps(open_issues.get(title, [])))
+
+        with mock.patch.object(watch.subprocess, 'run', side_effect=fake):
+            self.assertEqual(watch.close_issues('All clear.'), 'All clear. Closed #8, #7.')
+            open_issues.clear()
+            self.assertEqual(watch.close_issues('All clear.'), 'All clear.')
+        closes = [call[:4] for call in calls if call[:3] == ['gh', 'issue', 'close']]
+        self.assertEqual(closes, [['gh', 'issue', 'close', '8'], ['gh', 'issue', 'close', '7']])
+
+    def test_only_an_issue_run_closes_issues(self):
+        with mock.patch.object(watch, 'changes', return_value=[]), \
+                mock.patch.object(watch, 'releases_behind', return_value=[]), \
+                mock.patch.object(watch, 'close_issues', return_value='closed') as close, \
+                contextlib.redirect_stdout(io.StringIO()):
+            watch.main([])
+            close.assert_not_called()
+            watch.main(['--issue'])
+            close.assert_called_once()
 
 
 if __name__ == '__main__':

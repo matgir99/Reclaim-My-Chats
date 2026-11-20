@@ -14,7 +14,8 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-FLET_PIN = re.compile(r'(flet(?:-[a-z]+)?)(?:\[[^\]]*\])?==(\S+)')
+FLET = re.compile(r'(flet(?:-[a-z0-9]+)*)(?=$|[\[=<>!~;@])(?:\[[^\]]*\])?(.*)')
+EXACT = re.compile(r'==([0-9][\w.]*)')
 
 
 def _toml(path: Path) -> dict:
@@ -22,11 +23,15 @@ def _toml(path: Path) -> dict:
 
 
 def _flet_pins(requirements: list[str]) -> dict[str, str]:
+    """Exact versions of the Flet packages in `requirements`; any other form fails."""
     pins = {}
     for requirement in requirements:
-        match = FLET_PIN.fullmatch(requirement.replace(' ', ''))
+        match = FLET.fullmatch(requirement.replace(' ', ''))
         if match:
-            pins[match[1]] = match[2]
+            exact = EXACT.fullmatch(match[2])
+            if not exact:
+                raise AssertionError(f'pin Flet packages exactly (==): {requirement}')
+            pins[match[1]] = exact[1]
     return pins
 
 
@@ -40,9 +45,17 @@ class TestFletPins(unittest.TestCase):
 
     def test_the_lock_installs_the_pinned_flet(self):
         packages = _toml(ROOT / 'uv.lock')['package']
-        locked = {p['name']: p['version'] for p in packages if p['name'].startswith('flet')}
+        locked = [(p['name'], p['version']) for p in packages if p['name'].startswith('flet')]
         self.assertTrue(locked)
-        self.assertEqual(set(locked.values()), {self.app_version}, locked)
+        self.assertEqual({version for _, version in locked}, {self.app_version}, locked)
+
+    def test_a_flet_requirement_that_is_not_an_exact_pin_fails(self):
+        self.assertEqual(_flet_pins(['flet[test]==1.0.5', 'flet-desktop == 1.0.5',
+                                     'pyinstaller>=6', 'fletcher>=1']),
+                         {'flet': '1.0.5', 'flet-desktop': '1.0.5'})
+        for loose in ('flet>=1.0.5', 'flet-platform-assets~=1.0', 'flet', 'flet==1.0.*'):
+            with self.subTest(loose), self.assertRaisesRegex(AssertionError, 'exactly'):
+                _flet_pins([loose])
 
     def test_the_device_tests_use_the_app_flet_version(self):
         project = _toml(ROOT / 'flet_integration' / 'pyproject.toml')['project']

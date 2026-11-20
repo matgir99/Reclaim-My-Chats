@@ -219,8 +219,10 @@ with a link pinned to the reviewed revision; the latest link of a project
 counts. The same issue lists runtime dependencies with a newer minor or major
 release than `uv.lock` installs: Flet at once, since it is upgraded by hand
 (see [GUI.md](GUI.md)), and Playwright only when Dependabot's monthly update
-is more than 45 days late. The workflow checks out `develop`, so reviews and
-updates count as soon as they are merged there.
+is more than 45 days late. When nothing is left to review, the issue is closed
+with a note. Scheduled runs check out `develop`, so reviews and updates count
+as soon as they are merged there; a manual run uses the branch it is started
+on.
 
 **9 November 2026.** The first run found three new commits in
 [chatgpt-exporter, 023cf2b](https://github.com/pionxzh/chatgpt-exporter/tree/023cf2b1ece2d41d9be326c026f7ae6ae10c9ae5).

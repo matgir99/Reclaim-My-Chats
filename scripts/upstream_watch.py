@@ -80,10 +80,14 @@ def changes(pins: dict[str, str], token: str | None) -> list[dict]:
     return rows
 
 
-def locked_versions(text: str) -> dict[str, str]:
-    """Package versions that uv.lock installs (this project's own entry has none)."""
-    return {package['name']: package['version'] for package in tomllib.loads(text)['package']
-            if 'version' in package}
+def locked_versions(text: str) -> dict[str, list[str]]:
+    """Every version of each package that uv.lock installs. A package has more than
+    one when the resolution forks by platform; this project's own entry has none."""
+    versions: dict[str, list[str]] = {}
+    for package in tomllib.loads(text)['package']:
+        if 'version' in package:
+            versions.setdefault(package['name'], []).append(package['version'])
+    return versions
 
 
 def _final(version: str) -> tuple[int, int, int] | None:
@@ -127,14 +131,15 @@ def _pypi_releases(name: str) -> dict[str, list[dict]]:
         return json.load(response)['releases']
 
 
-def releases_behind(locked: dict[str, str], today: date) -> list[dict]:
+def releases_behind(locked: dict[str, list[str]], today: date) -> list[dict]:
     """Watched dependencies with a newer minor or major release than uv.lock installs."""
-    missing = sorted(set(WATCHED) - set(locked))
-    if missing:
-        raise ValueError(f'uv.lock does not install {", ".join(missing)}; update WATCHED')
     rows = []
     for name in WATCHED:
-        row = newer_release(name, locked[name], _pypi_releases(name), today)
+        versions = sorted(set(locked.get(name, [])))
+        if len(versions) != 1:
+            raise ValueError(f'uv.lock installs {name} {" and ".join(versions) or "nowhere"}; '
+                             'the watch needs exactly one version (update WATCHED)')
+        row = newer_release(name, versions[0], _pypi_releases(name), today)
         if row:
             rows.append(row)
     return rows
@@ -186,7 +191,7 @@ def _open_issues(title: str) -> list[dict]:
 
 
 def update_issue(body: str) -> str:
-    """Open the issue, or replace the title and body of the open one. Returns its URL."""
+    """Open the issue, or replace the title and body of the open one. Says which."""
     existing = _open_issues(TITLE) or _open_issues(OLD_TITLE)
     if existing:
         number = str(existing[0]['number'])
@@ -198,17 +203,29 @@ def update_issue(body: str) -> str:
     return f'opened {created}'
 
 
+def close_issues(note: str) -> str:
+    """Close the open issues, under either title, now that nothing is left to review."""
+    closed = []
+    for issue in _open_issues(TITLE) + _open_issues(OLD_TITLE):
+        subprocess.run(['gh', 'issue', 'close', str(issue['number']), '--comment', note],
+                       check=True, capture_output=True, text=True)
+        closed.append(f"#{issue['number']}")
+    return f'{note} Closed {", ".join(closed)}.' if closed else note
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or '').splitlines()[0])
     parser.add_argument('--issue', action='store_true',
-                        help='open or update the GitHub issue instead of printing')
+                        help='open or update the GitHub issue instead of printing, '
+                             'and close it when nothing is left to review')
     args = parser.parse_args(argv)
     pins = pinned(REVIEW.read_text(encoding='utf-8'))
     projects = changes(pins, os.environ.get('GH_TOKEN') or os.environ.get('GITHUB_TOKEN'))
     releases = releases_behind(locked_versions(LOCK.read_text(encoding='utf-8')), date.today())
     if not projects and not releases:
-        print(f'All {len(pins)} reference projects are unchanged since the last review, '
-              f'and {" and ".join(WATCHED)} have no newer release to review.')
+        note = (f'All {len(pins)} reference projects are unchanged since the last review, '
+                f'and no release of {" or ".join(WATCHED)} is due for review.')
+        print(close_issues(note) if args.issue else note)
         return 0
     body = report(projects, releases)
     print(update_issue(body) if args.issue else body)
