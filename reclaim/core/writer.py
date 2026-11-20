@@ -186,13 +186,17 @@ def _may_take(folder: Path, source_url: str | None, own_names: Collection[str]) 
     this chat (its Source line). Other files may belong to another chat or to
     the owner, so the folder is left alone. Subfolders do not count: they are
     other chats (a project named like a chat) or the owner's folders, and
-    saving or moving a chat never touches them."""
+    saving or moving a chat never touches them.
+
+    A file of that name occupies the name. Any other error (an unreadable
+    folder, or a parent that is not a folder) is raised: another name
+    would fail the same way."""
+    if folder.is_file():
+        return False
     try:
         files = [entry for entry in folder.iterdir() if not entry.is_dir()]
     except FileNotFoundError:
         return True
-    except OSError:  # a file of that name, or unreadable
-        return False
     if all(entry.name in own_names for entry in files):
         return True
     md = folder / f'{folder.name}.md'

@@ -192,6 +192,19 @@ class TestWriterOverwrite(unittest.TestCase):
         self.assertEqual(json.loads((self.tmp / 'Foo' / 'chat.json').read_text())['id'], 'x1')
         self.assertEqual(json.loads((self.tmp / 'Foo' / 'Bar' / 'chat.json').read_text())['id'], 'x2')
 
+    def test_a_file_with_the_folder_name_takes_the_name(self):
+        (self.tmp / 'Foo').write_bytes(b'the owner made this file')
+        self._write_foo()
+        self.assertEqual((self.tmp / 'Foo').read_bytes(), b'the owner made this file')
+        self.assertEqual(json.loads((self.tmp / 'Foo (2)' / 'chat.json').read_text())['id'], 'x1')
+
+    def test_a_project_path_that_is_a_file_stops_the_save_instead_of_looping(self):
+        # Another name cannot help when the parent is not a folder: report it.
+        (self.tmp / 'Work').write_bytes(b'a file where the project folder goes')
+        with self.assertRaises(NotADirectoryError):
+            write_chat(Chat(id='x1', title='Foo', project='Work', source_url='https://x/x1',
+                            turns=[Turn('user', 'q')], provider='test'), self.tmp)
+
     def test_an_empty_folder_is_used(self):
         self._folder_without_chat_json({})
         self._write_foo()
