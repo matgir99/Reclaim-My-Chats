@@ -71,7 +71,7 @@ check. Sort each update by how well the checks can judge it:
 |:--|:--|:--|
 | Automatic | Check and build tools: ruff, pyright, build, PyInstaller | Merge into `develop` when every check passes. |
 | Checked at release | Playwright, Flet patch releases, GitHub Actions, and the packages `uv.lock` pulls in for them | Merge into `develop` when every check passes. The live check before the next release covers provider logins, and the release run covers actions used only there. |
-| Deliberate | Flet minor or major versions, and any update whose release notes list breaking changes or that needs code changes | An upgrade PR that moves every pin together and checks the window, for the owner to approve. |
+| Deliberate | Flet minor or major versions, and any update whose release notes list breaking changes that affect this project, or that needs code changes | An upgrade PR that moves every pin together and checks the window, for the owner to approve. |
 
 Security updates come first, whatever their lane. Before merging, read the
 release notes, and make sure the checks ran on the update merged with the
