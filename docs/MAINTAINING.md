@@ -103,6 +103,8 @@ GUI device checks run on PRs, manual requests, and releases. Development
 pushes run the fast offline GUI tests without repeating the device build.
 
 Dependabot checks Python and Actions dependencies monthly and groups updates.
+It does not watch `flet_integration/`: that project's Flet pin follows the
+app's (see [GUI.md](GUI.md)).
 Security updates are separate and may arrive earlier, sometimes as PRs against `main` that must be retargeted to `develop`. CodeQL scans Python and
 workflow code. Read alerts in **Security and quality**; a completed scan does
 not mean there are no findings. Review bot PRs before merging them.
