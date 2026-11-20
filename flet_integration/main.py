@@ -16,7 +16,7 @@ from reclaim.gui import ReclaimWindow
 class FakeController:
     busy = False
 
-    def run(self, providers, mode='update', sink=None, *, log=False):
+    def run(self, providers, mode='update', sink=None, *, log=False, only_ids=None):
         assert sink is not None
         sink(ProgressEvent('run_started', total=len(providers), message=mode))
         codes = []
@@ -37,6 +37,23 @@ class FakeController:
         sink(ProgressEvent('run_completed', current=len(providers),
                            total=len(providers), message=f'exit {summary.exit_code}'))
         return summary
+
+    def capture(self, provider, url, sink=None, destination=None):
+        assert sink is not None
+        path = Path(destination or (Path(tempfile.gettempdir()) / f'{provider}-capture.json'))
+        sink(ProgressEvent('run_started', total=1, message='capture'))
+        sink(ProgressEvent('provider_started', provider, current=1, total=1))
+        sink(ProgressEvent('captured', provider, message='1 response recorded', detail=str(path)))
+        sink(ProgressEvent('provider_completed', provider, current=1, total=1, message='exit 0'))
+        summary = RunSummary(((provider, 0),))
+        sink(ProgressEvent('run_completed', current=1, total=1, message='exit 0'))
+        return summary
+
+    def stop(self) -> None:
+        pass
+
+    def bring_browser_forward(self) -> bool:
+        return True
 
 
 async def main(page: ft.Page) -> None:

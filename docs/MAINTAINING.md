@@ -10,10 +10,33 @@
 4. Wait for **Release** to finish. It chooses the next patch version and
    publishes the downloads. You do not need to edit a version or create a tag.
 5. Bring the release merge commit from `main` back into `develop` before the next release, so histories stay synchronized. Use a normal merge or a verified fast-forward as appropriate.
+6. Delete merged feature branches locally and on GitHub (or enable **Automatically delete head branches** in the repository's GitHub Settings under **General**).
 
 All changes, including contributor and Dependabot updates, must reach `main` through a PR from this repository's `develop` branch. Target `develop` for ordinary contributor and Dependabot version-update PRs. GitHub may open Dependabot security updates against the default branch (`main`) even when version updates target `develop`; retarget those security PRs to `develop` before merging them. Never bypass this policy for routine changes.
 Every merge to `main`, including a documentation change, currently triggers
 a release. A manual release button is an optional future preference.
+
+## Setting up another development computer
+
+1. Clone the repository and check out `develop`:
+   ```bash
+   git clone https://github.com/matgir99/Reclaim-My-Chats.git
+   cd Reclaim-My-Chats
+   git checkout develop
+   ```
+2. Install the pinned environment and the isolated Chromium test shell:
+   ```bash
+   uv sync --extra gui-test
+   .venv/bin/python -m playwright install --only-shell chromium
+   ```
+3. Connect untracked local state without committing it: `.reclaim.json`, `.playwright-profile/`, `chats/`, `logs/`, and `docs/status_and_plan/` are gitignored. Point `.reclaim.json`, `RECLAIM_HOME`, or a local `chats` symlink at your synced database folder, and either sign in to providers again or privately copy `.playwright-profile/` from your previous machine.
+4. Run the checks matching CI before branching or editing:
+   ```bash
+   .venv/bin/python -W error::ResourceWarning -m unittest discover -s tests -q
+   .venv/bin/python -m unittest discover -s tests -p browser_protocols.py
+   .venv/bin/ruff check reclaim tests scripts flet_integration
+   pyright --pythonpath .venv/bin/python reclaim tests scripts flet_integration
+   ```
 
 ## Branch rules
 
@@ -34,6 +57,33 @@ if you later transfer it to an organization. An administrator-role bypass
 would then cover every administrator. Give contributors write or maintain
 access unless they need to manage settings, and reconsider the broad bypass
 before granting administrator access. Administrators can change the rules.
+
+## Code health
+
+CI runs `ruff` and `pyright` (see the commands in the README). Besides
+errors and likely bugs, the ruff rules in `pyproject.toml` flag code that
+has a simpler form, and a function whose complexity passes 12 (each branch,
+loop and condition adds one). Split such a function into named steps rather
+than raising the limit; a provider parser usually splits into "what one row
+or turn looks like" and the loop over them.
+
+When changing a parser without a test fixture for every shape it accepts,
+compare the old and the new version on many generated inputs before
+committing; offline fixtures only cover the shapes already seen.
+
+A capture file (`core/capture.py`) is a real response with the chat's text
+replaced. To turn one into a test, put it in `tests/fixtures/` and read it
+with `capture.load(path)`: each `responses[i].text` is the body as the
+provider code reads it. Open the file before committing it: numbers, dates
+and field names are kept, so check that nothing private is left.
+
+Occasional checks, not part of CI:
+
+```bash
+uvx radon cc -s -n D reclaim                  # the most complex functions
+uvx vulture reclaim scripts --min-confidence 60   # unused code (framework hooks are false alarms)
+uvx pip-audit --path .venv/lib/python3.*/site-packages   # known vulnerabilities
+```
 
 ## Free automation and reports
 

@@ -1,4 +1,4 @@
-"""`reclaim status` — offline archive overview.
+"""`reclaim status` — offline database overview.
 
 Reads only local files: each provider directory's latest run manifest
 (.reclaim_manifest.json) and sync state (.last_sync_<provider>.json).
@@ -12,20 +12,12 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .config import archive_root
-from .manifest import SyncState
-
-REPO_ROOT = archive_root()
+from . import database
+from .config import archive_root, default_root
+from .manifest import SyncState, read_checks
 
 # (provider name, output dir name) in display order
-PROVIDER_DIRS = [
-    ('googleaistudio', 'Google AI Studio'),
-    ('deepseek', 'Deepseek Chat'),
-    ('kimi', 'Kimi Chat'),
-    ('chatgpt', 'ChatGPT'),
-    ('claude', 'Claude'),
-    ('googlegemini', 'Google Gemini'),
-]
+PROVIDER_DIRS = list(database.PROVIDER_DIRS.items())
 
 
 @dataclass
@@ -33,10 +25,13 @@ class ProviderStatus:
     provider: str
     dir: str
     present: bool = False          # the provider folder exists in the database
-    chats: int = 0                 # distinct chats (chat.json ids) in the database
+    chats: int = 0                 # distinct active chats (chat.json ids) in the database
+    archived_chats: int = 0        # distinct chats under _Archived
+    deleted_chats: int = 0         # distinct chats under _Deleted
     chat_folders: int = 0          # chat dirs with a chat.json on disk
     synced_chats: int = 0          # distinct chats in the sync record
     last_sync: str | None = None   # manifest 'started' timestamp
+    last_checked: str | None = None  # latest successful check or download timestamp
     duration_s: float | None = None
     last_run: dict[str, int] = field(default_factory=dict)
     last_error: str | None = None
@@ -57,6 +52,15 @@ def _count_chat_folders(pdir: Path) -> int:
     return sum(1 for p in pdir.rglob('chat.json') if p.is_file())
 
 
+def _bucket_state(payload: dict, rel_parts: tuple[str, ...]) -> str:
+    if '_Archived' in rel_parts:
+        return 'archived'
+    if '_Deleted' in rel_parts:
+        return 'deleted'
+    state = payload.get('state')
+    return state if state in ('archived', 'deleted') else 'active'
+
+
 def _archive_totals(pdir: Path) -> dict[str, int]:
     """Database totals from the chat.json files themselves.
 
@@ -66,12 +70,13 @@ def _archive_totals(pdir: Path) -> dict[str, int]:
     two folders (an older copy left by a rename) counts once.
     """
     images = docs = chars = 0
-    ids: set[str] = set()
+    buckets: dict[str, set[str]] = {'active': set(), 'archived': set(), 'deleted': set()}
     for cj in pdir.rglob('chat.json'):
         if not cj.is_file():
             continue
         payload = _read_json(cj)
-        ids.add(str(payload.get('id') or cj.parent))
+        cid = str(payload.get('id') or cj.parent)
+        buckets[_bucket_state(payload, cj.relative_to(pdir).parts)].add(cid)
         for turn in payload.get('turns') or []:
             if not isinstance(turn, dict):
                 continue
@@ -86,14 +91,21 @@ def _archive_totals(pdir: Path) -> dict[str, int]:
                     images += 1
                 else:
                     docs += 1
-    return {'images': images, 'docs': docs, 'chars': chars, 'chats': len(ids)}
+    return {'images': images, 'docs': docs, 'chars': chars, 'chats': len(buckets['active']),
+            'archived': len(buckets['archived']), 'deleted': len(buckets['deleted'])}
 
 
-def describe(provider: str, dirname: str, root: Path) -> ProviderStatus:
+def describe(provider: str, dirname: str, root: Path, *,
+             checks: dict[str, str] | None = None) -> ProviderStatus:
     """One provider's status from local files only."""
     pdir = Path(root) / dirname
+    recorded_checks = checks if checks is not None else {
+        **read_checks(Path(root).parent),
+        **read_checks(Path(root)),
+    }
+    recorded_check = recorded_checks.get(provider)
     info = ProviderStatus(provider=provider, dir=str(pdir),
-                          present=pdir.is_dir())
+                          present=pdir.is_dir(), last_checked=recorded_check)
     if not info.present:
         return info
     manifest = _read_json(pdir / '.reclaim_manifest.json')
@@ -114,6 +126,11 @@ def describe(provider: str, dirname: str, root: Path) -> ProviderStatus:
             'docs': totals.get('docs', 0),
             'chars': totals.get('chars', 0),
         }
+    attempt_ok = (attempt.get('started')
+                  if attempt.get('exit_code') == 0 and isinstance(attempt.get('started'), str)
+                  else None)
+    info.last_checked = max((ts for ts in (info.last_sync, attempt_ok, recorded_check) if ts),
+                            default=None)
     sync_path = pdir / f'.last_sync_{provider}.json'
     if not sync_path.exists():
         legacy = SyncState.LEGACY.get(provider)
@@ -129,25 +146,35 @@ def describe(provider: str, dirname: str, root: Path) -> ProviderStatus:
     info.archive_docs = totals['docs']
     info.archive_chars = totals['chars']
     info.chats = totals['chats']
+    info.archived_chats = totals['archived']
+    info.deleted_chats = totals['deleted']
     return info
 
 
-def scan(root: Path) -> list[ProviderStatus]:
+def scan(root: Path, *, checks_root: Path | None = None) -> list[ProviderStatus]:
     """Status for every provider, in fixed display order."""
-    return [describe(prov, d, root) for prov, d in PROVIDER_DIRS]
+    checks = {**read_checks(Path(root).parent), **read_checks(Path(root))}
+    if checks_root is not None:
+        checks.update(read_checks(checks_root))
+    return [describe(prov, d, root, checks=checks) for prov, d in PROVIDER_DIRS]
 
 
 def format_status(info: ProviderStatus) -> str:
     """Human-readable block for one provider."""
     if not info.present:
-        return f'{info.dir} — no chats saved yet'
+        base = f'{info.dir} — no chats saved yet'
+        return f'{base} (last checked: {info.last_checked})' if info.last_checked else base
     lines = [info.dir]
     lines.append(f'  chats in database: {info.chats} '
                  f'(sync records: {info.synced_chats})')
-    if info.chat_folders > info.chats:
-        extra = info.chat_folders - info.chats
+    total_chats = info.chats + info.archived_chats + info.deleted_chats
+    if info.chat_folders > total_chats:
+        extra = info.chat_folders - total_chats
         lines.append(f'  older copies: {extra} extra folder{"s" if extra != 1 else ""} '
                      'of chats saved elsewhere')
+    if info.archived_chats or info.deleted_chats:
+        lines.append(f'  states: {info.chats} active · {info.archived_chats} archived · '
+                     f'{info.deleted_chats} deleted')
     img = (f'{info.archive_images} image' if info.archive_images == 1
            else f'{info.archive_images} images')
     doc = (f'{info.archive_docs} doc' if info.archive_docs == 1
@@ -160,6 +187,8 @@ def format_status(info: ProviderStatus) -> str:
         lines.append(f'  last sync: {info.last_sync} · {info.duration_s}s')
     else:
         lines.append('  last run: (no manifest yet)')
+    if info.last_checked:
+        lines.append(f'  last checked: {info.last_checked}')
     if info.last_error:
         lines.append(f'  last attempt failed: {info.last_error}')
     return '\n'.join(lines)
@@ -167,12 +196,16 @@ def format_status(info: ProviderStatus) -> str:
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog='reclaim status')
-    ap.add_argument('-o', '--output-dir', default=str(REPO_ROOT),
-                    help='Scan root (default: repo/chats)')
+    ap.add_argument('-o', '--output-dir', default=None,
+                    help='database folder (default: the configured one)')
     args = ap.parse_args(argv)
-    root = Path(args.output_dir)
+    root = Path(args.output_dir) if args.output_dir else archive_root()
+    state = database.inspect(root)
+    if state.kind in ('missing', 'file', 'foreign'):
+        print(f'error: {state.message()}')
+        return 2
     print(f'ReclaimMyChats database status — scan root: {root}\n')
-    for info in scan(root):
+    for info in scan(root, checks_root=None if args.output_dir else default_root()):
         print(format_status(info))
         print()
     return 0

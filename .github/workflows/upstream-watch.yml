@@ -1,0 +1,26 @@
+name: Upstream watch
+
+# Weekly: report reference projects (docs/UPSTREAM_REVIEW.md) with commits
+# after the revision last reviewed, as one GitHub issue.
+on:
+  schedule:
+    - cron: '23 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  watch:
+    name: Check reference projects
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - run: python scripts/upstream_watch.py --issue
+        env:
+          GH_TOKEN: ${{ github.token }}

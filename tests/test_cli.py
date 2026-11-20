@@ -6,19 +6,22 @@ No browser required. Run: ./run_tests.sh
 
 import io
 import json
+import os
 import shutil
 import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from typing import ClassVar
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from reclaim.core import config, status
-from reclaim.core.manifest import (SyncState, plan_fetch, print_dry_run)
-from reclaim.core.model import Chat, Turn
-from reclaim.core.writer import write_chat
+from reclaim.core.manifest import (SyncState, plan_fetch, report_dry_run)
+from reclaim.core.model import Attachment, Chat, Turn
+from reclaim.core.writer import sanitize_filename, slugify, write_chat
 from reclaim.providers import (chatgpt, deepseek, googleaistudio, kimi)
 
 ALL_PROVIDERS = [googleaistudio, deepseek, kimi, chatgpt]
@@ -117,7 +120,7 @@ class TestWriterOverwrite(unittest.TestCase):
         d = self.tmp / 'Foo'
         d.mkdir(parents=True)
         (d / 'Foo.md').write_text('old')
-        (d / 'Foo_1.md').write_text('stale')
+        (d / 'Foo_1.md').write_text('# Foo\n\n**Source:** https://x\n\nstale copy of this chat')
         (d / 'chat.json').write_text(json.dumps({'id': 'x1', 'title': 'Foo'}))
         write_chat(Chat(id='x1', title='Foo', source_url='https://x',
                         turns=[Turn('user', 'fresh')], provider='test'),
@@ -125,18 +128,140 @@ class TestWriterOverwrite(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in d.glob('*.md')), ['Foo.md'])
         self.assertIn('fresh', (d / 'Foo.md').read_text())
 
-    def test_different_id_keeps_dedup(self):
-        write_chat(Chat(id='x1', title='Foo', source_url='https://x',
-                        turns=[Turn('user', 'one')], provider='test'),
-                   self.tmp)
-        write_chat(Chat(id='x2', title='Foo', source_url='https://x',
-                        turns=[Turn('user', 'two')], provider='test'),
-                   self.tmp)
-        d = self.tmp / 'Foo'
-        self.assertTrue((d / 'Foo.md').exists())
-        self.assertTrue((d / 'Foo_1.md').exists())
-        self.assertIn('one', (d / 'Foo.md').read_text())
-        self.assertIn('two', (d / 'Foo_1.md').read_text())
+    def test_different_chats_with_one_title_get_separate_folders(self):
+        # Older versions put both chats in one folder (Foo.md and Foo_1.md),
+        # and the second chat's chat.json replaced the first one's.
+        for cid, text in (('x1', 'one'), ('x2', 'two'), ('x1', 'one again')):
+            write_chat(Chat(id=cid, title='Foo', source_url=f'https://x/{cid}',
+                            turns=[Turn('user', text)], provider='test'), self.tmp)
+        first, second = self.tmp / 'Foo', self.tmp / 'Foo (2)'
+        self.assertEqual(json.loads((first / 'chat.json').read_text())['id'], 'x1')
+        self.assertEqual(json.loads((second / 'chat.json').read_text())['id'], 'x2')
+        self.assertEqual(sorted(p.name for p in first.glob('*.md')), ['Foo.md'])
+        self.assertIn('one again', (first / 'Foo.md').read_text())
+        self.assertEqual(sorted(p.name for p in second.glob('*.md')), ['Foo (2).md'])
+
+    def _folder_without_chat_json(self, files: dict[str, bytes]) -> dict[str, bytes]:
+        folder = self.tmp / 'Foo'
+        folder.mkdir()
+        for name, data in files.items():
+            (folder / name).write_bytes(data)
+        return files
+
+    def _write_foo(self, cid: str = 'x1') -> None:
+        write_chat(Chat(id=cid, title='Foo', source_url=f'https://x/{cid}',
+                        turns=[Turn('user', 'new chat', images=[b'\x89PNG new'])],
+                        provider='test'), self.tmp)
+
+    def _assert_untouched(self, files: dict[str, bytes]) -> None:
+        folder = self.tmp / 'Foo'
+        self.assertEqual({p.name: p.read_bytes() for p in folder.iterdir()}, files)
+        self.assertEqual(json.loads((self.tmp / 'Foo (2)' / 'chat.json').read_text())['id'], 'x1')
+
+    def test_a_folder_without_chat_json_holding_another_chat_is_left_alone(self):
+        # Its chat.json was lost or damaged: nothing proves the folder is this chat's.
+        files = self._folder_without_chat_json({
+            'Foo.md': b'# Foo\n\n**Source:** https://x/other\n\nanother chat',
+            'image_1.png': b'\x89PNG other',
+        })
+        self._write_foo()
+        self._assert_untouched(files)
+
+    def test_a_folder_of_the_owners_own_files_is_left_alone(self):
+        files = self._folder_without_chat_json({'Foo.md': b'my notes', 'notes.txt': b'more'})
+        self._write_foo()
+        self._assert_untouched(files)
+
+    def test_an_interrupted_first_save_of_the_same_chat_is_finished_in_place(self):
+        # chat.json is written last: the Markdown, with this chat's Source line, is there.
+        self._folder_without_chat_json({
+            'Foo.md': b'# Foo\n\n**Source:** https://x/x1\n\npartial',
+            'image_1.png': b'\x89PNG new',
+        })
+        self._write_foo()
+        self.assertFalse((self.tmp / 'Foo (2)').exists())
+        self.assertEqual(json.loads((self.tmp / 'Foo' / 'chat.json').read_text())['id'], 'x1')
+        self.assertIn('new chat', (self.tmp / 'Foo' / 'Foo.md').read_text())
+
+    def test_a_folder_holding_only_other_chats_folders_is_used(self):
+        # A project named like the chat was saved first: its chats are subfolders.
+        write_chat(Chat(id='x2', title='Bar', project='Foo', source_url='https://x/x2',
+                        turns=[Turn('user', 'in the project')], provider='test'), self.tmp)
+        self._write_foo()
+        self.assertFalse((self.tmp / 'Foo (2)').exists())
+        self.assertEqual(json.loads((self.tmp / 'Foo' / 'chat.json').read_text())['id'], 'x1')
+        self.assertEqual(json.loads((self.tmp / 'Foo' / 'Bar' / 'chat.json').read_text())['id'], 'x2')
+
+    def test_a_file_with_the_folder_name_takes_the_name(self):
+        (self.tmp / 'Foo').write_bytes(b'the owner made this file')
+        self._write_foo()
+        self.assertEqual((self.tmp / 'Foo').read_bytes(), b'the owner made this file')
+        self.assertEqual(json.loads((self.tmp / 'Foo (2)' / 'chat.json').read_text())['id'], 'x1')
+
+    def test_a_project_path_that_is_a_file_stops_the_save_instead_of_looping(self):
+        # Another name cannot help when the parent is not a folder: report it.
+        (self.tmp / 'Work').write_bytes(b'a file where the project folder goes')
+        with self.assertRaises(NotADirectoryError):
+            write_chat(Chat(id='x1', title='Foo', project='Work', source_url='https://x/x1',
+                            turns=[Turn('user', 'q')], provider='test'), self.tmp)
+
+    def test_an_empty_folder_is_used(self):
+        self._folder_without_chat_json({})
+        self._write_foo()
+        self.assertFalse((self.tmp / 'Foo (2)').exists())
+        self.assertEqual(json.loads((self.tmp / 'Foo' / 'chat.json').read_text())['id'], 'x1')
+
+    def test_uploaded_markdown_and_reserved_names_are_kept(self):
+        chat = Chat(id='x1', title='Plan', source_url='https://x/1', provider='test', turns=[
+            Turn('user', 'files', attachments=[
+                Attachment('PLAN.md', data=b'# uploaded plan'),
+                Attachment('chat.json', data=b'{"uploaded": true}'),
+                Attachment('Plan.md', data=b'# same name as the chat'),
+                Attachment('notes.txt.', data=b'trailing dot'),
+                Attachment('CON.txt', data=b'reserved on Windows')])])
+        write_chat(chat, self.tmp)
+        d = self.tmp / 'Plan'
+        names = sorted(p.name for p in d.iterdir())
+        self.assertEqual(names, ['PLAN_1.md', 'Plan.md', 'Plan_2.md', '_CON.txt', 'chat.json',
+                                 'chat_1.json', 'notes.txt'])
+        self.assertEqual(json.loads((d / 'chat.json').read_text())['id'], 'x1')
+        # A re-download whose attachment fails must not delete the saved copy.
+        # Two failed re-downloads in a row: the saved copies stay.
+        chat.turns[0].attachments = [Attachment('PLAN.md', data=None, source_url='https://x/f')]
+        write_chat(chat, self.tmp)
+        write_chat(chat, self.tmp)
+        self.assertEqual((d / 'PLAN_1.md').read_bytes(), b'# uploaded plan')
+        self.assertEqual((d / 'Plan_2.md').read_bytes(), b'# same name as the chat')
+        self.assertTrue((d / 'notes.txt').exists())
+
+    def test_failed_download_keeps_its_name_so_a_namesake_cannot_overwrite_it(self):
+        chat = Chat(id='x1', title='Notes', source_url='https://x/1', provider='test', turns=[
+            Turn('user', 'two uploads', attachments=[Attachment('notes.txt', data=b'first'),
+                                                     Attachment('notes.txt', data=b'second')])])
+        d = write_chat(chat, self.tmp)['dir']
+        self.assertEqual(((d / 'notes.txt').read_bytes(), (d / 'notes_1.txt').read_bytes()),
+                         (b'first', b'second'))
+        chat.turns[0].attachments[0] = Attachment('notes.txt', data=None, source_url='https://x/f')
+        write_chat(chat, self.tmp)
+        self.assertEqual((d / 'notes.txt').read_bytes(), b'first')
+        self.assertEqual((d / 'notes_1.txt').read_bytes(), b'second')
+
+    def test_names_valid_on_every_system(self):
+        self.assertEqual(slugify('CON'), 'CON_')
+        self.assertEqual(slugify('_Archived'), '_Archived_')
+        self.assertEqual(slugify('Plan v2. '), 'Plan v2')
+        self.assertEqual(sanitize_filename('report.pdf. '), 'report.pdf')
+        self.assertEqual(sanitize_filename('aux.log'), '_aux.log')
+
+    def test_chat_json_records_provider_timestamp_and_format(self):
+        stats = write_chat(Chat(id='x1', title='Foo', source_url='https://x/1', provider='test',
+                                turns=[Turn('user', 'hi')]), self.tmp, updated_at='2026-11-09T10:00:00Z')
+        payload = json.loads((stats['dir'] / 'chat.json').read_text())
+        self.assertEqual(payload['format'], 1)
+        self.assertEqual(payload['provider_updated_at'], '2026-11-09T10:00:00Z')
+        self.assertEqual(payload['state'], 'active')
+        self.assertEqual(payload['markdown'], 'Foo.md')
+        self.assertRegex(payload['saved_at'], r'^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$')
 
 
 class TestMovedChats(unittest.TestCase):
@@ -168,7 +293,8 @@ class TestMovedChats(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in new.iterdir()),
                          ['New title.md', 'chat.json', 'image_1.png', 'notes.pdf'])
         self.assertEqual(sync.known('x1'), {'updated_at': 1,
-                                            'md': 'Research/New title/New title.md'})
+                                            'md': 'Research/New title/New title.md',
+                                            'state': 'active'})
         # Renaming the project removes the emptied project folder as well.
         newest = self.save(sync, 'New title', project='Research 2026')
         self.assertFalse((self.out / 'Research').exists())
@@ -207,7 +333,8 @@ class TestMovedChats(unittest.TestCase):
         # A ChatGPT project called "ChatGPT" saves to ChatGPT/ChatGPT/<chat>.
         sync = SyncState(self.out, 'chatgpt')
         old = self.save(sync, 'Old title', project='ChatGPT')
-        self.assertEqual(sync.known('x1'), {'updated_at': 1, 'md': 'ChatGPT/Old title/Old title.md'})
+        self.assertEqual(sync.known('x1'), {'updated_at': 1, 'md': 'ChatGPT/Old title/Old title.md',
+                                            'state': 'active'})
         self.save(sync, 'New title', project='ChatGPT')
         self.assertFalse(old.exists())
         sync._state['x1']['md'] = '/old/place/ChatGPT/ChatGPT/New title/New title.md'
@@ -272,10 +399,11 @@ class TestSyncState(unittest.TestCase):
         (self.tmp / '.reclaim.json').write_text(
             json.dumps({'archive': '/abs/archive'}), encoding='utf-8')
         self.assertEqual(config.archive_root(self.tmp), Path('/abs/archive'))
-        # invalid/missing key -> default
+        # a value that is not a path stops instead of silently using the default
         (self.tmp / '.reclaim.json').write_text(
             json.dumps({'archive': 42}), encoding='utf-8')
-        self.assertEqual(config.archive_root(self.tmp), self.tmp / 'chats')
+        with self.assertRaisesRegex(config.SettingsError, '"archive"'):
+            config.archive_root(self.tmp)
 
     def test_classify_and_is_unchanged(self):
         s = SyncState(self.tmp, 'kimi')
@@ -306,7 +434,7 @@ class TestDryRun(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_update_mode_counts(self):
-        s = SyncState(self.tmp, 'kimi')
+        s = SyncState(self.tmp, 'kimi', migrate=False)
         s.mark('a', 1, 'md')   # unchanged
         s.mark('b', 1, 'md')   # changed
         plan = plan_fetch(self.chats, self.updated_map, s, skip_unchanged=True)
@@ -318,7 +446,7 @@ class TestDryRun(unittest.TestCase):
         self.assertEqual(plan['titles'], ['Beta', 'Gamma', 'Delta'])
 
     def test_fresh_mode_fetches_all(self):
-        s = SyncState(self.tmp, 'kimi')
+        s = SyncState(self.tmp, 'kimi', migrate=False)
         s.mark('a', 1, 'md')
         s.mark('b', 1, 'md')
         s.mark('c', 3, 'md')
@@ -328,13 +456,13 @@ class TestDryRun(unittest.TestCase):
         self.assertEqual(plan['titles'],
                          ['Alpha', 'Beta', 'Gamma', 'Delta'])
 
-    def test_print_dry_run_default_counts_and_titles(self):
-        s = SyncState(self.tmp, 'kimi')
+    def test_report_dry_run_default_counts_and_titles(self):
+        s = SyncState(self.tmp, 'kimi', migrate=False)
         s.mark('a', 1, 'md')   # unchanged
         s.mark('b', 1, 'md')   # changed
         buf = io.StringIO()
         with redirect_stdout(buf):
-            code = print_dry_run(self.chats, self.updated_map, s,
+            code = report_dry_run(self.chats, self.updated_map, s,
                                  skip_unchanged=True)
         self.assertEqual(code, 0)
         out = buf.getvalue()
@@ -349,35 +477,35 @@ class TestDryRun(unittest.TestCase):
         # nothing written to disk
         self.assertEqual(list(self.tmp.iterdir()), [])
 
-    def test_print_dry_run_default_nothing_to_fetch(self):
-        s = SyncState(self.tmp, 'kimi')
+    def test_report_dry_run_default_nothing_to_fetch(self):
+        s = SyncState(self.tmp, 'kimi', migrate=False)
         for c in self.chats:
             s.mark(c['id'], c['updated_at'], 'md')
         buf = io.StringIO()
         with redirect_stdout(buf):
-            print_dry_run(self.chats, self.updated_map, s,
+            report_dry_run(self.chats, self.updated_map, s,
                           skip_unchanged=True)
         self.assertIn('would fetch: 0 (0 new, 0 changed) · '
                       'would skip: 4 unchanged', buf.getvalue())
         self.assertIn('(nothing to fetch)', buf.getvalue())
 
-    def test_print_dry_run_fresh(self):
-        s = SyncState(self.tmp, 'kimi')
+    def test_report_dry_run_fresh(self):
+        s = SyncState(self.tmp, 'kimi', migrate=False)
         buf = io.StringIO()
         with redirect_stdout(buf):
-            print_dry_run(self.chats, self.updated_map, s,
+            report_dry_run(self.chats, self.updated_map, s,
                           skip_unchanged=False)
         out = buf.getvalue()
         self.assertIn('would fetch: 4 (fresh) · would skip: 0', out)
         self.assertIn('  - Alpha', out)
 
-    def test_print_dry_run_log_full_lines(self):
-        s = SyncState(self.tmp, 'kimi')
+    def test_report_dry_run_log_full_lines(self):
+        s = SyncState(self.tmp, 'kimi', migrate=False)
         s.mark('a', 1, 'md')   # unchanged
         s.mark('b', 1, 'md')   # changed
         buf = io.StringIO()
         with redirect_stdout(buf):
-            code = print_dry_run(self.chats, self.updated_map, s,
+            code = report_dry_run(self.chats, self.updated_map, s,
                                  skip_unchanged=True, log=True)
         self.assertEqual(code, 0)
         out = buf.getvalue()
@@ -501,7 +629,7 @@ class TestStatus(unittest.TestCase):
 class TestConfig(unittest.TestCase):
     """core/config.py — .reclaim.json provider selection (offline)."""
 
-    ALL = ['googleaistudio', 'deepseek', 'kimi', 'chatgpt']
+    ALL: ClassVar[list[str]] = ['googleaistudio', 'deepseek', 'kimi', 'chatgpt']
 
     def setUp(self):
         self.root = Path(tempfile.mkdtemp())
@@ -535,18 +663,120 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(chosen, ['chatgpt'])
         self.assertEqual(unknown, ['gemini'])
 
-    def test_invalid_json_runs_everything(self):
+    def test_invalid_json_stops_instead_of_running_everything(self):
+        # Falling back to defaults would silently enable every provider and
+        # use the default database instead of the configured one.
         from reclaim.core import config
         self._write('{not json')
-        chosen, skipped, _ = config.selected_providers(self.root, self.ALL)
+        with self.assertRaisesRegex(config.SettingsError, 'not valid JSON .*line 1'):
+            config.selected_providers(self.root, self.ALL)
+        with self.assertRaises(config.SettingsError):
+            config.archive_root(self.root)
+        backup = config.reset(self.root)
+        assert backup is not None
+        self.assertEqual(backup.read_text(), '{not json')
+        chosen, _, _ = config.selected_providers(self.root, self.ALL)
         self.assertEqual(chosen, self.ALL)
-        self.assertEqual(skipped, [])
+
+    def test_invalid_values_and_newer_settings_stop(self):
+        from reclaim.core import config
+        for text, reason in (('{"providers": "chatgpt"}', 'providers'),
+                             ('{"profile": 7}', 'profile'),
+                             ('{"chrome_path": 7}', 'chrome_path'),
+                             ('{"kimi_region": "mars"}', 'kimi_region'),
+                             ('{"login_timeout": 5}', 'login_timeout'),
+                             ('{"retire_older_copies": "yes"}', 'retire_older_copies'),
+                             ('["chatgpt"]', 'JSON object'),
+                             ('{"version": 99}', 'newer version')):
+            self._write(text)
+            with self.assertRaisesRegex(config.SettingsError, reason):
+                config.load(self.root)
+
+    def test_replacing_older_copies_is_off_until_chosen_and_stored_only_when_on(self):
+        from reclaim.core import config
+        saved = self.root / '.reclaim.json'
+        self.assertFalse(config.retire_older_copies(self.root))
+        config.save(self.root, providers=['chatgpt'], archive=None, retire_older_copies=True)
+        self.assertTrue(config.retire_older_copies(self.root))
+        self.assertIs(json.loads(saved.read_text())['retire_older_copies'], True)
+        # Saving other settings keeps the choice; turning it off removes the key.
+        config.save(self.root, providers=['chatgpt'], archive=None, kimi_region='mainland')
+        self.assertTrue(config.retire_older_copies(self.root))
+        config.save(self.root, providers=['chatgpt'], archive=None, retire_older_copies=False)
+        self.assertFalse(config.retire_older_copies(self.root))
+        self.assertNotIn('retire_older_copies', json.loads(saved.read_text()))
 
     def test_empty_list_runs_everything(self):
         from reclaim.core import config
         self._write('{"providers": []}')
         chosen, _, _ = config.selected_providers(self.root, self.ALL)
         self.assertEqual(chosen, self.ALL)
+
+    def test_v1_migration_and_runtime_settings_with_env_overrides(self):
+        from reclaim.core import browser, config
+        from reclaim.providers import kimi
+        self._write(json.dumps({
+            'version': 1,
+            'providers': ['kimi'],
+            'kimi_url': 'https://www.kimi.com',
+        }))
+        loaded = config.load(self.root)
+        self.assertEqual(loaded['version'], config.SETTINGS_VERSION)
+        self.assertEqual(loaded['kimi_region'], 'mainland')
+        self.assertNotIn('kimi_url', loaded)
+
+        config.save(self.root, providers=['kimi'], archive=None,
+                    kimi_region='mainland', chrome_path='/opt/chrome/chrome',
+                    login_timeout=120)
+        with patch.dict(os.environ, {'RECLAIM_HOME': str(self.root)}, clear=False):
+            os.environ.pop('RECLAIM_KIMI_URL', None)
+            os.environ.pop('RECLAIM_CHROME_PATH', None)
+            os.environ.pop('RECLAIM_LOGIN_TIMEOUT', None)
+            self.assertEqual(config.kimi_base_url(self.root), 'https://www.kimi.com')
+            self.assertEqual(kimi.base_url(), 'https://www.kimi.com')
+            self.assertEqual(browser.find_chrome(self.root), '/opt/chrome/chrome')
+            self.assertEqual(browser.login_timeout(self.root), 120)
+            with patch.dict(os.environ, {
+                'RECLAIM_KIMI_URL': 'https://custom.kimi.example/',
+                'RECLAIM_CHROME_PATH': '/env/chromium',
+                'RECLAIM_LOGIN_TIMEOUT': '450',
+            }):
+                self.assertEqual(config.kimi_base_url(self.root), 'https://custom.kimi.example')
+                self.assertEqual(kimi.base_url(), 'https://custom.kimi.example')
+                self.assertEqual(browser.find_chrome(self.root), '/env/chromium')
+                self.assertEqual(browser.login_timeout(self.root), 450)
+
+
+class TestReleasesAndChecks(unittest.TestCase):
+    def test_version_parsing_and_update_notice(self):
+        from reclaim.core import releases
+        self.assertEqual(releases.parse_version('v3.3.4'), (3, 3, 4))
+        self.assertIsNone(releases.parse_version('dev'))
+        self.assertTrue(releases.is_newer('v3.4.0', '3.3.4'))
+        self.assertFalse(releases.is_newer('v3.3.4', '3.3.4'))
+        info = releases.check_for_update(
+            current='3.3.4',
+            fetcher=lambda _url: {'tag_name': 'v3.4.0',
+                                  'html_url': 'https://github.com/matgir99/Reclaim-My-Chats/releases/tag/v3.4.0'})
+        assert info is not None
+        self.assertEqual(info.version, '3.4.0')
+        self.assertIsNone(releases.check_for_update(current='dev', fetcher=lambda _u: {}))
+        self.assertIsNone(releases.check_for_update(
+            current='3.3.4',
+            fetcher=lambda _url: (_ for _ in ()).throw(OSError('offline'))))
+
+    def test_status_reports_last_checked_separately_from_last_sync(self):
+        from reclaim.core import manifest, status
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db = root / 'chats'
+            db.mkdir()
+            manifest.record_check(root, 'chatgpt', started=1700000000.0)
+            infos = status.scan(db, checks_root=root)
+            chatgpt = next(i for i in infos if i.provider == 'chatgpt')
+            self.assertIsNone(chatgpt.last_sync)
+            self.assertIsNotNone(chatgpt.last_checked)
+            self.assertIn('last checked:', status.format_status(chatgpt))
 
 
 class TestDispatch(unittest.TestCase):

@@ -1,9 +1,15 @@
 # Releasing
 
 1. Check that `develop` passes CI and the Flet GUI tests.
-2. Open a pull request from `develop` to `main`.
-3. Merge it after the required checks pass.
-4. The Release workflow builds and checks all packages, tags the commit, and
+2. Run the live check from a `develop` checkout with logged-in providers:
+   `reclaim doctor --live`, or **Diagnostics → Run live check** in the
+   window. Every enabled provider must log in and list its chats. CI cannot
+   do this, because it has no provider accounts; a provider that fails here
+   has changed its service, so fix it before releasing.
+3. Open a pull request from `develop` to `main` and tick the live check in
+   its checklist.
+4. Merge it after the required checks pass.
+5. The Release workflow builds and checks all packages, tags the commit, and
    publishes a GitHub Release with those packages and generated notes.
 
 The first GUI release is `v3.3.0`. Later releases increment the patch
@@ -13,11 +19,26 @@ development version and release artifacts the exact tagged version.
 
 The workflow builds the Python wheel and source distribution with an explicit
 version override before creating the tag. It checks their metadata, installs
-the wheel in a fresh environment, and launches each extracted Linux, Windows,
-and macOS application with isolated data. This also starts the bundled
-Playwright driver without opening a browser or contacting a provider.
-Only then does it create or reuse
-the tag, create a draft release, upload and verify assets, and publish it.
+the wheel in a fresh environment and uses the command line from it in an empty
+home (`scripts/smoke_wheel.py`: version, `init`, `status`; CI runs the same
+script on every pull request), and builds desktop downloads using only the
+`gui-pack` dependencies: Linux `.tar.gz`, `.AppImage`, and `.deb` on Ubuntu
+22.04 (`glibc 2.35`), Windows portable `.zip` and per-user `-setup.exe`
+installer, and macOS Apple Silicon (`arm64`) and Intel (`x86_64`) `.dmg` and
+`.zip` bundles. Each packaged application is launched in isolation with
+`scripts/smoke_desktop.py` (which also starts the bundled Playwright driver
+without opening a browser or contacting a provider).
+Only then does it generate `SHA256SUMS` and GitHub build-provenance
+attestations, create or reuse the tag, create a draft release, upload and
+verify assets, and publish the GitHub Release, which carries the Python wheel
+and source distribution. Uploading them to PyPI is switched off (decided on 20
+November 2026): that step, `pypa/gh-action-pypi-publish` with Trusted
+Publishing, runs only when the repository variable `PYPI_PUBLISH` is `true`,
+so a release shows it as skipped. To turn it on, register a Trusted Publisher
+on `pypi.org` for the project `reclaimmychats` (workflow `release.yml`,
+environment left blank), then set the variable under **Settings → Secrets and
+variables → Actions → Variables**. The step keeps `continue-on-error: true`,
+so a PyPI problem never blocks the GitHub Release.
 Rerunning a failed workflow at the same `main` commit reuses its tag and
 resumes an incomplete draft. Published release downloads are never replaced.
 Draft lookup uses the authenticated release list when GitHub's tag endpoint

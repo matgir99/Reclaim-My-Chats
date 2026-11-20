@@ -47,6 +47,18 @@ body:
       label: Redacted error message
       description: Include the relevant error from Details or the terminal. Remove private information.
       render: text
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: In the window, open Diagnostics and use Copy diagnostics (or run reclaim doctor), then paste the result. It lists folder paths, which can include your user name, but no chat content.
+      render: text
+  - type: textarea
+    id: capture
+    attributes:
+      label: Capture file (optional, for provider failures)
+      description: If a provider fails on a chat, use Capture a chat in Diagnostics (or run reclaim capture PROVIDER URL). Open and read the saved file first to make sure nothing private remains, then attach or paste it here.
+      render: text
   - type: checkboxes
     id: privacy
     attributes:

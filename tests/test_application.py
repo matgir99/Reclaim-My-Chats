@@ -12,7 +12,7 @@ from unittest.mock import patch
 from reclaim.core import browser, config
 from reclaim.core import status
 from reclaim.core.events import ProgressEvent
-from reclaim.core.manifest import SyncState, print_dry_run
+from reclaim.core.manifest import SyncState, report_dry_run
 from reclaim.core.manifest import write_attempt, write_manifest
 from reclaim.core.service import ArchiveController, BusyOperationError, RunSummary
 
@@ -24,7 +24,8 @@ class TestApplicationConfig(unittest.TestCase):
             (root / '.reclaim.json').write_text(json.dumps({'future': 42}))
             config.save(root, providers=['chatgpt'], archive='archive', profile='old-profile')
             self.assertEqual(config.load(root), {
-                'future': 42, 'providers': ['chatgpt'],
+                'future': 42, 'version': config.SETTINGS_VERSION,
+                'providers': ['chatgpt'],
                 'archive': 'archive', 'profile': 'old-profile',
             })
             self.assertEqual(config.archive_root(root), root / 'archive')
@@ -82,13 +83,16 @@ class TestProgressEvents(unittest.TestCase):
             events: list[ProgressEvent] = []
             chats = [{'id': 'one', 'title': 'Unchanged'},
                      {'id': 'two', 'title': 'New'}]
-            print_dry_run(chats, {'one': '1', 'two': '2'}, state, True,
-                          sink=events.append, provider='chatgpt')
+            report_dry_run(chats, {'one': '1', 'two': '2'}, state, True,
+                           sink=events.append, provider='chatgpt')
             self.assertEqual([(e.kind, e.message, e.current, e.total)
                               for e in events], [
                                   ('chat_planned', 'skip (unchanged)', 1, 2),
                                   ('chat_planned', 'fetch (new)', 2, 2),
+                                  ('plan', ('would fetch: 1 (1 new, 0 changed) · '
+                                            'would skip: 1 unchanged'), 0, 1),
                               ])
+            self.assertEqual(events[-1].detail, '  - New')
             self.assertEqual(list(root.iterdir()), [])
 
 
@@ -146,7 +150,14 @@ class TestArchiveController(unittest.TestCase):
                   patch('playwright.sync_api.sync_playwright', return_value=_FakePlaywright())):
                 result = ArchiveController(root).run(['chatgpt'], 'dry-run')
             self.assertEqual(result.exit_code, 2)
-            self.assertEqual(list(root.iterdir()), [])
+            # A preview writes no database, records or lock leftovers; only the
+            # log file and the login data folder the browser uses.
+            self.assertFalse((root / 'chats').exists())
+            self.assertEqual(sorted(p.name for p in root.iterdir()), ['.playwright-profile', 'logs'])
+            self.assertEqual([p.name for p in (root / '.playwright-profile').iterdir()],
+                             ['.reclaim.lock'])
+            self.assertEqual((root / '.playwright-profile' / '.reclaim.lock').read_text(), '')
+            self.assertIn('listing failed', (root / 'logs' / 'reclaim.log').read_text())
 
     def test_provider_exception_is_reported_persisted_and_does_not_stop_other_providers(self):
         with tempfile.TemporaryDirectory() as temp:

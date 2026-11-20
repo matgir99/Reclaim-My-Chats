@@ -7,22 +7,42 @@ Sync state: one JSON per provider at <out_dir>/.last_sync_<provider>.json —
 maps chat id -> {'updated_at': str|None, 'md': str}. Providers that expose
 update timestamps can skip unchanged chats; others fall back to
 "skip if already saved".
+
+The sync state is saved after every chat and written atomically, so an
+interrupted run keeps the records of the chats it saved. It is a cache of
+what the chat folders already say: each chat.json stores the provider
+timestamp, so a missing or damaged sync file is rebuilt from the folders.
 """
 
 from __future__ import annotations
 
+import enum
 import json
 import os
-import tempfile
 import time
 from pathlib import Path
+from typing import ClassVar
 
-from .events import EventSink, emit
-from .writer import _same_chat, retire_previous
+from .events import EventSink, emit, resolve
+from .fsutil import atomic_write_text
+from .model import Chat
+from .writer import (CHAT_JSON, locate_recorded, read_chat_json, retire_previous,
+                     write_chat, write_raw)
+
+
+class _Keep(enum.Enum):
+    KEEP = 'keep'
+
+
+KEEP = _Keep.KEEP
+"""A project argument meaning "not known here; keep what the record says",
+as opposed to None, "in no project". A chat taken from a URL passes it."""
 
 
 def write_manifest(out_dir: Path, provider: str, results: list[dict],
                    started: float) -> Path:
+    """Record a run in `<provider folder>/.reclaim_manifest.json`: its totals
+    and one entry per chat. The status view reads it."""
     out_dir = Path(out_dir)
     manifest = {
         'provider': provider,
@@ -39,7 +59,7 @@ def write_manifest(out_dir: Path, provider: str, results: list[dict],
         'chats': results,
     }
     path = out_dir / '.reclaim_manifest.json'
-    path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False))
+    atomic_write_text(path, json.dumps(manifest, indent=2, ensure_ascii=False, default=str))
     return path
 
 
@@ -48,97 +68,281 @@ def write_attempt(out_dir: Path, started: float, code: int, error: str | None) -
     out_dir.mkdir(parents=True, exist_ok=True)
     data = {'started': time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(started)),
             'exit_code': code, 'error': error}
-    fd, tmp = tempfile.mkstemp(prefix='.reclaim-attempt-', dir=out_dir)
+    atomic_write_text(out_dir / '.reclaim_last_attempt.json', json.dumps(data, ensure_ascii=False))
+
+
+CHECKS_FILE = '.reclaim_checks.json'
+
+
+def read_checks(root: Path) -> dict[str, str]:
+    """Last successful check timestamp per provider stored under `root`."""
     try:
-        with os.fdopen(fd, 'w', encoding='utf-8') as stream:
-            json.dump(data, stream, ensure_ascii=False)
-        os.replace(tmp, out_dir / '.reclaim_last_attempt.json')
-    finally:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
+        data = json.loads((Path(root) / CHECKS_FILE).read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {k: v for k, v in data.items() if isinstance(k, str) and isinstance(v, str)}
+
+
+def record_check(root: Path, provider: str, started: float | None = None) -> None:
+    """Record when `provider` was last contacted successfully without touching the database."""
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+    data = read_checks(root)
+    ts = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(started or time.time()))
+    data[provider] = ts
+    atomic_write_text(root / CHECKS_FILE, json.dumps(data, indent=2, ensure_ascii=False) + '\n')
+
+
+def _inferred_state(payload: dict | None, rel_parts: tuple[str, ...]) -> str:
+    state = (payload or {}).get('state')
+    if isinstance(state, str) and state:
+        return state
+    if '_Archived' in rel_parts:
+        return 'archived'
+    if '_Deleted' in rel_parts:
+        return 'deleted'
+    return 'active'
+
+
+def rebuild_records(out_dir: Path) -> dict:
+    """Sync records reconstructed from the chat folders under `out_dir`.
+
+    Uses each chat.json's id, provider timestamp, Markdown name, title,
+    project and state. A chat saved in two folders keeps the most recently
+    written one."""
+    out_dir = Path(out_dir)
+    records: dict[str, dict] = {}
+    newest: dict[str, float] = {}
+    if not out_dir.is_dir():
+        return records
+    for path in out_dir.rglob(CHAT_JSON):
+        payload = read_chat_json(path.parent)
+        cid = payload.get('id') if payload else None
+        if not isinstance(cid, str) or not cid:
+            continue
+        written = path.stat().st_mtime
+        if newest.get(cid, -1.0) >= written:
+            continue
+        newest[cid] = written
+        md = path.parent / str((payload or {}).get('markdown') or f'{path.parent.name}.md')
+        rel_parts = md.relative_to(out_dir).parts
+        records[cid] = {
+            'updated_at': (payload or {}).get('provider_updated_at'),
+            'md': md.relative_to(out_dir).as_posix(),
+            'title': (payload or {}).get('title') or path.parent.name,
+            'project': (payload or {}).get('project'),
+            'state': _inferred_state(payload, rel_parts),
+        }
+    return records
 
 
 class SyncState:
     # One-time renames for providers that changed names (prevents re-downloading
     # the whole archive on the first update run after the rename).
-    LEGACY = {'googleaistudio': 'aistudio'}
+    LEGACY: ClassVar[dict[str, str]] = {'googleaistudio': 'aistudio'}
 
     def __init__(self, out_dir: Path, provider: str, migrate: bool = True):
+        """`migrate=False` opens the records read-only, for previews."""
         self.path = Path(out_dir) / f'.last_sync_{provider}.json'
+        self.provider = provider
+        self.readonly = not migrate
         if migrate and not self.path.exists():
             legacy = self.LEGACY.get(provider)
             if legacy:
                 old = Path(out_dir) / f'.last_sync_{legacy}.json'
                 if old.exists():
                     old.rename(self.path)
+        self._state = self._load()
+
+    def _load(self) -> dict:
+        """The records on disk; rebuilt from the chat folders when the file
+        is missing, unreadable or damaged (a damaged file is kept aside)."""
         try:
-            self._state = json.loads(self.path.read_text())
-        except Exception:
-            self._state = {}
+            text = self.path.read_text(encoding='utf-8')
+        except FileNotFoundError:
+            return self._rebuild('is missing', move_aside=False)
+        except (OSError, UnicodeDecodeError) as exc:
+            return self._rebuild(f'cannot be read ({exc})', move_aside=True)
+        try:
+            data = json.loads(text)
+        except ValueError:
+            return self._rebuild('is damaged (not valid JSON)', move_aside=True)
+        if not isinstance(data, dict) or not all(isinstance(v, dict) for v in data.values()):
+            return self._rebuild('has an unexpected format', move_aside=True)
+        return data
+
+    def _rebuild(self, problem: str, *, move_aside: bool) -> dict:
+        """Records rebuilt from the chat.json files, reported as a warning.
+        Read-only states (previews) never write or move anything."""
+        records = rebuild_records(self.path.parent)
+        if not records and not move_aside:
+            return records  # a provider folder without saved chats yet
+        where = ''
+        if move_aside and not self.readonly:
+            backup = self.path.with_name(
+                f'{self.path.name}.damaged-{time.strftime("%Y%m%d-%H%M%S")}')
+            os.replace(self.path, backup)
+            where = f'; the old file was kept as {backup.name}'
+        emit(None, 'warning', self.provider,
+             message=f'the sync record {self.path.name} {problem}{where}. '
+                     f'Rebuilt {len(records)} records from the chat folders.')
+        if not self.readonly:
+            self._state = records
+            self.save()
+        return records
 
     def known(self, chat_id: str) -> dict | None:
         return self._state.get(chat_id)
 
-    def classify(self, chat_id: str, updated_at) -> str:
-        """'new' (no local record), 'changed' (record, timestamp differs),
-        or 'unchanged' (record matches). Missing timestamps fall back to
-        presence: an existing record means 'unchanged'."""
+    def records(self) -> dict[str, dict]:
+        """Copy of all sync records keyed by chat id."""
+        return dict(self._state)
+
+    def forget(self, chat_id: str) -> None:
+        """Remove `chat_id` from the sync record after permanent deletion."""
+        if not self.readonly and self._state.pop(chat_id, None) is not None:
+            self.save()
+
+    def _saved_project(self, chat_id: str, prev: dict) -> tuple[bool, str | None]:
+        """Whether the chat's project is known, and that project.
+
+        Records written since v3.3.5 always hold a title, and a project only
+        when the chat is in one, so a title without a project means none.
+        Records from v3.3.4 and earlier hold neither; the chat's own chat.json
+        then says which project it was saved in. Without one it is unknown."""
+        if 'project' in prev or 'title' in prev:
+            return True, prev.get('project') or None
+        md = prev.get('md')
+        payload = (read_chat_json(self._resolve(md, chat_id).parent)
+                   if isinstance(md, str) and md else None)
+        if payload is None or 'project' not in payload:
+            return False, None
+        return True, payload.get('project') or None
+
+    def _metadata_changed(self, chat_id: str, prev: dict, title: str | None,
+                          project: str | None | _Keep) -> bool:
+        if title is not None and prev.get('title') and prev.get('title') != title:
+            return True
+        if project is KEEP:
+            return False
+        known, saved = self._saved_project(chat_id, prev)
+        return known and saved != (project or None)
+
+    def classify(self, chat_id: str, updated_at, *, title: str | None = None,
+                 project: str | None | _Keep = KEEP, state: str = 'active') -> str:
+        """'new', 'restored', 'archived', 'changed', or 'unchanged'."""
         prev = self._state.get(chat_id)
         if prev is None:
             return 'new'
+        prev_state = prev.get('state') or 'active'
+        if prev_state != state:
+            return 'restored' if state == 'active' else 'archived'
+        if self._metadata_changed(chat_id, prev, title, project):
+            return 'changed'
         if updated_at is None:
             return 'unchanged'
         return 'changed' if prev.get('updated_at') != updated_at else 'unchanged'
 
-    def is_unchanged(self, chat_id: str, updated_at) -> bool:
-        return self.classify(chat_id, updated_at) == 'unchanged'
+    def is_unchanged(self, chat_id: str, updated_at, *, title: str | None = None,
+                     project: str | None | _Keep = KEEP, state: str = 'active') -> bool:
+        return self.classify(chat_id, updated_at, title=title, project=project,
+                             state=state) == 'unchanged'
 
     def _resolve(self, md: str, chat_id: str | None = None) -> Path:
-        """A recorded md path inside this provider folder.
+        return locate_recorded(self.path.parent, md, chat_id)
 
-        Records written since November 2026 are relative to the provider
-        folder. Older records are absolute, or relative to the working
-        directory of the run that wrote them (a relative `-o`); both contain
-        the provider folder's name and are rebased at it. When several
-        readings are possible, for example a project named like the provider
-        folder, the one whose chat.json belongs to `chat_id` wins, then one
-        that exists."""
-        out_dir = self.path.parent
-        path = Path(md)
-        parts = path.parts
-        candidates = [] if path.is_absolute() else [out_dir / path]
-        candidates += [out_dir.joinpath(*parts[i + 1:])
-                       for i, part in enumerate(parts[:-1]) if part == out_dir.name]
-        if not candidates:
-            return path
-        if chat_id:
-            for candidate in candidates:
-                if _same_chat(candidate.parent, chat_id):
-                    return candidate
-        for candidate in candidates:
-            if candidate.exists():
-                return candidate
-        return candidates[-1] if path.is_absolute() else candidates[0]
+    def mark(self, chat_id: str, updated_at, md_path: str, *,
+             title: str | None = None, project: str | None | _Keep = KEEP,
+             state: str = 'active'):
+        """Record a written chat and save at once; retire its previous
+        folder if it moved. Read-only states only update memory.
 
-    def mark(self, chat_id: str, updated_at, md_path: str):
-        """Record a written chat; retire its previous folder if it moved."""
+        `project` is the project the chat was saved in; None records that it
+        is in none (a chat moved out of its project), KEEP keeps the record's."""
         out_dir = self.path.parent
         current = Path(md_path)
-        previous = (self._state.get(chat_id) or {}).get('md')
-        if isinstance(previous, str) and previous:
+        prev = self._state.get(chat_id) or {}
+        previous = prev.get('md')
+        if not self.readonly and isinstance(previous, str) and previous:
             try:
                 retire_previous(out_dir, chat_id, self._resolve(previous, chat_id), current)
             except OSError as exc:
-                print(f'  note: could not remove previous folder of {chat_id}: {exc}')
+                emit(None, 'warning', self.provider,
+                     message=f'could not remove the previous folder of {chat_id}: {exc}')
         try:
             stored = current.resolve().relative_to(out_dir.resolve()).as_posix()
         except ValueError:
             stored = str(current)
-        self._state[chat_id] = {'updated_at': updated_at, 'md': stored}
+        resolved_title = title if title is not None else prev.get('title')
+        resolved_project = prev.get('project') if project is KEEP else project
+        entry: dict = {'updated_at': updated_at, 'md': stored, 'state': state}
+        if resolved_title is not None:
+            entry['title'] = resolved_title
+        if resolved_project is not None:
+            entry['project'] = resolved_project
+        self._state[chat_id] = entry
+        self.save()
 
     def save(self):
-        self.path.write_text(json.dumps(self._state, indent=2,
-                                        ensure_ascii=False))
+        if self.readonly:
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(self.path, json.dumps(self._state, indent=2, ensure_ascii=False,
+                                                default=str))
+
+
+def stats_text(stats: dict) -> str:
+    """One chat's size for progress lines: '12t, 3,456 chars, 2 img'."""
+    text = f'{stats["turns"]}t, {stats["chars"]:,} chars'
+    text += f', {stats["images"]} img' if stats.get('images') else ''
+    return text + (f', {stats["docs"]} doc' if stats.get('docs') else '')
+
+
+def finish_run(out_dir: Path, provider: str, results: list[dict], started: float,
+               sink: EventSink | None = None) -> int:
+    """Write the run manifest and report the counts (a downloaded event).
+    Returns the exit code: 0 when every chat was saved, else 2."""
+    manifest = write_manifest(out_dir, provider, results, started)
+    ok = sum(1 for r in results if r.get('ok'))
+    emit(sink, 'downloaded', provider, current=ok, total=len(results),
+         message=f'Done: {ok} ok, {len(results) - ok} failed', detail=f'Manifest: {manifest}')
+    return 0 if ok == len(results) else 2
+
+
+def save_chat(chat: Chat, out_dir: Path, sync: SyncState, sync_id: str, updated_at,
+              raw=None, *, sink: EventSink | None = None, provider: str = '',
+              state: str = 'active') -> dict:
+    """Save one downloaded chat: its folder, raw.json and sync record.
+
+    Shared by every provider. A raw.json that cannot be written is reported
+    as a warning event (terminal or window, and the log) instead of ignored;
+    the chat itself still counts as saved. Returns write_chat's stats plus
+    'warnings'."""
+    stats = write_chat(chat, out_dir, updated_at=updated_at, state=state)
+    warnings: list[str] = []
+    if raw is not None:
+        try:
+            write_raw(stats['dir'], raw)
+        except Exception as exc:  # noqa: BLE001 - reported, never hidden
+            warnings.append(f'raw.json was not saved: {exc}')
+    for warning in warnings:
+        emit(sink, 'warning', provider, chat.title, message=warning)
+    sync.mark(sync_id, updated_at, str(stats['md']),
+              title=chat.title, project=chat.project, state=state)
+    stats['warnings'] = warnings
+    return stats
+
+
+def _classify_chat(chat: dict, updated_map: dict, sync: SyncState) -> str:
+    return sync.classify(
+        chat['id'],
+        updated_map.get(chat['id']),
+        title=chat.get('title') or None,
+        project=chat.get('project', KEEP),
+        state=chat.get('state') or 'active',
+    )
 
 
 def plan_fetch(chats: list[dict], updated_map: dict | None, sync: SyncState,
@@ -154,10 +358,10 @@ def plan_fetch(chats: list[dict], updated_map: dict | None, sync: SyncState,
     n_new = n_changed = n_unchanged = 0
     titles: list[str] = []
     for c in chats:
-        st = sync.classify(c['id'], updated_map.get(c['id']))
+        st = _classify_chat(c, updated_map, sync)
         if st == 'new':
             n_new += 1
-        elif st == 'changed':
+        elif st in ('changed', 'restored'):
             n_changed += 1
         else:
             n_unchanged += 1
@@ -172,46 +376,35 @@ def plan_fetch(chats: list[dict], updated_map: dict | None, sync: SyncState,
             'changed': n_changed, 'unchanged': n_unchanged, 'titles': titles}
 
 
-def print_dry_run(chats: list[dict], updated_map: dict | None, sync: SyncState,
-                  skip_unchanged: bool, log: bool = False,
-                  sink: EventSink | None = None, provider: str = '') -> int:
-    """Print what a run WOULD do (--dry-run). Returns the exit code (0).
+def report_dry_run(chats: list[dict], updated_map: dict | None, sync: SyncState,
+                   skip_unchanged: bool, log: bool = False,
+                   sink: EventSink | None = None, provider: str = '') -> int:
+    """Report what a run WOULD do (--dry-run). Returns the exit code (0).
 
-    Default (quiet): the counts line plus the titles that would be fetched.
-    log=True: per-chat lines in the real run's [i/N] format, then the
-    counts line. Nothing is downloaded or written."""
+    A chat_planned event per chat ('fetch (new)', 'skip (unchanged)'...),
+    then a plan event: the counts, and the titles that would be fetched.
+    The terminal shows the counts and titles, or with --log (`log` when no
+    sink or route is set) a line per chat and the counts. Nothing is
+    downloaded or written."""
+    sink = resolve(sink, verbose=log)
     updated_map = updated_map or {}
     plan = plan_fetch(chats, updated_map, sync, skip_unchanged)
-    if sink is not None:
-        for i, chat in enumerate(chats, 1):
-            state = sync.classify(chat['id'], updated_map.get(chat['id']))
-            action = 'skip' if skip_unchanged and state == 'unchanged' else 'fetch'
-            emit(sink, 'chat_planned', provider,
-                 str(chat.get('title') or chat.get('name') or chat.get('id') or '?'),
-                 i, len(chats), f'{action} ({state})')
-    if log:
-        for i, c in enumerate(chats, 1):
-            st = sync.classify(c['id'], updated_map.get(c['id']))
-            label = (c.get('title') or c.get('name') or c.get('id') or '?')[:55]
-            if not skip_unchanged:
-                action = 'fetch (fresh)'
-            elif st == 'unchanged':
-                action = 'skip (unchanged)'
-            elif st == 'new':
-                action = 'fetch (new)'
-            else:
-                action = 'fetch (changed)'
-            print(f'[{i}/{len(chats)}] {label} -> {action}')
-    if skip_unchanged:
-        print(f'would fetch: {plan["fetch"]} ({plan["new"]} new, '
-              f'{plan["changed"]} changed) · would skip: '
-              f'{plan["skip"]} unchanged')
-    else:
-        print(f'would fetch: {plan["fetch"]} (fresh) · would skip: 0')
-    if not log:
-        if plan['titles']:
-            for t in plan['titles']:
-                print(f'  - {t}')
+    for i, chat in enumerate(chats, 1):
+        state = _classify_chat(chat, updated_map, sync)
+        if not skip_unchanged:
+            action = 'fetch (fresh)'
+        elif state == 'unchanged':
+            action = 'skip (unchanged)'
         else:
-            print('  (nothing to fetch)')
+            action = f'fetch ({state})'
+        emit(sink, 'chat_planned', provider,
+             str(chat.get('title') or chat.get('name') or chat.get('id') or '?'),
+             i, len(chats), action, detail=str(chat.get('id') or ''))
+    if skip_unchanged:
+        counts = (f'would fetch: {plan["fetch"]} ({plan["new"]} new, {plan["changed"]} '
+                  f'changed) · would skip: {plan["skip"]} unchanged')
+    else:
+        counts = f'would fetch: {plan["fetch"]} (fresh) · would skip: 0'
+    titles = '\n'.join(f'  - {t}' for t in plan['titles']) or '  (nothing to fetch)'
+    emit(sink, 'plan', provider, total=plan['fetch'], message=counts, detail=titles)
     return 0

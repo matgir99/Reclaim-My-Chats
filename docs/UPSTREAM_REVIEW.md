@@ -209,6 +209,24 @@ its chat organization; its API-console organization has no chats (HTTP 403).
 ChatGPT archives saved before this change need **one rebuild** to remove
 the markers: `reclaim chatgpt --rebuild`, or Rebuild in the GUI.
 
+## Weekly check
+
+`scripts/upstream_watch.py` compares every project linked above with the
+revision last reviewed here, and the weekly workflow
+`.github/workflows/upstream-watch.yml` opens or updates one issue when a
+project has new commits. Record each review below with a link pinned to the
+reviewed revision; the latest link of a project counts.
+
+**9 November 2026.** The first run found three new commits in
+[chatgpt-exporter, 023cf2b](https://github.com/pionxzh/chatgpt-exporter/tree/023cf2b1ece2d41d9be326c026f7ae6ae10c9ae5).
+Adopted for `reclaim import chatgpt`: an official export split across
+`conversations-000.json`, `conversations-001.json` and so on is read from the
+export folder or ZIP, a conversation found twice keeps its latest version,
+and thinking preambles are left out (the export drops their flag and the
+message recipient, so a reply directly followed by a reasoning step counts as
+one). Scheduled-task runs stay separate replies here already, since the
+parser never merges consecutive replies.
+
 ## Runtime and bot updates
 
 Playwright uses a version range rather than vendored provider code. The

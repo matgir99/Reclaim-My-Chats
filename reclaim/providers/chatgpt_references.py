@@ -27,7 +27,7 @@ import re
 _MARKER = re.compile(r'\ue200([a-z_]+)((?:\ue202[^\ue200\ue201\ue202]*)*)\ue201')
 _PRIVATE_USE = re.compile(r'[\ue200-\ue20f]')
 _EMPTY_LINK = re.compile(r'\[([^\]]*)\]\(\)')
-_HTTP = re.compile(r'https?://', re.I)
+_HTTP = re.compile(r'https?://', re.IGNORECASE)
 
 
 def _dict(value) -> dict:
@@ -114,6 +114,16 @@ def _images(ref: dict) -> str:
     return '\n\n'.join(links)
 
 
+def _chart_point_cells(point: dict, shown: dict, x_key: str, series: list[dict]) -> list:
+    cells = [point.get(x_key)]
+    for s in series:
+        value = shown.get(s['dataKey'])
+        if value is None and point.get(s['dataKey']) is not None:
+            value = f"{point[s['dataKey']]}{s.get('valueSuffix') or ''}"
+        cells.append(value)
+    return cells
+
+
 def _chart(chart) -> str:
     """A chart widget becomes its description and a table of its data."""
     if not isinstance(chart, dict):
@@ -136,19 +146,57 @@ def _chart(chart) -> str:
         if not isinstance(point, dict):
             continue
         shown = _dict(formatted[index]) if index < len(formatted) else {}
-        cells = [point.get(x_key)]
-        for s in series:
-            value = shown.get(s['dataKey'])
-            if value is None and point.get(s['dataKey']) is not None:
-                value = f"{point[s['dataKey']]}{s.get('valueSuffix') or ''}"
-            cells.append(value)
-        rows.append(row(cells))
+        rows.append(row(_chart_point_cells(point, shown, x_key, series)))
     table = '\n'.join(rows)
     description = _str(_dict(chart.get('meta')).get('description'))
     return f'{description.strip()}\n\n{table}' if description.strip() else table
 
 
+def _url_ref(ref: dict) -> str:
+    fields = _marker_fields(ref.get('matched_text') or '')
+    label = _str(ref.get('title')) or (fields[0] if fields else '')
+    url = _http_url(fields[1] if len(fields) > 1 else None,
+                    *_list(ref.get('safe_urls')), _dict(ref.get('item')).get('url'))
+    return _link({'title': label, 'url': url}) if label or url else ''
+
+
+def _entity_ref(ref: dict) -> str:
+    name = ref.get('name')
+    if not isinstance(name, str):
+        fields = _marker_fields(ref.get('matched_text') or '')
+        name = _entity_name(fields[0]) if fields else None
+    return _escape_text(name) if name else _alt(ref)
+
+
+def _item_sources(ref: dict) -> list[dict]:
+    """Collect item, supporting website, and fallback citation entries."""
+    sources: list[dict] = []
+    for item in ref.get('items') or []:
+        if isinstance(item, dict):
+            sources.append(item)
+            sources.extend(s for s in item.get('supporting_websites') or []
+                           if isinstance(s, dict))
+    sources.extend(s for s in ref.get('fallback_items') or [] if isinstance(s, dict))
+    return sources
+
+
+def _ref_sources(ref: dict) -> list[dict]:
+    """The sources a citation shows, in the first form the reference has:
+    its items (with their supporting websites) and fallback items, a cited
+    file, the reference itself, or its plain URLs."""
+    sources = _item_sources(ref)
+    if not sources and ref.get('type') == 'file' and isinstance(ref.get('name'), str):
+        sources.append({'title': ref['name']})
+    if not sources and any(isinstance(ref.get(k), str) and ref[k].strip()
+                           for k in ('url', 'title', 'attribution')):
+        sources.append(ref)
+    if not sources:
+        sources = [{'title': u, 'url': u} for u in ref.get('safe_urls') or [] if _http_url(u)]
+    return _dedupe(sources)
+
+
 def _inline(ref: dict) -> str:
+    """What ChatGPT displays in place of one content reference."""
     kind = ref.get('type')
     if kind == 'hidden':
         return ''
@@ -157,37 +205,13 @@ def _inline(ref: dict) -> str:
         if data.get('widget_type') == 'charts_widget_v2':
             return _chart(data.get('content'))
     if kind == 'url':
-        fields = _marker_fields(ref.get('matched_text') or '')
-        label = _str(ref.get('title')) or (fields[0] if fields else '')
-        url = _http_url(fields[1] if len(fields) > 1 else None,
-                        *_list(ref.get('safe_urls')), _dict(ref.get('item')).get('url'))
-        return _link({'title': label, 'url': url}) if label or url else ''
+        return _url_ref(ref)
     if kind == 'entity':
-        name = ref.get('name')
-        if not isinstance(name, str):
-            fields = _marker_fields(ref.get('matched_text') or '')
-            name = _entity_name(fields[0]) if fields else None
-        return _escape_text(name) if name else _alt(ref)
+        return _entity_ref(ref)
     if kind in ('image_group', 'image_v2'):
         return _images(ref) or _alt(ref)
-
-    sources: list[dict] = []
-    for item in ref.get('items') or []:
-        if isinstance(item, dict):
-            sources.append(item)
-            sources.extend(s for s in item.get('supporting_websites') or [] if isinstance(s, dict))
-    sources.extend(s for s in ref.get('fallback_items') or [] if isinstance(s, dict))
-    if not sources and kind == 'file' and isinstance(ref.get('name'), str):
-        sources.append({'title': ref['name']})
-    if not sources and any(isinstance(ref.get(k), str) and ref[k].strip()
-                           for k in ('url', 'title', 'attribution')):
-        sources.append(ref)
-    if not sources:
-        sources = [{'title': u, 'url': u} for u in ref.get('safe_urls') or [] if _http_url(u)]
-    sources = _dedupe(sources)
-    if sources:
-        return '(' + ', '.join(_link(s) for s in sources) + ')'
-    return _alt(ref)
+    sources = _ref_sources(ref)
+    return '(' + ', '.join(_link(s) for s in sources) + ')' if sources else _alt(ref)
 
 
 def _unreferenced(match: re.Match) -> str:
@@ -228,7 +252,7 @@ def resolve(text: str, metadata) -> str:
     # Citations of several passages in one file would repeat its name.
     for name in files:
         escaped = re.escape(name)
-        text = re.sub(f'{escaped}(?:\\s*{escaped})+', lambda _: name, text)
+        text = re.sub(f'{escaped}(?:\\s*{escaped})+', lambda _, name=name: name, text)
     text = _MARKER.sub(_unreferenced, text)
     return _PRIVATE_USE.sub('', text)
 

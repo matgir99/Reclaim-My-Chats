@@ -33,43 +33,43 @@ command line offers (**CLI**) where the task is visible to users.
 
 ## Phase 0. Release the provider fixes
 
-- [ ] Merge `develop` into `main`. This publishes the fixes for ChatGPT,
+- [x] Merge `develop` into `main`. This publishes the fixes for ChatGPT,
       Claude, DeepSeek, Kimi and the Google logins to users of the
-      desktop download.
+      desktop download. (PR #12.)
 
 ## Phase 1. Protect the database
 
 Goal: no interruption, crash, settings mistake or missing folder can lose
 progress records or silently start a new, empty database.
 
-- [ ] Save sync records after every chat, and write every file atomically
+- [x] Save sync records after every chat, and write every file atomically
       (a temporary file, then a rename). An interrupted run keeps the
       records of every chat it saved, which also makes a Stop button safe.
-- [ ] Validate the settings file at start. An invalid file stops with a
+- [x] Validate the settings file at start. An invalid file stops with a
       clear message instead of falling back to defaults. **Window:** a
       banner with *Open settings folder* and *Reset settings*. **CLI:** the
       message and exit code 2.
-- [ ] Mark each database with `.reclaim-database.json`, which records its
+- [x] Mark each database with `.reclaim-database.json`, which records its
       format version. A missing database folder is never created on the
       fly, except the default location on first use. Existing databases
       are recognised and marked automatically. **Window:** a banner with
       *Retry*, *Choose folder* and *Create database here*; choosing an
       empty folder in Settings creates the database. **CLI:** `reclaim
       init`.
-- [ ] Lock files in the database and the login data folder, naming the
+- [x] Lock files in the database and the login data folder, naming the
       computer and process. A lock left by a process that no longer runs
       on this computer is cleared automatically. **Window:** a dialog that
       names the holder and offers *Remove lock*. **CLI:** `reclaim
       unlock`.
-- [ ] Run every command through the shared controller, so these checks
+- [x] Run every command through the shared controller, so these checks
       apply however a run starts. (Moved forward from Phase 2.)
-- [ ] A rotating log file in the data folder that records every run,
+- [x] A rotating log file in the data folder that records every run,
       including provider output and errors. Failed `raw.json` writes are
       reported. **Window:** *Open log folder*.
-- [ ] Safe, unique folder and file names: no trailing dots or spaces and
+- [x] Safe, unique folder and file names: no trailing dots or spaces and
       no names Windows reserves (such as CON or AUX). Two different chats
       with the same title get separate folders instead of sharing one.
-- [ ] `chat.json` records the provider's timestamp, the save time, the
+- [x] `chat.json` records the provider's timestamp, the save time, the
       chat's state and a format version. Missing or damaged sync records
       are rebuilt from the chat files, keeping the damaged file as a
       backup. Chats saved earlier get their timestamps when the database
@@ -80,46 +80,53 @@ progress records or silently start a new, empty database.
 Goal: a fix made once reaches every provider, and provider changes are
 caught before users see them.
 
-- [ ] A shared engine for requests, retries, rate limits (honouring
-      `Retry-After`), login checks, the download loop, dry runs and
-      saving. Each provider supplies only how to list its chats, how to
-      fetch one chat and how to tell whether the user is logged in.
-- [ ] Progress reported only as structured events, rendered once each for
-      the window, the terminal and the log file.
-- [ ] A capture tool that records a real provider response with every
+- [x] A shared engine for the download loop, filters, dry runs, saving
+      and the run record (`core/engine.py`), and one request policy for
+      retries and rate limits that honours `Retry-After`
+      (`core/retry.py`). Each provider supplies only how to log in, list
+      its chats, read a chat URL and fetch one chat. The shared login
+      check is part of Phase 3's login task.
+- [x] Progress reported only as structured events, rendered once each for
+      the window, the terminal and the log file (`core/events.py`,
+      `core/render.py`). The window now shows when a provider waits for a
+      login.
+- [x] A capture tool that records a real provider response with every
       text value replaced, so a format change becomes a test fixture.
-- [ ] Diagnostics: offline checks (browser, settings, database, locks) and
+      **Window:** *Capture a chat* in Diagnostics. **CLI:** `reclaim capture PROVIDER URL [-o FILE]`.
+- [x] Diagnostics: offline checks (browser, settings, database, locks) and
       a read-only live check that lists every provider. **Window:** a
       Diagnostics panel with *Copy diagnostics*. **CLI:** `reclaim doctor`
       and `reclaim doctor --live`.
-- [ ] Release checklist: the live check runs before merging into `main`.
-- [ ] CI on Python 3.12 and 3.14, a lock file for builds, ruff's bugbear
-      and pyupgrade rules, and a weekly workflow that reports new commits
-      in the reference projects listed in the
-      [provider review](UPSTREAM_REVIEW.md).
+- [x] Release checklist: the live check runs before merging into `main`
+      ([releasing](RELEASING.md)).
+- [x] CI on Python 3.12 and 3.14, a lock file for builds (`uv.lock`,
+      installed with hash checks), ruff's bugbear and pyupgrade rules, and
+      a weekly workflow that reports new commits in the reference projects
+      listed in the [provider review](UPSTREAM_REVIEW.md).
 
 ## Phase 3. A clearer app
 
 Goal: someone who never opens a terminal can set up the app, log in,
 update the database and solve common problems.
 
-- [ ] First-run setup: find an existing database and login data folder or
+- [x] First-run setup: find an existing database and login data folder or
       create new ones, choose providers, check that Chrome is installed,
       and log in to each provider.
-- [ ] Main window as a provider table: a status chip, chats in the
+- [x] Main window as a provider table: a status chip, chats in the
       database, last checked, and a *Log in* or *Review* button per row.
-- [ ] One shared login check per provider and the same login wait
+- [x] One shared login check for every provider (a real request, not
+      only a cookie or token), run by the engine, and the same login wait
       everywhere. A visible banner says which provider needs a login, with
       a button that brings the browser window forward.
-- [ ] A *Stop* button that ends a run after the current chat.
-- [ ] Plain labels: *Check for updates*, *Download everything again*,
+- [x] A *Stop* button that ends a run after the current chat.
+- [x] Plain labels: *Check for updates*, *Download everything again*,
       *Login data folder*. Show "last checked" separately from "last
       download".
-- [ ] Every setting in the window, including the Kimi region, the Chrome
+- [x] Every setting in the window, including the Kimi region, the Chrome
       location and the login wait. Environment variables remain only as
       overrides.
-- [ ] Version number and a notice when a new release is available.
-- [ ] A version number in the settings file, with migrations.
+- [x] Version number and a notice when a new release is available.
+- [x] A version number in the settings file, with migrations.
 
 ## Phase 4. Follow chats at the provider
 
@@ -158,15 +165,15 @@ them.
 |:--|:--|:--|
 | New chat | Listed, no sync record | Download (today) |
 | Edited chat | Listed, newer timestamp | Download again (today) |
-| Renamed, or moved to another project | Listed title or project differs from the record | Download again and move the folder (done when the timestamp also changes) |
+| Renamed, or moved to another project | Listed title or project differs from the record | Download again and move the folder |
 | Archived | In the provider's archived listing | Move to `_Archived/` |
 | Unarchived or restored | Listed again with an `_Archived`/`_Deleted` record | Move back, then update normally |
 | Deleted | Missing from a complete listing and confirmed missing | Move to `_Deleted/` |
 
-When a chat is saved in a new folder, its previous folder is already
-retired (`retire_previous`). Still missing: the sync record does not store
-the title or project, so a rename that leaves the provider timestamp
-unchanged is skipped. Store both, and treat a difference as a change.
+When a chat is saved in a new folder, its previous folder is retired
+(`retire_previous`). Sync records store `title`, `project`, and `state`, so
+renames and project moves are detected in both updates and `--dry-run`
+previews even when the provider timestamp stays unchanged.
 
 ### Safety rules
 
@@ -179,9 +186,12 @@ listings look broken.
    provider listing finished every page without errors, rate limits or
    truncation. Otherwise no lifecycle move happens and the run says why.
 3. **Confirm each absence.** Before moving a chat to `_Deleted`, fetch it
-   directly: "not found" confirms deletion, an archived flag or archived
-   listing means `_Archived`, and any other result leaves it in place as
-   "unconfirmed".
+   directly: an HTTP 404 answer confirms deletion, an archived flag or
+   archived listing means `_Archived`, and any other result leaves it in
+   place as "unconfirmed". Only the status counts: a rate limit, server
+   error, refused login or dropped connection never confirms a deletion,
+   whatever its message says (an error message can contain "404" in a chat
+   id).
 4. **Mass-change brake.** If a run would move more than a small share of a
    provider's chats (proposed: 10% or 20 chats, whichever is smaller), it
    moves nothing until the user confirms in the review.
@@ -193,68 +203,90 @@ listings look broken.
 
 | Provider | Archive feature | Deletion signal | Grouping |
 |:--|:--|:--|:--|
-| ChatGPT | Yes: `is_archived` on conversations; archived listing to confirm | Conversation request fails | Projects (supported) |
-| Claude | None known for chats | HTTP 404 on the conversation | Projects exist; not yet mapped to folders |
-| Gemini | None known | Absent from listing; read request to confirm | Gems/notebooks: to investigate |
-| AI Studio | None | Absent from `ListPrompts` (Drive file trashed) | None |
+| ChatGPT | Yes: `is_archived` on conversations; archived listing to confirm | HTTP 404 on the conversation request (verified live) | Projects (supported) |
+| Claude | None known for chats | HTTP 404 on the conversation | Projects: mapped when present in conversation list metadata |
+| Gemini | None known | Absent from listing; read request (`hNvQHb`) to confirm | Gems/notebooks: mapped when present in listing metadata |
+| AI Studio | None | Absent from `ListPrompts` (`ResolveDriveResource` to confirm) | None |
 | DeepSeek | None | Absent from listing; history request to confirm | None (pinned only) |
-| Kimi | None known | Absent from listing; message request to confirm | Projects: listing uses `project_id: ""`; check whether project chats are included |
+| Kimi | None known | Absent from listing; `GetChat` request to confirm | Projects: listing uses `project_id: ""`; mapped when present on chat metadata |
 
-Start with ChatGPT, which has the clearest signals, then add the others
-one at a time with synthetic tests of each response shape.
+All six providers are implemented with synthetic tests; verify each live with
+`reclaim doctor --live` before releasing.
 
 ### Tasks
 
-- [ ] Sync records with title, project and state.
-- [ ] A completeness flag returned by every provider listing.
-- [ ] A lifecycle planner shared by all providers: classify, confirm,
+- [x] Sync records with title, project and state.
+- [x] A completeness flag returned by every provider listing.
+- [x] A lifecycle planner shared by all providers: classify, confirm,
       apply the brake, report.
-- [ ] ChatGPT archived listing and deletion confirmation, then the other
+- [x] ChatGPT archived listing and deletion confirmation, then the other
       providers one at a time, including Claude, Kimi and Gemini grouping.
-- [ ] Moves into and out of `_Archived` and `_Deleted`, with the event
-      log; reserve both names in the writer.
-- [ ] Check without writing, and merge of an approved subset.
-- [ ] Tidy: find chats saved in more than one folder and retire stale
+- [x] Moves into and out of `_Archived` and `_Deleted`, with the event
+      log. (The writer already reserves both names.)
+- [x] Check without writing, and merge of an approved subset.
+- [x] Tidy: find chats saved in more than one folder and retire stale
       copies after a preview. Covers the duplicates created before
       November 2026. **Window:** a *Tidy* action with a preview.
       **CLI:** `reclaim tidy`.
-- [ ] **Window:** the review dialog (per-provider lists with checkboxes,
+- [x] Replace older copies of a chat automatically after an update of every
+      chat, with Tidy's safe rules (an older copy goes only when everything it
+      says is in the current copy; its media is moved over, never dropped), as
+      a setting that is off by default. A run also reports what it filed away
+      or replaced, in the window's summary and notification, the terminal and
+      the log, and records a replacement in the audit trail. **Window:** a
+      Settings option. **CLI:** `"retire_older_copies": true` in `.reclaim.json`.
+- [x] **Window:** the review dialog (per-provider lists with checkboxes,
       merge all, merge selected, skip); a review screen for `_Archived`
       and `_Deleted` to open, restore or permanently delete chats with
       confirmation; counts per state in the provider table.
       **CLI:** the same plan in `--dry-run`, and `reclaim status` counts
       per state.
-- [ ] **Window:** setting to check for updates when the app starts (off
+- [x] **Window:** setting to check for updates when the app starts (off
       by default). Opening the app then runs *Check* and shows *Review*
       when something was found. The automatic check never waits for a
       login; a provider that needs one shows *Log in*.
-- [ ] **Window:** setting to start the app at login (off by default),
+- [x] **Window:** setting to start the app at login (off by default),
       creating a per-user autostart entry: an XDG autostart `.desktop`
       file on Linux, a `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
       value on Windows, and a login item on macOS. Turning it off removes
       the entry.
-- [ ] A run summary after each merge, also as a desktop notification.
+- [x] A run summary after each merge, also as a desktop notification.
 
 ## Phase 5. Packaging and updates
 
 Goal: installing, updating and removing the app works the way people
 expect on each system, and fixes reach users quickly.
 
-- [ ] Build the desktop apps from the GUI dependencies only, removing
+- [x] Build the desktop apps from the GUI dependencies only, removing
       about 20 MB of unused libraries.
-- [ ] Linux: an AppImage with an unpacked folder inside (faster start) and
+- [x] Linux: an AppImage with an unpacked folder inside (faster start) and
       a `.deb` for Debian, Ubuntu and Mint, both with a menu entry and
       icon. Build on an older base (glibc 2.35 or lower) so Ubuntu 22.04,
       Debian 12 and Mint 21 can run it; v3.3.3 needs glibc 2.38.
-- [ ] Windows: a per-user installer that needs no administrator rights,
+- [x] Windows: a per-user installer that needs no administrator rights,
       with a Start menu entry, an uninstaller and the start-at-login
       option.
-- [ ] macOS: a `.dmg` with drag-to-Applications, plus an Intel build.
-- [ ] PyPI releases, so the command line installs with `pipx install
-      reclaimmychats`.
-- [ ] Build-provenance attestations on release files.
+- [x] macOS: a `.dmg` with drag-to-Applications, plus an Intel build.
+- [x] The Python wheel and source distribution on every GitHub Release, so
+      the command line installs with `pipx install` of the wheel. A PyPI
+      upload step exists but is switched off (decided on 20 November 2026): it
+      runs only when the repository variable `PYPI_PUBLISH` is `true` and
+      Trusted Publishing is registered on `pypi.org` ([releasing](RELEASING.md)).
+- [x] Build-provenance attestations on release files.
 - [ ] Later, if users need it: code signing for Windows and macOS (paid).
 
 Not planned: a Flatpak or Snap, whose sandbox blocks starting the
 installed Chrome and writing to any folder the user chooses, and a
 container, which cannot show a browser for logins on the user's desktop.
+
+Decided on 20 November 2026 not to build for now:
+
+- Window screens for the offline commands `parse`, `import` and `export`.
+  They stay command-line only; the first to build, when someone needs it, is
+  an import screen for an official ChatGPT export.
+- Desktop notifications on Windows. They cannot be tested without a Windows
+  computer, and the window already shows each run's summary.
+- A different folder layout for a project that shares a name with a chat
+  (the project's chats are saved inside that chat's folder). Moves and
+  permanent deletes already leave the other chats alone ([output](OUTPUT.md)),
+  and changing the layout would change where existing databases keep files.

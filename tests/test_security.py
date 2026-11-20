@@ -21,9 +21,10 @@ class TestApiKeyCapture(unittest.TestCase):
             with self.subTest(url=url):
                 page = MagicMock()
                 callbacks = []
-                page.on.side_effect = lambda _, callback: callbacks.append(callback)
+                page.on.side_effect = lambda _, callback, seen=callbacks: seen.append(callback)
                 request = SimpleNamespace(url=url, headers={'x-goog-api-key': 'synthetic'})
-                page.goto.side_effect = lambda *a, **kw: callbacks[0](request)
+                page.goto.side_effect = (lambda *a, seen=callbacks, req=request, **kw:
+                                         seen[0](req))
                 with patch.object(googleaistudio.time, 'sleep'):
                     googleaistudio.init_replay(page)
                 captures = [c for c in page.evaluate.call_args_list if len(c.args) == 2]

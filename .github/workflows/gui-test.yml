@@ -25,7 +25,7 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
-      - run: python -m pip install -e '.[gui-test]'
+      - uses: ./.github/actions/install-locked
       - name: Install Flet Linux build prerequisites
         run: |
           sudo apt-get update

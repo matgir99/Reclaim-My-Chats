@@ -9,7 +9,7 @@ Thanks for considering a contribution to ReclaimMyChats!
   of it; keep it that way.
 - **No credentials anywhere.** No tokens, cookies, or secrets in code,
   logs, or docs. Reference them by name only.
-- **Privacy of the archive is the point.** Changes that weaken the
+- **Privacy of the database is the point.** Changes that weaken the
   git-ignore boundary or the media-stripping in `raw.json` will be rejected.
 
 ## Before opening a PR
@@ -19,7 +19,10 @@ from this repository's `develop` branch. Describe the problem,
 the resulting behavior, and what you tested. See the [maintainer guide](docs/MAINTAINING.md).
 
 ```bash
-./scripts/run_tests.sh  # offline tests must pass
+uv sync --extra gui-test      # or install the environment with dev extras
+./scripts/run_tests.sh        # offline tests must pass
+python -m playwright install --only-shell chromium
+python -m unittest discover -s tests -p browser_protocols.py
 ruff check reclaim tests scripts flet_integration
 pyright reclaim tests scripts flet_integration
 ```

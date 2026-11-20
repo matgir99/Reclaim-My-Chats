@@ -22,6 +22,7 @@ result is the JSON string at index 2 of the matching `wrb.fr` record.
 from __future__ import annotations
 
 import json
+from collections import deque
 
 
 def build_f_req(rpcid: str, payload) -> str:
@@ -62,8 +63,7 @@ def parse_frames(text: str) -> list[str]:
     and stops cleanly at trailing garbage or a truncated final frame.
     """
     text = text.lstrip()
-    if text.startswith(")]}'"):
-        text = text[4:]
+    text = text.removeprefix(")]}'")
     frames: list[str] = []
     i = 0   # code-point index into text
     u = 0   # UTF-16-unit offset of text[i] from the string start
@@ -93,6 +93,39 @@ def parse_frames(text: str) -> list[str]:
     return frames
 
 
+def _json_list(text) -> list | None:
+    """`text` parsed as a JSON array, else None."""
+    try:
+        value = json.loads(text)
+    except (ValueError, TypeError):
+        return None
+    return value if isinstance(value, list) else None
+
+
+def _rpc_result(arrays: list[list], rpcid: str | None) -> tuple[bool, list | None]:
+    """Search the arrays, breadth first, for the record of RPC `rpcid`
+    (['wrb.fr', rpcid, '<result JSON>', ...]). Returns (whether any RPC
+    record was seen, the matching record's result or None)."""
+    seen_rpc = False
+    queue = deque(arrays)
+    while queue:
+        array = queue.popleft()
+        if not (array and array[0] == 'wrb.fr'):
+            queue.extend(item for item in array if isinstance(item, list))
+            continue
+        seen_rpc = True
+        if len(array) < 3 or (rpcid is not None and array[1] != rpcid):
+            continue
+        try:
+            result = json.loads(array[2])
+        except (ValueError, TypeError) as exc:
+            raise RuntimeError('invalid JSON in batchexecute RPC result') from exc
+        if not isinstance(result, list):
+            raise RuntimeError('missing batchexecute RPC result')
+        return True, result
+    return seen_rpc, None
+
+
 def decode_response(text: str, rpcid: str | None = None) -> list:
     """Decode the matching RPC record, independent of telemetry/frame order.
 
@@ -104,47 +137,19 @@ def decode_response(text: str, rpcid: str | None = None) -> list:
     cleaned = text.lstrip()
     if cleaned.startswith(")]}'"):
         cleaned = cleaned[4:].lstrip()
-    objects = []
-    for fragment in [*frames, cleaned, *cleaned.splitlines()]:
-        try:
-            obj = json.loads(fragment)
-        except (ValueError, TypeError):
-            continue
-        if isinstance(obj, list):
-            objects.append(obj)
-    saw_rpc = False
-    stack = list(objects)
-    while stack:
-        obj = stack.pop(0)
-        if obj and obj[0] == 'wrb.fr':
-            saw_rpc = True
-            if len(obj) < 3 or (rpcid is not None and obj[1] != rpcid):
-                continue
-            try:
-                result = json.loads(obj[2])
-            except (ValueError, TypeError) as exc:
-                raise RuntimeError('invalid JSON in batchexecute RPC result') from exc
-            if not isinstance(result, list):
-                raise RuntimeError('missing batchexecute RPC result')
-            return result
-        stack.extend(item for item in obj if isinstance(item, list))
-    if saw_rpc:
-        raise RuntimeError(f'batchexecute response has no result for RPC {rpcid}')
-    if len(frames) >= 3:
-        try:
-            result = json.loads(frames[2])
-        except ValueError:
-            result = None
-        if isinstance(result, list):
-            return result
-    # Plain payloads are useful for saved captures, but never return strings
-    # or protocol telemetry as if they were chat data.
-    try:
-        result = json.loads(cleaned)
-    except ValueError:
-        result = None
-    if isinstance(result, list):
+    fragments = [*frames, cleaned, *cleaned.splitlines()]
+    arrays = [array for array in map(_json_list, fragments) if array is not None]
+    seen_rpc, result = _rpc_result(arrays, rpcid)
+    if result is not None:
         return result
+    if seen_rpc:
+        raise RuntimeError(f'batchexecute response has no result for RPC {rpcid}')
+    # Saved captures: a bare payload in the third frame, or the whole body.
+    # Never return strings or protocol telemetry as if they were chat data.
+    for payload in (frames[2] if len(frames) >= 3 else None, cleaned):
+        result = _json_list(payload)
+        if result is not None:
+            return result
     raise RuntimeError('unrecognized batchexecute response; login or protocol may have changed')
 
 

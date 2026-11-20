@@ -2,13 +2,16 @@
 
 import hashlib
 import json
+import os
 import subprocess
+import tarfile
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
-from scripts import publish_release, verify_release_assets
+from scripts import pack_desktop, publish_release, verify_desktop_artifacts, verify_release_assets
 
 
 class TestPublishing(unittest.TestCase):
@@ -106,3 +109,107 @@ class TestPublishing(unittest.TestCase):
         response = subprocess.CompletedProcess([], 0, json.dumps(self.draft), '')
         with patch.object(publish_release.subprocess, 'run', return_value=response):
             self.assertEqual(publish_release.existing_release('example/repo', 'v3.3.0'), self.draft)
+
+
+class TestDesktopPackaging(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+
+    def _make_linux_app(self):
+        icons = pack_desktop.write_icons(self.root / 'stage')
+        app_dir = self.root / 'ReclaimMyChats'
+        app_dir.mkdir()
+        exe = app_dir / 'ReclaimMyChats'
+        exe.write_text('#!/bin/sh\necho "hello:$1"\n', encoding='utf-8')
+        exe.chmod(0o755)
+        desktop = self.root / f'{pack_desktop.BUNDLE_ID}.desktop'
+        desktop.write_text('[Desktop Entry]\nExec=/tmp/build/ReclaimMyChats\nIcon=/tmp/icon\n',
+                           encoding='utf-8')
+        return app_dir, desktop, icons
+
+    def test_write_icons_produces_valid_png_ico_icns_headers(self):
+        icons = pack_desktop.write_icons(self.root)
+        self.assertTrue(icons['png'].read_bytes().startswith(b'\x89PNG\r\n\x1a\n'))
+        self.assertTrue(icons['ico'].read_bytes().startswith(b'\x00\x00\x01\x00'))
+        self.assertTrue(icons['icns'].read_bytes().startswith(b'icns'))
+
+    def test_linux_appimage_deb_and_tarball_builders(self):
+        app_dir, desktop, icons = self._make_linux_app()
+        out = self.root / 'out'
+        tarball = pack_desktop.build_linux_tarball(
+            app_dir, desktop, icons['png'], out / 'Reclaim-My-Chats-3.3.5-linux-x86_64.tar.gz',
+        )
+        with tarfile.open(tarball, 'r:gz') as tar:
+            names = set(tar.getnames())
+        self.assertTrue({
+            'ReclaimMyChats/ReclaimMyChats',
+            f'ReclaimMyChats/{pack_desktop.BUNDLE_ID}.desktop',
+            f'ReclaimMyChats/{pack_desktop.BUNDLE_ID}.png',
+        } <= names)
+
+        appimage = pack_desktop.build_linux_appimage(
+            app_dir, desktop, icons['png'], '3.3.5',
+            out / 'Reclaim-My-Chats-3.3.5-linux-x86_64.AppImage',
+        )
+        self.assertTrue(appimage.read_bytes().startswith(b'#!/bin/sh'))
+        if os.name == 'posix':
+            extract_cwd = self.root / 'extract'
+            extract_cwd.mkdir()
+            subprocess.run([str(appimage), '--appimage-extract'], cwd=extract_cwd, check=True)
+            self.assertTrue((extract_cwd / 'squashfs-root' / 'AppRun').is_file())
+            env = {**os.environ, 'XDG_CACHE_HOME': str(self.root / 'xdg-cache')}
+            ran = subprocess.run([str(appimage), 'ok'], capture_output=True, text=True,
+                                 env=env, check=True)
+            self.assertEqual(ran.stdout.strip(), 'hello:ok')
+
+        deb = pack_desktop.build_linux_deb(
+            app_dir, desktop, icons['png'], '3.3.5', 'x86_64',
+            out / 'Reclaim-My-Chats-3.3.5-linux-x86_64.deb',
+        )
+        self.assertTrue(deb.read_bytes().startswith(b'!<arch>\n'))
+        ar_deb = out / 'fallback.deb'
+        with patch.object(pack_desktop.shutil, 'which', return_value=None):
+            pack_desktop.build_linux_deb(app_dir, desktop, icons['png'], '3.3.5', 'arm64', ar_deb)
+        self.assertTrue(ar_deb.read_bytes().startswith(b'!<arch>\n'))
+
+    def test_windows_inno_script_and_verify_desktop_artifacts(self):
+        app_dir, desktop, icons = self._make_linux_app()
+        out = self.root / 'release'
+        win_app = self.root / 'win-app'
+        win_app.mkdir()
+        (win_app / 'ReclaimMyChats.exe').write_bytes(b'MZ-stub')
+        iss = pack_desktop.write_inno_script(
+            win_app, icons['ico'], '3.3.5',
+            out / 'Reclaim-My-Chats-3.3.5-windows-x86_64-setup.exe',
+            self.root / 'ReclaimMyChats.iss',
+        )
+        script_text = iss.read_text(encoding='utf-8')
+        self.assertIn('PrivilegesRequired=lowest', script_text)
+        self.assertIn(r'Software\Microsoft\Windows\CurrentVersion\Run', script_text)
+        self.assertIn('ValueName: "ReclaimMyChats"', script_text)
+
+        pack_desktop.build_linux_tarball(
+            app_dir, desktop, icons['png'], out / 'Reclaim-My-Chats-3.3.5-linux-x86_64.tar.gz',
+        )
+        pack_desktop.build_linux_appimage(
+            app_dir, desktop, icons['png'], '3.3.5',
+            out / 'Reclaim-My-Chats-3.3.5-linux-x86_64.AppImage',
+        )
+        with patch.object(pack_desktop.shutil, 'which', return_value=None):
+            pack_desktop.build_linux_deb(
+                app_dir, desktop, icons['png'], '3.3.5', 'x86_64',
+                out / 'Reclaim-My-Chats-3.3.5-linux-x86_64.deb',
+            )
+        pack_desktop.build_windows_zip(win_app, out / 'Reclaim-My-Chats-3.3.5-windows-x86_64.zip')
+        (out / 'Reclaim-My-Chats-3.3.5-windows-x86_64-setup.exe').write_bytes(b'MZ' + b'\x00' * 32)
+        for arch in ('arm64', 'x86_64'):
+            mac_zip = out / f'Reclaim-My-Chats-3.3.5-macos-{arch}.zip'
+            with zipfile.ZipFile(mac_zip, 'w') as zf:
+                zf.writestr('ReclaimMyChats.app/Contents/MacOS/ReclaimMyChats', 'bin')
+            (out / f'Reclaim-My-Chats-3.3.5-macos-{arch}.dmg').write_bytes(b'dmg-stub-0123456789')
+
+        with patch.object(verify_desktop_artifacts, 'MIN_SIZE', 10):
+            found = verify_desktop_artifacts.verify(out, '3.3.5')
+        self.assertEqual(len(found), 9)
