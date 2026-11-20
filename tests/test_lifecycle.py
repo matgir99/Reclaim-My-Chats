@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 from reclaim import __main__ as cli
 from reclaim import gui
-from reclaim.core import autostart, browser, config, database, engine, lifecycle, status, tidy, writer
+from reclaim.core import autostart, browser, database, engine, lifecycle, status, tidy, writer
 from reclaim.core.manifest import SyncState, save_chat
 from reclaim.core.model import Chat, Turn
 from reclaim.core.writer import read_chat_json, write_chat, write_raw
@@ -308,6 +308,7 @@ class _TempDatabase(unittest.TestCase):
 
     def update(self, provider, *args: str, replace_older: bool = False):
         """One run of `provider` with the given options and the setting on or off."""
+        from reclaim.core import config  # local: keeps the shared import line untouched
         config.save(self.root, providers=['chatgpt'], archive=None, retire_older_copies=replace_older)
         events: list = []
         parsed = engine.parse_args(provider, [*args, '-o', str(self.out)])
