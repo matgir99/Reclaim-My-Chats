@@ -446,7 +446,6 @@ class TestUpdateReport(_TempDatabase):
         self.assertEqual([m.chat_id for m in applied], ['a'])
 
 
-@unittest.skipUnless(gui.ft is not None, 'Flet GUI extra is not installed')
 class TestProjectChanges(_TempDatabase):
     """A chat moved into or out of a project at the provider; its timestamp does not change."""
 
@@ -505,6 +504,7 @@ class TestProjectChanges(_TempDatabase):
         self.assertEqual(self.record()['project'], 'Work')
 
 
+@unittest.skipUnless(gui.ft is not None, 'Flet GUI extra is not installed')
 class TestGuiTidy(unittest.IsolatedAsyncioTestCase):
     async def test_tidy_dialog_previews_and_retires_duplicates(self):
         with tempfile.TemporaryDirectory() as tmp:
