@@ -27,8 +27,7 @@ jobs:
           python-version: '3.12'
       - uses: ./.github/actions/install-locked
       - name: Install Flet Linux build prerequisites
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y xvfb $(flet --version --json | python -c "import json,sys; print(' '.join(json.load(sys.stdin)['linux_dependencies']))")
+        timeout-minutes: 16
+        run: bash scripts/apt_install.sh xvfb $(flet --version --json | python -c "import json,sys; print(' '.join(json.load(sys.stdin)['linux_dependencies']))")
       - name: Test controls in the Flet device host
         run: xvfb-run -a flet test linux flet_integration --tests-dir tests --yes -v
