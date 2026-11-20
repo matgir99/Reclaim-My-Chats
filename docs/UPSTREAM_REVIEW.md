@@ -240,4 +240,5 @@ Playwright uses a version range rather than vendored provider code. The
 November checks ran with Playwright 1.64.1 and Chrome 157. Flet remains an
 optional pinned GUI dependency. Dependabot's Flet 1.0.5 and Actions
 major-version updates were merged into `develop` after their checks passed.
-Flet 1.1 was released days before this review; it stays for a later update.
+Flet 1.1 was released days before this review and adopted on 20 November
+2026 (1.1.2).
