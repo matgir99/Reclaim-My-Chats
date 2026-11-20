@@ -19,13 +19,13 @@ import traceback
 from collections import Counter
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from . import config
 from .events import EventSink, emit, resolve, routed
-from .manifest import SyncState, finish_run, report_dry_run, save_chat, stats_text
+from .manifest import KEEP, SyncState, finish_run, report_dry_run, save_chat, stats_text
 from .model import Chat
 
 if TYPE_CHECKING:  # lifecycle imports this module, so only the type is imported here
@@ -60,6 +60,12 @@ class ChatRef:
     data: Any = None       # the provider's listing entry, handed back to fetch()
     project: str | None = None
     state: str = 'active'
+    listed: bool = True    # False for a chat taken from a URL: its project is not known
+
+    def listed_project(self):
+        """The project for comparing with the sync record: the listing's (None
+        when the chat is in no project), or KEEP for a chat taken from a URL."""
+        return self.project if self.listed else KEEP
 
 
 def is_listing_complete(provider: Provider, session) -> bool:
@@ -301,7 +307,8 @@ def _dry_run_session(provider: Provider, session, refs: list[ChatRef], out_dir: 
         emit(sink, 'nothing_matched', provider.name, message='No chats matched.')
         return 1
     sync = SyncState(out_dir, provider.name, migrate=False)
-    chats = [{'id': r.id, 'title': r.title, 'project': r.project, 'state': r.state} for r in refs]
+    chats = [{'id': r.id, 'title': r.title, 'project': r.listed_project(), 'state': r.state}
+             for r in refs]
     return report_dry_run(chats, {r.id: r.updated_at for r in refs}, sync,
                           skip_unchanged, sink=sink, provider=provider.name)
 
@@ -313,7 +320,7 @@ def _session(provider: Provider, page, args, sink: EventSink) -> int:
     started = time.time()
     session = provider.open(page)
     if args.url:
-        refs = [provider.from_url(session, args.url)]
+        refs = [replace(provider.from_url(session, args.url), listed=False)]
     else:
         emit(sink, 'listing', name, message=provider.listing_text())
         refs = provider.listing(session)
@@ -446,7 +453,7 @@ def download(provider: Provider, session, refs: list[ChatRef], out_dir: Path, *,
         emit(sink, 'chat_started', name, label, i, total)
         if skip_unchanged and sync.is_unchanged(
                 ref.id, ref.updated_at, title=ref.title or None,
-                project=ref.project, state=ref.state):
+                project=ref.listed_project(), state=ref.state):
             emit(sink, 'chat_skipped', name, label, i, total, 'skip (unchanged)')
             continue
         results.append(_download_one(provider, session, ref, i, total, out_dir,

@@ -16,6 +16,7 @@ timestamp, so a missing or damaged sync file is rebuilt from the folders.
 
 from __future__ import annotations
 
+import enum
 import json
 import os
 import time
@@ -27,6 +28,15 @@ from .fsutil import atomic_write_text
 from .model import Chat
 from .writer import (CHAT_JSON, locate_recorded, read_chat_json, retire_previous,
                      write_chat, write_raw)
+
+
+class _Keep(enum.Enum):
+    KEEP = 'keep'
+
+
+KEEP = _Keep.KEEP
+"""A project argument meaning "not known here; keep what the record says",
+as opposed to None, "in no project". A chat taken from a URL passes it."""
 
 
 def write_manifest(out_dir: Path, provider: str, results: list[dict],
@@ -196,13 +206,26 @@ class SyncState:
             self.save()
 
     @staticmethod
-    def _metadata_changed(prev: dict, title: str | None, project: str | None) -> bool:
+    def _saved_project(prev: dict) -> tuple[bool, str | None]:
+        """Whether the record knows the chat's project, and that project.
+
+        Records written since v3.3.5 always hold a title, and a project only
+        when the chat is in one, so a title without a project means none.
+        Records from v3.3.4 and earlier hold neither: their project is unknown."""
+        return ('project' in prev or 'title' in prev), (prev.get('project') or None)
+
+    @classmethod
+    def _metadata_changed(cls, prev: dict, title: str | None,
+                          project: str | None | _Keep) -> bool:
         if title is not None and prev.get('title') and prev.get('title') != title:
             return True
-        return bool(project is not None and 'project' in prev and prev.get('project') != project)
+        if project is KEEP:
+            return False
+        known, saved = cls._saved_project(prev)
+        return known and saved != (project or None)
 
     def classify(self, chat_id: str, updated_at, *, title: str | None = None,
-                 project: str | None = None, state: str = 'active') -> str:
+                 project: str | None | _Keep = KEEP, state: str = 'active') -> str:
         """'new', 'restored', 'archived', 'changed', or 'unchanged'."""
         prev = self._state.get(chat_id)
         if prev is None:
@@ -217,7 +240,7 @@ class SyncState:
         return 'changed' if prev.get('updated_at') != updated_at else 'unchanged'
 
     def is_unchanged(self, chat_id: str, updated_at, *, title: str | None = None,
-                     project: str | None = None, state: str = 'active') -> bool:
+                     project: str | None | _Keep = KEEP, state: str = 'active') -> bool:
         return self.classify(chat_id, updated_at, title=title, project=project,
                              state=state) == 'unchanged'
 
@@ -225,10 +248,13 @@ class SyncState:
         return locate_recorded(self.path.parent, md, chat_id)
 
     def mark(self, chat_id: str, updated_at, md_path: str, *,
-             title: str | None = None, project: str | None = None,
+             title: str | None = None, project: str | None | _Keep = KEEP,
              state: str = 'active'):
         """Record a written chat and save at once; retire its previous
-        folder if it moved. Read-only states only update memory."""
+        folder if it moved. Read-only states only update memory.
+
+        `project` is the project the chat was saved in; None records that it
+        is in none (a chat moved out of its project), KEEP keeps the record's."""
         out_dir = self.path.parent
         current = Path(md_path)
         prev = self._state.get(chat_id) or {}
@@ -244,7 +270,7 @@ class SyncState:
         except ValueError:
             stored = str(current)
         resolved_title = title if title is not None else prev.get('title')
-        resolved_project = project if project is not None else prev.get('project')
+        resolved_project = prev.get('project') if project is KEEP else project
         entry: dict = {'updated_at': updated_at, 'md': stored, 'state': state}
         if resolved_title is not None:
             entry['title'] = resolved_title
@@ -308,7 +334,7 @@ def _classify_chat(chat: dict, updated_map: dict, sync: SyncState) -> str:
         chat['id'],
         updated_map.get(chat['id']),
         title=chat.get('title') or None,
-        project=chat.get('project'),
+        project=chat.get('project', KEEP),
         state=chat.get('state') or 'active',
     )
 

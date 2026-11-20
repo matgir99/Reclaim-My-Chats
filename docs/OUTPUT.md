@@ -105,7 +105,12 @@ is saved again.
 Each provider's `.last_sync_<provider>.json` maps chat IDs to provider
 timestamps, Markdown paths (relative to the provider folder), titles, project
 names, and states (`active`, `archived`, or `deleted`).
-Default update mode skips entries classified as unchanged. The record is
+Default update mode skips entries classified as unchanged. A chat whose title
+or project changed at the provider is downloaded again even when its
+timestamp did not change, so a chat moved into or out of a project moves to
+its new folder. A record without a project means the chat is in none; records
+from v3.3.4 and earlier hold no title and no project, and their project is
+treated as unknown until the chat is next saved. The record is
 saved after every chat, so an interrupted run keeps the records of the
 chats it saved. If the file is missing or damaged, it is rebuilt from the
 `chat.json` files; a damaged file is kept beside it as
