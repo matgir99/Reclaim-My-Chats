@@ -19,11 +19,20 @@ WINDOWS_RUN_KEY = r'Software\Microsoft\Windows\CurrentVersion\Run'
 _LINUX_DISPLAY_VARS = ('DISPLAY', 'WAYLAND_DISPLAY', 'DBUS_SESSION_BUS_ADDRESS')
 
 
-def default_command() -> str:
-    """Command used when registering start-at-login for this installation."""
-    if getattr(sys, 'frozen', False):
-        return shlex.quote(sys.executable)
-    return f'{shlex.quote(sys.executable)} -m reclaim gui'
+def _is_windows(sys_name: str) -> bool:
+    return sys_name in ('win32', 'nt', 'windows')
+
+
+def default_command(system: str | None = None) -> str:
+    """Command used when registering start-at-login for this installation.
+
+    Windows reads only double quotes around a path with spaces (the
+    installer's own entry is `"...\\ReclaimMyChats.exe"`); the Linux and
+    macOS entries are read with shell quoting."""
+    args = [sys.executable] if getattr(sys, 'frozen', False) else [sys.executable, '-m', 'reclaim', 'gui']
+    if _is_windows((system or sys.platform).lower()):
+        return ' '.join([f'"{args[0]}"', *args[1:]])
+    return ' '.join(shlex.quote(arg) for arg in args)
 
 
 def linux_autostart_path(home: Path | None = None) -> Path:
@@ -96,13 +105,13 @@ def set_autostart(enabled: bool, *, command: str | None = None,
                   home: Path | None = None, system: str | None = None,
                   win_setter: Callable[[bool, str], None] | None = None) -> Path | str | None:
     """Create or remove a per-user login autostart entry on Linux, macOS, or Windows."""
-    cmd = command or default_command()
     sys_name = (system or sys.platform).lower()
+    cmd = command or default_command(sys_name)
     if sys_name.startswith('linux'):
         return _write_linux_entry(linux_autostart_path(home), enabled, cmd)
     if sys_name == 'darwin':
         return _write_macos_entry(macos_plist_path(home), enabled, cmd)
-    if sys_name in ('win32', 'nt', 'windows'):
+    if _is_windows(sys_name):
         (win_setter or _windows_autostart)(enabled, cmd)
         return WINDOWS_RUN_KEY
     return None
