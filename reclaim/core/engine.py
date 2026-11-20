@@ -16,16 +16,20 @@ import sys
 import threading
 import time
 import traceback
+from collections import Counter
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from . import config
 from .events import EventSink, emit, resolve, routed
 from .manifest import SyncState, finish_run, report_dry_run, save_chat, stats_text
 from .model import Chat
+
+if TYPE_CHECKING:  # lifecycle imports this module, so only the type is imported here
+    from .lifecycle import PlannedMove
 
 _stop = threading.local()
 
@@ -192,7 +196,59 @@ def _emit_and_apply_lifecycle(plan, out_dir: Path, sync: SyncState, args,
     if plan.brake_triggered and (dry_run or not approved):
         emit(sink, 'warning', provider.name, message=plan.brake_reason)
     if not dry_run:
-        lifecycle.apply_moves(out_dir, sync, plan, approved_ids=approved, stop=should_stop)
+        applied: list[PlannedMove] = []
+        lifecycle.apply_moves(out_dir, sync, plan, approved_ids=approved, stop=should_stop,
+                              applied=applied)
+        _report_moves(sink, provider.name, applied)
+
+
+def _plural(count: int, one: str, many: str) -> str:
+    return f'{count} {one if count == 1 else many}'
+
+
+def _report_moves(sink: EventSink, provider: str, applied: list[PlannedMove]) -> None:
+    """Say what a run filed away or restored; the moves themselves print nothing."""
+    if not applied:
+        return
+    counts = Counter(move.to_state for move in applied)
+    filed = counts['archived'] + counts['deleted']
+    pieces = []
+    if filed:
+        parts = ', '.join(f'{counts[state]} as {state}' for state in ('archived', 'deleted')
+                          if counts[state])
+        pieces.append(f'filed {_plural(filed, "chat", "chats")} ({parts})')
+    if counts['active']:
+        pieces.append(f'restored {_plural(counts["active"], "chat", "chats")}')
+    verbs = {'archived': 'archived', 'deleted': 'deleted', 'active': 'restored'}
+    titles = '\n'.join(f'  - {move.title} ({verbs[move.to_state]})' for move in applied)
+    emit(sink, 'moved', provider, total=len(applied), message='; '.join(pieces), detail=titles)
+
+
+def _replace_older_copies(provider: Provider, out_dir: Path, args, sink: EventSink) -> None:
+    """After an update of every chat, replace older copies of a chat by the current one.
+
+    Only when the setting is on, and only for a run that has seen the whole
+    provider: a title, `--skip`, `--limit`, `--only-id` or URL run has not."""
+    if (args.url or args.title or args.skip or args.limit or getattr(args, 'only_ids', None)
+            or should_stop() or not config.retire_older_copies()):
+        return
+    from . import tidy
+    try:
+        replaced, kept = tidy.retire_older_copies(out_dir, provider.name)
+    except OSError as exc:
+        emit(sink, 'warning', provider.name,
+             message=f'could not replace older copies of chats: {exc}')
+        return
+    if replaced:
+        emit(sink, 'replaced', provider.name, total=len(replaced),
+             message=(f'replaced {_plural(len(replaced), "older copy", "older copies")} of '
+                      'chats that were saved in more than one folder'),
+             detail='\n'.join(f'  - {copy.title}' for copy in replaced))
+    if kept:
+        emit(sink, 'warning', provider.name,
+             message=(f'kept {_plural(len(kept), "older copy", "older copies")} of chats saved '
+                      'in more than one folder: each holds something the current copy lacks '
+                      '(review them with Tidy duplicates)'))
 
 
 def _archived_refs(provider: Provider, session) -> list[ChatRef] | None:
@@ -293,6 +349,7 @@ def _session(provider: Provider, page, args, sink: EventSink) -> int:
     results = download(provider, session, refs, out_dir, skip_unchanged=skip_unchanged,
                        save_raw=not args.no_raw, sink=sink,
                        only_ids=set(only) if only else None)
+    _replace_older_copies(provider, out_dir, args, sink)
     return finish_run(out_dir, name, results, started, sink)
 
 

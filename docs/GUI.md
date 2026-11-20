@@ -40,11 +40,17 @@ and the update buttons stay disabled until they are solved:
 
 Warnings during a run, such as a `raw.json` that could not be written, are
 counted in the summary and listed in Details. Completed updates also send a
-desktop notification with the run summary. **Open log folder** shows the run log,
-which keeps the full output of every run, including errors. **Tidy duplicates**
+desktop notification with the run summary. The summary and the notification say
+what the update filed away (`_Archived`, `_Deleted`) or restored, and which older
+copies it replaced; the titles are in Details and the log. **Open log folder**
+shows the run log, which keeps the full output of every run, including errors.
+**Tidy duplicates**
 scans for multiple folders belonging to the same chat, previews them, and retires
 safe duplicates while preserving copies that contain unique branch text
-(`reclaim tidy [--apply]`). **Archived & deleted** opens a review dialog for
+(`reclaim tidy [--apply]`). With **Replace older copies of a chat automatically
+after an update** turned on in Settings, an update of every chat does the same
+by itself, and **Tidy duplicates** then lists only the copies it kept because
+they hold something the current copy lacks. **Archived & deleted** opens a review dialog for
 chats in `_Archived` and `_Deleted` to open their folders, restore them to
 active folders, or permanently delete them after confirmation. When **Check for updates** finds downloads or lifecycle moves (`_Archived`,
 `_Deleted`, or restores), the **Review updates** dialog shows any mass-change
@@ -72,8 +78,10 @@ the saved path with *Open folder*. Open and check the file before sharing it.
 settings automatically). It can choose enabled providers, a database folder, an
 optional login data folder, the Kimi region (`international` vs `mainland`),
 an optional Chrome or Chromium executable path, the login wait in seconds,
-whether to check for updates at startup without waiting for logins, and whether
-to start the app when logging in to the computer. Choosing an empty or new database folder creates the database there after a
+whether to check for updates at startup without waiting for logins, whether
+to start the app when logging in to the computer, and whether an update replaces
+older copies of a chat automatically (off by default; see **Tidy duplicates**).
+Choosing an empty or new database folder creates the database there after a
 confirmation; a folder with unrelated files is refused. The login data folder
 field is useful when a standalone download should reuse a checkout's
 `.playwright-profile`; point it at that folder. The field stores a path, not

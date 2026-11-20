@@ -46,7 +46,10 @@ changed, restored, or unchanged; they are saved after every chat and rebuilt fro
 and applies moves between active folders, `_Archived/`, and `_Deleted/` with
 completeness checks, absence confirmation, a mass-change brake, and
 `.reclaim_events.jsonl` logging; `reclaim/core/tidy.py` retires safe duplicate
-folders. `reclaim/core/manifest.py` also records each run.
+folders, by hand (`reclaim tidy`) or, with the `retire_older_copies` setting
+on, after an update of every chat (`engine._replace_older_copies`). A run
+reports what it filed away and replaced as `moved` and `replaced` events.
+`reclaim/core/manifest.py` also records each run.
 
 `reclaim/core/autostart.py` manages per-user login autostart entries and
 desktop completion notifications. Progress is reported only as events (`core/events.py`, which lists the

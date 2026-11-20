@@ -258,8 +258,12 @@ def plan_lifecycle(out_dir: Path, provider: str, refs: list[ChatRef], sync: Sync
 
 def apply_moves(out_dir: Path, sync: SyncState, plan: LifecyclePlan, *,
                 approved_ids: set[str] | None = None, force: bool = False,
-                stop: Callable[[], bool] | None = None) -> list[Path]:
-    """Execute approved moves in `plan`; honors the mass-change brake unless approved."""
+                stop: Callable[[], bool] | None = None,
+                applied: list[PlannedMove] | None = None) -> list[Path]:
+    """Execute approved moves in `plan`; honors the mass-change brake unless approved.
+
+    Returns the new folders. When `applied` is given, each move that was
+    carried out is appended to it, so the caller can report what happened."""
     if _stopped(stop) or (plan.brake_triggered and not force and approved_ids is None):
         return []
     moved: list[Path] = []
@@ -271,7 +275,17 @@ def apply_moves(out_dir: Path, sync: SyncState, plan: LifecyclePlan, *,
         target = move_chat_folder(out_dir, sync, move.chat_id, move.to_state, reason=move.reason)
         if target is not None:
             moved.append(target)
+            if applied is not None:
+                applied.append(move)
     return moved
+
+
+def log_replaced(out_dir: Path, chat_id: str, old_rel: Path, new_rel: Path) -> None:
+    """Record in the audit log that an older copy of a chat was replaced by the current one.
+
+    `old_rel` and `new_rel` are folders relative to the provider folder `out_dir`."""
+    _append_event(out_dir, chat_id, old_rel, new_rel, 'replaced',
+                  'older copy replaced by the current copy')
 
 
 @dataclass(frozen=True)

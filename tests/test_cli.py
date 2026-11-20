@@ -615,11 +615,26 @@ class TestConfig(unittest.TestCase):
                              ('{"chrome_path": 7}', 'chrome_path'),
                              ('{"kimi_region": "mars"}', 'kimi_region'),
                              ('{"login_timeout": 5}', 'login_timeout'),
+                             ('{"retire_older_copies": "yes"}', 'retire_older_copies'),
                              ('["chatgpt"]', 'JSON object'),
                              ('{"version": 99}', 'newer version')):
             self._write(text)
             with self.assertRaisesRegex(config.SettingsError, reason):
                 config.load(self.root)
+
+    def test_replacing_older_copies_is_off_until_chosen_and_stored_only_when_on(self):
+        from reclaim.core import config
+        saved = self.root / '.reclaim.json'
+        self.assertFalse(config.retire_older_copies(self.root))
+        config.save(self.root, providers=['chatgpt'], archive=None, retire_older_copies=True)
+        self.assertTrue(config.retire_older_copies(self.root))
+        self.assertIs(json.loads(saved.read_text())['retire_older_copies'], True)
+        # Saving other settings keeps the choice; turning it off removes the key.
+        config.save(self.root, providers=['chatgpt'], archive=None, kimi_region='mainland')
+        self.assertTrue(config.retire_older_copies(self.root))
+        config.save(self.root, providers=['chatgpt'], archive=None, retire_older_copies=False)
+        self.assertFalse(config.retire_older_copies(self.root))
+        self.assertNotIn('retire_older_copies', json.loads(saved.read_text()))
 
     def test_empty_list_runs_everything(self):
         from reclaim.core import config

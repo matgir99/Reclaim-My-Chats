@@ -203,7 +203,7 @@ def _field_problem(data: dict) -> str | None:
 
 
 def _flag_problem(data: dict) -> str | None:
-    for key in ('check_on_startup', 'start_at_login'):
+    for key in ('check_on_startup', 'start_at_login', 'retire_older_copies'):
         if key in data and not isinstance(data[key], bool):
             return f'has an invalid "{key}" value (expected true or false)'
     return None
@@ -275,6 +275,14 @@ def start_at_login(root: Path | None = None) -> bool:
     return bool(load(base).get('start_at_login', False))
 
 
+def retire_older_copies(root: Path | None = None) -> bool:
+    """True when an update should replace older copies of a chat by the current one.
+
+    Off by default: it removes files, so the owner of the database chooses it."""
+    base = Path(root) if root is not None else default_root()
+    return bool(load(base).get('retire_older_copies', False))
+
+
 def uses_default_database(root: Path | None = None) -> bool:
     """True when the settings do not choose a database folder."""
     base = Path(root) if root is not None else default_root()
@@ -311,7 +319,8 @@ def _validate_extra(*, kimi_region: str | None, login_timeout: int | None) -> No
 def _apply_optional(data: dict, *, profile: str | None, kimi_region: str | None,
                     chrome_path: str | None, login_timeout: int | None,
                     check_on_startup: bool | None = None,
-                    start_at_login: bool | None = None) -> None:
+                    start_at_login: bool | None = None,
+                    retire_older_copies: bool | None = None) -> None:
     if profile is not None:
         _set_or_drop(data, 'profile', profile if profile.strip() else None)
     if kimi_region is not None:
@@ -325,13 +334,16 @@ def _apply_optional(data: dict, *, profile: str | None, kimi_region: str | None,
         _set_or_drop(data, 'check_on_startup', True if check_on_startup else None)
     if start_at_login is not None:
         _set_or_drop(data, 'start_at_login', True if start_at_login else None)
+    if retire_older_copies is not None:
+        _set_or_drop(data, 'retire_older_copies', True if retire_older_copies else None)
 
 
 def save(root: Path, *, providers: list[str], archive: str | None,
          profile: str | None = None, kimi_region: str | None = None,
          chrome_path: str | None = None, login_timeout: int | None = None,
          check_on_startup: bool | None = None,
-         start_at_login: bool | None = None) -> None:
+         start_at_login: bool | None = None,
+         retire_older_copies: bool | None = None) -> None:
     """Atomically update settings without discarding other config keys.
 
     `archive=None` removes the database choice, so the default location
@@ -352,7 +364,8 @@ def save(root: Path, *, providers: list[str], archive: str | None,
     _set_or_drop(data, 'archive', archive, keep_empty=True)
     _apply_optional(data, profile=profile, kimi_region=kimi_region,
                     chrome_path=chrome_path, login_timeout=login_timeout,
-                    check_on_startup=check_on_startup, start_at_login=start_at_login)
+                    check_on_startup=check_on_startup, start_at_login=start_at_login,
+                    retire_older_copies=retire_older_copies)
     root.mkdir(parents=True, exist_ok=True)
     text = json.dumps(data, indent=2, ensure_ascii=False) + '\n'
     atomic_write_text(root / CONFIG_NAME, text, mode=0o600)

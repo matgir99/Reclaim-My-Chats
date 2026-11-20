@@ -113,7 +113,10 @@ chats it saved. If the file is missing or damaged, it is rebuilt from the
 
 Lifecycle moves into `_Archived/`, `_Deleted/`, or back to active folders are
 appended to `.reclaim_events.jsonl` in each provider folder (time, chat ID,
-previous path, target path, state, and reason).
+previous path, target path, state, and reason). When an older copy of a chat is
+replaced by the current one (`reclaim tidy --apply`, or an update with the
+`retire_older_copies` setting on), that is logged too: the state is `replaced`,
+the previous path is the older folder, and the target path is the folder kept.
 
 `.reclaim_manifest.json` records when the last run started, its duration,
 per-chat results, and totals such as chats, successes, failures, images,
