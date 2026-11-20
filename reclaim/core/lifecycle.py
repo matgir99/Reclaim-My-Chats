@@ -111,6 +111,30 @@ def _relocate_chat_folder(old_dir: Path, target_dir: Path) -> None:
         old_dir.rename(target_dir)
 
 
+def _existing_target(old_dir: Path, target_dir: Path, chat_id: str) -> Path:
+    """Where to move a chat whose target folder already exists.
+
+    The target is used when it is this chat's: its chat.json says so, or it
+    holds an interrupted move (only the chat's own files, or its Markdown
+    with the chat's Source line). Otherwise the chat goes to the next free
+    name, but only while its folder still holds every file its chat.json
+    lists: a chat partly moved already is never split over two folders."""
+    payload = writer.read_chat_json(old_dir) or {}
+    chosen = writer._chat_folder(target_dir.parent, target_dir.name, chat_id,
+                                 source_url=payload.get('source_url'),
+                                 own_names=writer.own_file_names(payload))
+    if chosen != target_dir:
+        listed = writer.own_file_names(payload) - {writer.CHAT_JSON, 'raw.json'}
+        missing = sorted(name for name in listed if not (old_dir / name).exists())
+        if missing:
+            raise FileNotFoundError(
+                f'Cannot move the chat folder "{old_dir.name}": it looks partly moved '
+                f'already (an interrupted move). These files are missing from it: '
+                f'{", ".join(missing)}. Look for them in "{target_dir}", move them back '
+                f'into "{old_dir}", then try again.')
+    return chosen
+
+
 def move_chat_folder(out_dir: Path, sync: SyncState, chat_id: str, to_state: str,
                      *, reason: str = '') -> Path | None:
     """Move one saved chat folder between active, `_Archived`, and `_Deleted`."""
@@ -131,7 +155,7 @@ def move_chat_folder(out_dir: Path, sync: SyncState, chat_id: str, to_state: str
     if old_dir.resolve() != target_dir.resolve():
         target_dir.parent.mkdir(parents=True, exist_ok=True)
         if target_dir.exists():
-            target_dir = writer._chat_folder(target_dir.parent, target_dir.name, chat_id)
+            target_dir = _existing_target(old_dir, target_dir, chat_id)
         _relocate_chat_folder(old_dir, target_dir)
         writer.prune_empty_parents(out_dir, old_dir.parent)
     _update_chat_json_state(target_dir, to_state)

@@ -37,6 +37,7 @@ from __future__ import annotations
 import json
 import re
 import time
+from collections.abc import Collection
 from pathlib import Path
 
 from .fsutil import atomic_write_bytes, atomic_write_text
@@ -166,30 +167,71 @@ def locate_recorded(out_dir: Path, md: str, chat_id: str | None = None) -> Path:
     return candidates[-1] if path.is_absolute() else candidates[0]
 
 
-def _chat_folder(parent: Path, slug: str, chat_id: str) -> Path:
+def own_file_names(payload: dict | None) -> set[str]:
+    """Files a chat.json names as its chat's own: Markdown, media, chat.json, raw.json."""
+    if not payload:
+        return set()
+    names = media_names(payload) | set(_GENERATED)
+    if isinstance(payload.get('markdown'), str):
+        names.add(payload['markdown'])
+    return names
+
+
+def _may_take(folder: Path, source_url: str | None, own_names: Collection[str]) -> bool:
+    """Whether a folder without a readable chat.json can hold this chat.
+
+    chat.json is written (and moved) last, so an interrupted save or move
+    leaves a folder without it. Such a folder is used only when it holds no
+    files, nothing but files named as this chat's own, or Markdown written for
+    this chat (its Source line). Other files may belong to another chat or to
+    the owner, so the folder is left alone. Subfolders do not count: they are
+    other chats (a project named like a chat) or the owner's folders, and
+    saving or moving a chat never touches them.
+
+    A file of that name occupies the name. Any other error (an unreadable
+    folder, or a parent that is not a folder) is raised: another name
+    would fail the same way."""
+    if folder.is_file():
+        return False
+    try:
+        files = [entry for entry in folder.iterdir() if not entry.is_dir()]
+    except FileNotFoundError:
+        return True
+    if all(entry.name in own_names for entry in files):
+        return True
+    md = folder / f'{folder.name}.md'
+    return md.is_file() and _written_for(md, source_url)
+
+
+def _chat_folder(parent: Path, slug: str, chat_id: str, *, source_url: str | None = None,
+                 own_names: Collection[str] = ()) -> Path:
     """The folder for this chat: its existing one, or the first free name.
 
-    A folder whose chat.json names another chat is never reused. A folder
-    without a readable chat.json (an interrupted first save) is reused."""
+    A folder whose chat.json names another chat is never reused, and neither
+    is one without a readable chat.json unless `_may_take` shows it is free
+    or this chat's own."""
     n = 1
     while True:
         candidate = parent / (slug if n == 1 else f'{slug} ({n})')
         payload = read_chat_json(candidate)
-        if payload is None or payload.get('id') == chat_id:
+        if payload is None:
+            if _may_take(candidate, source_url, own_names):
+                return candidate
+        elif payload.get('id') == chat_id:
             return candidate
         n += 1
 
 
-def _written_for(md: Path, chat: Chat) -> bool:
-    """True when `md` is Markdown this app wrote for `chat` (its Source line)."""
-    if not chat.source_url:
+def _written_for(md: Path, source_url: str | None) -> bool:
+    """True when `md` is Markdown this app wrote for the chat at `source_url` (its Source line)."""
+    if not source_url:
         return False
     try:
         with open(md, encoding='utf-8', errors='replace') as stream:
             head = stream.read(2048)
     except OSError:
         return False
-    return f'\n**Source:** {chat.source_url}\n' in head
+    return f'\n**Source:** {source_url}\n' in head
 
 
 def _remove_stale_markdown(chat_dir: Path, md: Path, chat: Chat, previous: dict | None) -> None:
@@ -206,7 +248,8 @@ def _remove_stale_markdown(chat_dir: Path, md: Path, chat: Chat, previous: dict 
     for path in chat_dir.glob('*.md'):
         if path == md or path.name in keep:
             continue
-        if path.name == recorded or (legacy.fullmatch(path.name) and _written_for(path, chat)):
+        if path.name == recorded or (legacy.fullmatch(path.name)
+                                     and _written_for(path, chat.source_url)):
             path.unlink()
 
 
@@ -393,7 +436,7 @@ def write_chat(chat: Chat, out_dir: Path, *, updated_at=None, state: str = 'acti
     chat; it is stored in chat.json so sync records can be rebuilt."""
     slug = slugify(chat.title) or slugify(chat.id)[:20] or 'chat'
     parent = _target_parent(out_dir, state, chat.project)
-    chat_dir = _chat_folder(parent, slug, chat.id)
+    chat_dir = _chat_folder(parent, slug, chat.id, source_url=chat.source_url)
     chat_dir.mkdir(parents=True, exist_ok=True)
     md = chat_dir / f'{chat_dir.name}.md'
     _remove_stale_markdown(chat_dir, md, chat, read_chat_json(chat_dir))

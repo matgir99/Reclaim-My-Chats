@@ -272,6 +272,68 @@ class TestNestedChatFolders(unittest.TestCase):
         self.assertIsNone(SyncState(self.out, 'chatgpt').known('inner'))
 
 
+class TestMoveIntoAnExistingFolder(unittest.TestCase):
+    """The target of a move already exists and has no readable chat.json."""
+
+    def setUp(self):
+        self._temp = tempfile.TemporaryDirectory()
+        self.db = Path(self._temp.name) / 'chats'
+        database.init(self.db)
+        self.out = self.db / 'ChatGPT'
+        self.out.mkdir()
+        self.sync = SyncState(self.out, 'chatgpt')
+        save_chat(_chat('c1', 'Foo'), self.out, self.sync, 'c1', '1')
+        self.own = sorted(p.name for p in (self.out / 'Foo').iterdir())
+        self.target = self.out / '_Deleted' / 'Foo'
+        self.target.mkdir(parents=True)
+
+    def tearDown(self):
+        self._temp.cleanup()
+
+    def test_an_interrupted_move_is_finished_in_the_same_folder(self):
+        # chat.json moves last: the Markdown is already in the target.
+        (self.out / 'Foo' / 'Foo.md').rename(self.target / 'Foo.md')
+        moved = lifecycle.move_chat_folder(self.out, self.sync, 'c1', 'deleted', reason='gone')
+        self.assertEqual(moved, self.target)
+        self.assertEqual(sorted(p.name for p in self.target.iterdir()), self.own)
+        self.assertFalse((self.out / 'Foo').exists())
+
+    def test_a_folder_holding_anything_else_is_not_mixed_with_the_chat(self):
+        (self.target / 'notes.txt').write_text('the owner\'s own file', encoding='utf-8')
+        moved = lifecycle.move_chat_folder(self.out, self.sync, 'c1', 'deleted', reason='gone')
+        assert moved is not None
+        self.assertEqual(moved, self.out / '_Deleted' / 'Foo (2)')
+        self.assertEqual([p.name for p in self.target.iterdir()], ['notes.txt'])
+        self.assertEqual(sorted(p.name for p in moved.iterdir()), self.own)
+
+    def test_an_interrupted_move_that_took_the_owners_file_along_is_finished(self):
+        # The owner's notes.txt was in the chat folder; it moved before chat.json did.
+        (self.out / 'Foo' / 'notes.txt').write_text('mine', encoding='utf-8')
+        for name in ('Foo.md', 'notes.txt'):
+            (self.out / 'Foo' / name).rename(self.target / name)
+        moved = lifecycle.move_chat_folder(self.out, self.sync, 'c1', 'deleted', reason='gone')
+        self.assertEqual(moved, self.target)
+        self.assertEqual(sorted(p.name for p in self.target.iterdir()),
+                         sorted([*self.own, 'notes.txt']))
+        self.assertFalse((self.out / 'Foo').exists())
+
+    def test_a_partly_moved_chat_is_never_split_over_two_folders(self):
+        # Only an image and the owner's file moved; nothing in the target proves it is this chat's.
+        chat = Chat(id='c1', title='Foo', source_url='https://example.test/c1', provider='chatgpt',
+                    turns=[Turn('user', 'q'), Turn('model', 'a', images=[b'\x89PNG one'])])
+        save_chat(chat, self.out, self.sync, 'c1', '2')
+        (self.out / 'Foo' / 'notes.txt').write_text('mine', encoding='utf-8')
+        for name in ('image_1.png', 'notes.txt'):
+            (self.out / 'Foo' / name).rename(self.target / name)
+        with self.assertRaisesRegex(FileNotFoundError, r'partly moved.*image_1\.png'):
+            lifecycle.move_chat_folder(self.out, self.sync, 'c1', 'deleted', reason='gone')
+        self.assertFalse((self.out / '_Deleted' / 'Foo (2)').exists())
+        self.assertTrue((self.out / 'Foo' / 'chat.json').is_file())
+        record = self.sync.known('c1')
+        assert record is not None
+        self.assertEqual(record['state'], 'active')
+
+
 class TestTidyDuplicates(unittest.TestCase):
     def setUp(self):
         self._temp = tempfile.TemporaryDirectory()
