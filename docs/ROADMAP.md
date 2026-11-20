@@ -278,3 +278,15 @@ expect on each system, and fixes reach users quickly.
 Not planned: a Flatpak or Snap, whose sandbox blocks starting the
 installed Chrome and writing to any folder the user chooses, and a
 container, which cannot show a browser for logins on the user's desktop.
+
+Decided on 20 November 2026 not to build for now:
+
+- Window screens for the offline commands `parse`, `import` and `export`.
+  They stay command-line only; the first to build, when someone needs it, is
+  an import screen for an official ChatGPT export.
+- Desktop notifications on Windows. They cannot be tested without a Windows
+  computer, and the window already shows each run's summary.
+- A different folder layout for a project that shares a name with a chat
+  (the project's chats are saved inside that chat's folder). Moves and
+  permanent deletes already leave the other chats alone ([output](OUTPUT.md)),
+  and changing the layout would change where existing databases keep files.
