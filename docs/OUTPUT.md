@@ -124,7 +124,8 @@ chats it saved. If the file is missing or damaged, it is rebuilt from the
 `.last_sync_<provider>.json.damaged-<time>`.
 
 A chat goes to `_Deleted/` only when it is missing from a complete listing
-and the provider answers HTTP 404 for it. That includes a chat already in
+and the provider says the chat does not exist: HTTP 404, or, from DeepSeek,
+which answers such a request with HTTP 200, the error "invalid chat session id". That includes a chat already in
 `_Archived/`, when the provider lists its archived chats (ChatGPT does) and the
 chat is missing from both lists: it moves from `_Archived/` to `_Deleted/`.
 

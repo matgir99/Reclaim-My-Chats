@@ -700,7 +700,8 @@ def _answer(code: int, text: str = '') -> dict:
 
 
 class TestDeletedMeansHttp404(unittest.TestCase):
-    """A chat is called deleted only when the service answers HTTP 404.
+    """A chat is called deleted only when the service answers HTTP 404, or, for
+    DeepSeek, its exact "invalid chat session id" answer.
 
     The text of an error can contain "404" for other reasons, such as the digits
     of a chat id (ChatGPT) or of an organisation id (Claude). These tests go
@@ -739,6 +740,31 @@ class TestDeletedMeansHttp404(unittest.TestCase):
             for label, answers in failures.items():
                 with self.subTest(name, failure=label):
                     self.assertEqual(self.confirm(name, *answers), 'unconfirmed')
+
+
+    @staticmethod
+    def deepseek_answer(code=0, biz_code=1, biz_msg: str | None = 'invalid chat session id',
+                        biz_data=None):
+        return _answer(200, json.dumps({'code': code, 'msg': '', 'data': {
+            'biz_code': biz_code, 'biz_msg': biz_msg, 'biz_data': biz_data}}))
+
+    def test_deepseek_answers_a_missing_chat_with_http_200_and_an_error(self):
+        # Seen live on 20 November 2026 for well-formed ids that do not exist.
+        self.assertEqual(self.confirm('deepseek', self.deepseek_answer()), 'deleted')
+
+    def test_deepseek_needs_that_exact_answer(self):
+        record = {'chat_session': {'id': self.CHAT_ID}, 'chat_messages': []}
+        self.assertEqual(self.confirm('deepseek', self.deepseek_answer(
+            biz_code=0, biz_msg='', biz_data=record)), 'active')
+        others = {
+            'another message': self.deepseek_answer(biz_msg='rate limit reached'),
+            'another business code': self.deepseek_answer(biz_code=7),
+            'an envelope error': self.deepseek_answer(code=40003),
+            'no message': self.deepseek_answer(biz_msg=None),
+        }
+        for label, answer in others.items():
+            with self.subTest(label):
+                self.assertEqual(self.confirm('deepseek', answer), 'unconfirmed')
 
 
 class TestAllProviderConfirmAndSubsetAndAutostart(unittest.TestCase):

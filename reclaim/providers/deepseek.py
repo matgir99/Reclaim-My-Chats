@@ -60,9 +60,26 @@ def ensure_logged_in(page):
                            lambda: bool(page.evaluate(_HAS_TOKEN_JS)))
 
 
+class Rejected(RuntimeError):
+    """The history API answered, but its envelope reports an error."""
+
+    def __init__(self, code, biz_code, biz_msg):
+        super().__init__('DeepSeek history API rejected the request; check your login and retry')
+        self.code, self.biz_code, self.biz_msg = code, biz_code, biz_msg
+
+
+# DeepSeek answers HTTP 200 for a chat that does not exist, with this error in
+# the envelope instead of a 404 (seen live for well-formed ids, November 2026).
+_NO_SUCH_CHAT = (0, 1, 'invalid chat session id')
+
+
+def _is_missing_chat(exc: BaseException) -> bool:
+    return isinstance(exc, Rejected) and (exc.code, exc.biz_code, exc.biz_msg) == _NO_SUCH_CHAT
+
+
 def _api_get(page, path: str, params: dict | None = None) -> dict:
     """GET a history API path from the page and return its biz_data, raising
-    when the envelope reports an error (code or biz_code other than 0)."""
+    `Rejected` when the envelope reports an error (code or biz_code other than 0)."""
     url = BASE_URL + 'api/v0/' + path
     if params:
         url += '?' + urlencode(params)
@@ -72,7 +89,7 @@ def _api_get(page, path: str, params: dict | None = None) -> dict:
         envelope = json.loads(response['text'])
         data = envelope['data']
         if envelope.get('code') != 0 or data.get('biz_code') != 0:
-            raise RuntimeError('DeepSeek history API rejected the request; check your login and retry')
+            raise Rejected(envelope.get('code'), data.get('biz_code'), data.get('biz_msg'))
         result = data['biz_data']
     except (ValueError, KeyError, TypeError, AttributeError) as exc:
         raise RuntimeError('unexpected DeepSeek history API response') from exc
@@ -338,7 +355,8 @@ class DeepSeek(engine.Provider):
             fetch_record(s.page, chat_id)
             return 'active'
         except Exception as exc:
-            return 'deleted' if retry.is_not_found(exc) else 'unconfirmed'
+            gone = retry.is_not_found(exc) or _is_missing_chat(exc)
+            return 'deleted' if gone else 'unconfirmed'
 
     def from_url(self, s, url: str) -> engine.ChatRef:
         return engine.ChatRef(id=url.rsplit('/a/chat/s/', maxsplit=1)[-1].split('?', maxsplit=1)[0][:40])
