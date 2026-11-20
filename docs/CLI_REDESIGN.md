@@ -47,6 +47,11 @@ reclaim import kept VAULT [--providers kimi,claude] [-o DIR]
 reclaim export haevn-md . chats.zip
 ```
 
+These offline commands have no window screen, by decision (20 November 2026):
+the window covers saving and following chats from the providers, and nobody
+has needed an import or export there yet. If one is built, an import screen for
+an official ChatGPT export comes first.
+
 Default terminal output shows the run header, summary, and failures. `--log`
 adds per-chat lines and timing. The GUI receives structured progress events
 from the same provider loops; it does not parse terminal output.

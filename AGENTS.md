@@ -17,7 +17,7 @@ If local files exist in `docs/status_and_plan/` from August 2026 (`v3.0.0`), the
 
 ## Rules
 
-1. **The window comes first.** Reclaim My Chats is a desktop application first and a CLI second. A user-facing feature is finished only when it works in the desktop window (`reclaim/gui.py`) as well as the CLI (`reclaim/__main__.py`).
+1. **The window comes first.** Reclaim My Chats is a desktop application first and a CLI second. A user-facing feature is finished only when it works in the desktop window (`reclaim/gui.py`) as well as the CLI (`reclaim/__main__.py`). The one decided exception is the offline commands `parse`, `import` and `export`, which stay command-line only until someone needs them in the window (an import screen for an official ChatGPT export would come first).
 2. **Use "database", not "archive".** Call the local folder where chats are saved **the database** ("saved", "in the database") in user-facing copy and docs. Reserve **archived** for a provider's own archive feature, and **deleted** for chats removed at the provider. Internal code and config identifiers (`archive_root`, `ArchiveController`, and the `"archive"` key in `.reclaim.json`) keep their names for compatibility.
 3. **Never delete user data.** Updates add, replace, or move files. Removing or overwriting anything in a real database requires the owner's explicit approval each time.
 4. **No private data in the repository.** Never put real chats, raw provider responses, browser profiles, cookies, tokens, logs, personal file paths, or email addresses in commits, PRs, issues, or test fixtures. Never send the owner's email address to any external service. Test fixtures must be synthetic, or cleaned with `reclaim/core/capture.py` and checked by eye.
