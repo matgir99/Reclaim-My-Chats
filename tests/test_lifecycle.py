@@ -762,9 +762,22 @@ class TestDeletedMeansHttp404(unittest.TestCase):
             'an envelope error': self.deepseek_answer(code=40003),
             'no message': self.deepseek_answer(biz_msg=None),
         }
+        others['a login failure'] = _answer(200, json.dumps(
+            {'code': 40003, 'msg': 'Authorization Failed', 'data': None}))
         for label, answer in others.items():
             with self.subTest(label):
                 self.assertEqual(self.confirm('deepseek', answer), 'unconfirmed')
+
+    def test_deepseek_errors_say_what_happened(self):
+        def error(answer):
+            page = _FakePage(answer)
+            with self.assertRaises(deepseek.Rejected) as caught:
+                deepseek._api_get(page, 'chat/history_messages')
+            return str(caught.exception)
+        login = _answer(200, json.dumps({'code': 40003, 'msg': 'Authorization Failed', 'data': None}))
+        self.assertIn('check your login', error(login))
+        self.assertIn('does not exist', error(self.deepseek_answer()))
+        self.assertNotIn('check your login', error(self.deepseek_answer()))
 
 
 class TestAllProviderConfirmAndSubsetAndAutostart(unittest.TestCase):

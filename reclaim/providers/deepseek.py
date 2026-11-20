@@ -60,17 +60,22 @@ def ensure_logged_in(page):
                            lambda: bool(page.evaluate(_HAS_TOKEN_JS)))
 
 
-class Rejected(RuntimeError):
-    """The history API answered, but its envelope reports an error."""
-
-    def __init__(self, code, biz_code, biz_msg):
-        super().__init__('DeepSeek history API rejected the request; check your login and retry')
-        self.code, self.biz_code, self.biz_msg = code, biz_code, biz_msg
-
-
 # DeepSeek answers HTTP 200 for a chat that does not exist, with this error in
 # the envelope instead of a 404 (seen live for well-formed ids, November 2026).
 _NO_SUCH_CHAT = (0, 1, 'invalid chat session id')
+
+
+class Rejected(RuntimeError):
+    """The history API answered, but its envelope reports an error."""
+
+    def __init__(self, code, biz_code=None, biz_msg=None):
+        self.code, self.biz_code, self.biz_msg = code, biz_code, biz_msg
+        if (code, biz_code, biz_msg) == _NO_SUCH_CHAT:
+            message = 'DeepSeek says this chat does not exist (invalid chat session id)'
+        else:
+            message = (f'DeepSeek history API rejected the request (code {code}, '
+                       f'biz_code {biz_code}); check your login and retry')
+        super().__init__(message)
 
 
 def _is_missing_chat(exc: BaseException) -> bool:
@@ -87,9 +92,11 @@ def _api_get(page, path: str, params: dict | None = None) -> dict:
                           what='DeepSeek history API')
     try:
         envelope = json.loads(response['text'])
+        if envelope.get('code') != 0:  # login failures come with "data": null
+            raise Rejected(envelope.get('code'))
         data = envelope['data']
-        if envelope.get('code') != 0 or data.get('biz_code') != 0:
-            raise Rejected(envelope.get('code'), data.get('biz_code'), data.get('biz_msg'))
+        if data.get('biz_code') != 0:
+            raise Rejected(0, data.get('biz_code'), data.get('biz_msg'))
         result = data['biz_data']
     except (ValueError, KeyError, TypeError, AttributeError) as exc:
         raise RuntimeError('unexpected DeepSeek history API response') from exc

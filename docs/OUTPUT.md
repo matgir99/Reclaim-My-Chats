@@ -125,9 +125,10 @@ chats it saved. If the file is missing or damaged, it is rebuilt from the
 
 A chat goes to `_Deleted/` only when it is missing from a complete listing
 and the provider says the chat does not exist: HTTP 404, or, from DeepSeek,
-which answers such a request with HTTP 200, the error "invalid chat session id". That includes a chat already in
-`_Archived/`, when the provider lists its archived chats (ChatGPT does) and the
-chat is missing from both lists: it moves from `_Archived/` to `_Deleted/`.
+which answers such a request with HTTP 200, the error "invalid chat session
+id". That includes a chat already in `_Archived/`, when the provider lists its
+archived chats (ChatGPT does) and the chat is missing from both lists: it moves
+from `_Archived/` to `_Deleted/`.
 
 Lifecycle moves into `_Archived/`, `_Deleted/`, or back to active folders are
 appended to `.reclaim_events.jsonl` in each provider folder (time, chat ID,
