@@ -47,6 +47,8 @@ jobs:
       - run: ruff check reclaim tests scripts flet_integration
       - run: pyright reclaim tests scripts flet_integration
       - run: python -m build
+      - name: Install the wheel and use the command line from it (as the release does)
+        run: python scripts/smoke_wheel.py dist
       - run: python -c "import flet, reclaim.gui; from reclaim.__main__ import main; assert main(['--version']) == 0"
 
   newer-python:

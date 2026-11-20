@@ -48,15 +48,8 @@ jobs:
         run: python -m build
       - name: Inspect wheel and source metadata
         run: python scripts/verify_python_artifacts.py --version "${{ steps.version.outputs.version }}" dist
-      - name: Install the wheel and check the CLI version
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          python -m venv "$RUNNER_TEMP/wheel-smoke"
-          "$RUNNER_TEMP/wheel-smoke/bin/python" -m pip install dist/*.whl
-          cd "$RUNNER_TEMP"
-          test "$("$RUNNER_TEMP/wheel-smoke/bin/python" -I -m reclaim --version)" = "reclaim $VERSION"
-          RECLAIM_HOME="$RUNNER_TEMP/wheel-data" "$RUNNER_TEMP/wheel-smoke/bin/python" -I -m reclaim status
+      - name: Install the wheel and use the command line from it
+        run: python scripts/smoke_wheel.py --version "${{ steps.version.outputs.version }}" dist
       - uses: actions/upload-artifact@v7
         with:
           name: python-packages
