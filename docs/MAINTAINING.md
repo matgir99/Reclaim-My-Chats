@@ -58,6 +58,30 @@ would then cover every administrator. Give contributors write or maintain
 access unless they need to manage settings, and reconsider the broad bypass
 before granting administrator access. Administrators can change the rules.
 
+## Dependency updates
+
+Every build installs the exact versions in `uv.lock`, so a dependency only
+changes through a reviewed PR. Dependabot proposes updates monthly (Python
+packages in one group, GitHub Actions in another), and security fixes when
+they appear. Take updates little and often: `develop` is not what users
+download, and nothing reaches them until a release, which needs the live
+check. Sort each update by how well the checks can judge it:
+
+| Lane | Updates | Handling |
+|:--|:--|:--|
+| Automatic | Check and build tools: ruff, pyright, build, PyInstaller | Merge into `develop` when every check passes. |
+| Checked at release | Playwright, Flet patch releases, GitHub Actions, and the packages `uv.lock` pulls in for them | Merge into `develop` when every check passes. The live check before the next release covers provider logins, and the release run covers actions used only there. |
+| Deliberate | Flet minor or major versions, and any update whose release notes list breaking changes or that needs code changes | An upgrade PR that moves every pin together and checks the window, for the owner to approve. |
+
+Security updates come first, whatever their lane. Before merging, read the
+release notes, and make sure the checks ran on the update merged with the
+current `develop` (`gh pr update-branch`, or the four checks locally in a
+throwaway environment). Close a PR that should not be merged, with a comment
+saying why. Flet is pinned in two projects: a Dependabot PR that moves only
+one fails `tests/test_flet_pins.py` until the other is updated in the same
+PR. Dependabot does not reliably offer Flet's minor or major releases; the
+weekly upstream watch reports them (see [UPSTREAM_REVIEW.md](UPSTREAM_REVIEW.md#weekly-check)).
+
 ## Code health
 
 CI runs `ruff` and `pyright` (see the commands in the README). Besides
