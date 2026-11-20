@@ -39,6 +39,12 @@ on `pypi.org` for the project `reclaimmychats` (workflow `release.yml`,
 environment left blank), then set the variable under **Settings → Secrets and
 variables → Actions → Variables**. The step keeps `continue-on-error: true`,
 so a PyPI problem never blocks the GitHub Release.
+Ubuntu packages for the Linux desktop build (and the Flet test job) are
+installed with `scripts/apt_install.sh`: fetching them gets a time limit and up
+to three attempts, switching from the runner's Azure mirror to
+`archive.ubuntu.com` after the first. That mirror stalled several times in
+November 2026 and used up a whole 25-minute job.
+
 Rerunning a failed workflow at the same `main` commit reuses its tag and
 resumes an incomplete draft. Published release downloads are never replaced.
 Draft lookup uses the authenticated release list when GitHub's tag endpoint

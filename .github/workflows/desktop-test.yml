@@ -12,6 +12,7 @@ on:
       - reclaim/desktop_smoke.py
       - scripts/pack_desktop.py
       - scripts/smoke_desktop.py
+      - scripts/apt_install.sh
       - .github/workflows/desktop-test.yml
       - .github/workflows/release.yml
 
@@ -60,9 +61,8 @@ jobs:
           extra: gui-pack
       - name: Install Linux desktop dependencies
         if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y xvfb $(flet --version --json | python -c "import json,sys; print(' '.join(json.load(sys.stdin)['linux_dependencies']))")
+        timeout-minutes: 16
+        run: bash scripts/apt_install.sh xvfb $(flet --version --json | python -c "import json,sys; print(' '.join(json.load(sys.stdin)['linux_dependencies']))")
       - run: python scripts/pack_desktop.py --version 0.0.0 --arch "${{ matrix.arch }}"
       - name: Launch the extracted desktop application
         shell: bash
