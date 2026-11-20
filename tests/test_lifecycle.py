@@ -117,6 +117,60 @@ class TestLifecycleAndSyncRecords(unittest.TestCase):
         self.assertTrue((self.out / 'Chat 2').exists())
 
 
+class TestArchivedThenDeleted(unittest.TestCase):
+    """A chat archived at the provider and later deleted there."""
+
+    def setUp(self):
+        self._temp = tempfile.TemporaryDirectory()
+        self.db = Path(self._temp.name) / 'chats'
+        database.init(self.db)
+        self.out = self.db / 'ChatGPT'
+        self.out.mkdir()
+        self.sync = SyncState(self.out, 'chatgpt')
+        save_chat(_chat('c1', 'Active'), self.out, self.sync, 'c1', '1')
+        for cid in ('a1', 'a2'):
+            save_chat(_chat(cid, f'Archived {cid}'), self.out, self.sync, cid, '1', state='archived')
+        self.asked: list[str] = []
+
+    def tearDown(self):
+        self._temp.cleanup()
+
+    def _plan(self, archived_refs, verdicts: dict[str, str]) -> lifecycle.LifecyclePlan:
+        def confirm(cid: str) -> str:
+            self.asked.append(cid)
+            return verdicts.get(cid, 'unconfirmed')
+        return lifecycle.plan_lifecycle(
+            self.out, 'chatgpt', [engine.ChatRef(id='c1', title='Active', updated_at='1')],
+            self.sync, archived_refs=archived_refs, complete=True, confirm=confirm)
+
+    def test_a_deleted_archived_chat_moves_from_archived_to_deleted(self):
+        # a2 is still in the archived list; a1 is in neither list and the provider says 404.
+        plan = self._plan([engine.ChatRef(id='a2', title='Archived a2', updated_at='1',
+                                          state='archived')], {'a1': 'deleted'})
+        self.assertEqual(self.asked, ['a1'])
+        self.assertEqual([(m.chat_id, m.from_state, m.to_state) for m in plan.moves],
+                         [('a1', 'archived', 'deleted')])
+        lifecycle.apply_moves(self.out, self.sync, plan)
+        self.assertTrue((self.out / '_Deleted' / 'Archived a1' / 'Archived a1.md').is_file())
+        self.assertFalse((self.out / '_Archived' / 'Archived a1').exists())
+        self.assertTrue((self.out / '_Archived' / 'Archived a2' / 'Archived a2.md').is_file())
+        record = SyncState(self.out, 'chatgpt').known('a1')
+        assert record is not None
+        self.assertEqual(record['state'], 'deleted')
+
+    def test_an_archived_chat_the_provider_still_has_stays_archived(self):
+        plan = self._plan([], {'a1': 'archived', 'a2': 'unconfirmed'})
+        self.assertEqual(sorted(self.asked), ['a1', 'a2'])
+        self.assertEqual(plan.moves, [])
+        self.assertEqual(sorted(plan.unconfirmed), ['a1', 'a2'])
+
+    def test_without_an_archived_list_archived_chats_are_not_asked_about(self):
+        # Archived chats are then missing from every listing, so absence says nothing.
+        plan = self._plan(None, {'a1': 'deleted', 'a2': 'deleted'})
+        self.assertEqual(self.asked, [])
+        self.assertEqual(plan.moves, [])
+
+
 class TestNestedChatFolders(unittest.TestCase):
     """A project named like a chat saves its chats inside that chat's folder.
 

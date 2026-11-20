@@ -111,6 +111,11 @@ chats it saved. If the file is missing or damaged, it is rebuilt from the
 `chat.json` files; a damaged file is kept beside it as
 `.last_sync_<provider>.json.damaged-<time>`.
 
+A chat goes to `_Deleted/` only when it is missing from a complete listing
+and the provider answers HTTP 404 for it. That includes a chat already in
+`_Archived/`, when the provider lists its archived chats (ChatGPT does) and the
+chat is missing from both lists: it moves from `_Archived/` to `_Deleted/`.
+
 Lifecycle moves into `_Archived/`, `_Deleted/`, or back to active folders are
 appended to `.reclaim_events.jsonl` in each provider folder (time, chat ID,
 previous path, target path, state, and reason). When an older copy of a chat is

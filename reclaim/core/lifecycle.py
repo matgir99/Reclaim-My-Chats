@@ -200,22 +200,39 @@ def _stopped(stop: Callable[[], bool] | None) -> bool:
     return bool(stop is not None and stop())
 
 
+def _absent_move(cid: str, prev: dict, state: str, verdict: str) -> PlannedMove | None:
+    """The move a confirmed verdict calls for: an active chat to `_Archived` or
+    `_Deleted`, an archived chat to `_Deleted`; None for anything else."""
+    if verdict == 'deleted' or (verdict == 'archived' and state == 'active'):
+        reason = ('confirmed missing at provider' if verdict == 'deleted'
+                  else 'confirmed archived at provider')
+        return PlannedMove(cid, str(prev.get('title') or cid), state, verdict, reason,
+                           str(prev.get('md') or ''))
+    return None
+
+
 def _collect_absent_actions(known: dict[str, dict], seen_ids: set[str], moved_ids: set[str],
                             confirm: Callable[[str], str] | None, *,
-                            stop: Callable[[], bool] | None = None) -> tuple[list[PlannedMove], list[str]]:
+                            stop: Callable[[], bool] | None = None,
+                            check_archived: bool = False) -> tuple[list[PlannedMove], list[str]]:
+    """Ask the provider about each saved chat missing from its listings.
+
+    Archived chats are asked about only when `check_archived` is set (the
+    provider lists its archived chats, so missing from both lists means
+    something); otherwise every archived chat would be missing every time."""
+    checked = ('active', 'archived') if check_archived else ('active',)
     moves: list[PlannedMove] = []
     unconfirmed: list[str] = []
     for cid, prev in known.items():
-        if cid in seen_ids or cid in moved_ids or (prev.get('state') or 'active') != 'active':
+        state = prev.get('state') or 'active'
+        if cid in seen_ids or cid in moved_ids or state not in checked:
             continue
         if _stopped(stop):
             break
         verdict = confirm(cid) if confirm is not None else 'unconfirmed'
-        if verdict in ('deleted', 'archived'):
-            reason = ('confirmed missing at provider' if verdict == 'deleted'
-                      else 'confirmed archived at provider')
-            moves.append(PlannedMove(cid, str(prev.get('title') or cid), 'active',
-                                     verdict, reason, str(prev.get('md') or '')))
+        move = _absent_move(cid, prev, state, verdict)
+        if move is not None:
+            moves.append(move)
         else:
             unconfirmed.append(cid)
     return moves, unconfirmed
@@ -240,8 +257,9 @@ def plan_lifecycle(out_dir: Path, provider: str, refs: list[ChatRef], sync: Sync
     seen_ids = {ref.id for ref in refs} | archived_seen
     unconfirmed: list[str] = []
     if is_complete and not _stopped(stop):
-        absent_moves, unconfirmed = _collect_absent_actions(known, seen_ids, moved_ids, confirm,
-                                                            stop=stop)
+        absent_moves, unconfirmed = _collect_absent_actions(
+            known, seen_ids, moved_ids, confirm, stop=stop,
+            check_archived=archived_refs is not None)
         moves.extend(absent_moves)
     total_known = len(known)
     downward = sum(1 for m in moves if m.to_state in ('archived', 'deleted'))
