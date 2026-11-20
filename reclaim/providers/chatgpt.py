@@ -385,8 +385,7 @@ class ChatGPT(engine.Provider):
             data = _get(s.page, s.token,
                         f'{BASE_URL}/backend-api/conversation/{chat_id}', retries=1)
         except Exception as exc:
-            msg = str(exc).lower()
-            return 'deleted' if ('404' in msg or 'not found' in msg) else 'unconfirmed'
+            return 'deleted' if retry.is_not_found(exc) else 'unconfirmed'
         if isinstance(data, dict):
             if data.get('is_archived'):
                 return 'archived'

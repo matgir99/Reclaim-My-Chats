@@ -13,6 +13,11 @@ what happens next, the same way for every service:
 - 500, 502, 503, 504 and failed requests (a page reload, a network drop)
   are retried with short pauses.
 - Any other status stops, unless the caller asked to handle it itself.
+
+A request that fails for good raises `RequestFailed`, which carries the HTTP
+status of the last response. Decide what a failure means from that status, as
+`is_not_found` does, never from the message: the message can contain "404" for
+other reasons, such as the digits of a chat id.
 """
 
 from __future__ import annotations
@@ -28,8 +33,26 @@ TRANSIENT = (500, 502, 503, 504)
 _recorder = threading.local()
 
 
-class AuthError(RuntimeError):
+class RequestFailed(RuntimeError):
+    """A request that ended without a usable response.
+
+    `status` is the HTTP status of the last response, or None when no response
+    arrived (a page reload, a network drop)."""
+
+    def __init__(self, message: str, status: int | None = None):
+        super().__init__(message)
+        self.status = status
+
+
+class AuthError(RequestFailed):
     """The service refused the login (HTTP 401 or 403)."""
+
+
+def is_not_found(exc: BaseException) -> bool:
+    """True when the service answered HTTP 404, which is how a chat that no
+    longer exists is recognised. Any other failure (a rate limit, a server
+    error, a refused login, a dropped connection) says nothing about the chat."""
+    return isinstance(exc, RequestFailed) and exc.status == 404
 
 
 @contextmanager
@@ -81,18 +104,20 @@ def send(call: Callable[[], dict], *, what: str, retries: int = 3,
     Three separate budgets: `retries` for failed requests and server errors,
     RATE_LIMIT_WAITS for 429s, and `auth_retries` for 401/403."""
     last = 'no response'
+    last_status: int | None = None
     attempt = limited = auth = 0
     while attempt < retries:
         try:
             response = call()
         except Exception as exc:  # a request that failed inside the page
-            last = str(exc)
+            last, last_status = str(exc), None
             attempt += 1
             _backoff(attempt, retries)
             continue
         if record:
             _record(what, response)
         status = response.get('status')
+        last_status = status if isinstance(status, int) else None
         if status == 200 or status in give_back:
             return response
         if status in (401, 403) and auth < auth_retries:
@@ -111,10 +136,10 @@ def send(call: Callable[[], dict], *, what: str, retries: int = 3,
             return response
         if status in (401, 403):
             raise AuthError(f'{what}: HTTP {status}, the login was refused. '
-                            'Log in again and retry.')
+                            'Log in again and retry.', status)
         last = f'HTTP {status}: {str(response.get("text", ""))[:120]}'
         if final:
             break
         attempt += 1
         _backoff(attempt, retries)
-    raise RuntimeError(f'{what} failed: {last}')
+    raise RequestFailed(f'{what} failed: {last}', last_status)

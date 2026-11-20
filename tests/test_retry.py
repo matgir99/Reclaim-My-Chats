@@ -72,6 +72,48 @@ class TestRetry(unittest.TestCase):
                 retry.send(responses(status(404)), what='Test GET')
         self.assertEqual(self.send(responses(status(404)), give_back=(404,))[0]['status'], 404)
 
+    def test_a_failure_carries_the_http_status_of_the_last_response(self):
+        cases = [
+            (responses(status(404)), 404),
+            (responses(status(500), status(500), status(500)), 500),
+            (responses(*[status(429)] * (len(retry.RATE_LIMIT_WAITS) + 1)), 429),
+            (responses(status(500), RuntimeError('page reloaded'), RuntimeError('page reloaded')), None),
+            (responses(*[RuntimeError('page reloaded')] * 3), None),
+        ]
+        refused = responses(status(403))
+        with patch.object(retry.time, 'sleep'):
+            for call, expected in cases:
+                with self.subTest(expected=expected):
+                    with self.assertRaises(retry.RequestFailed) as caught:
+                        retry.send(call, what='Test GET')
+                    self.assertEqual(caught.exception.status, expected)
+            with self.assertRaises(retry.AuthError) as caught:
+                retry.send(refused, what='Test GET')
+        self.assertEqual(caught.exception.status, 403)
+        self.assertIsInstance(caught.exception, RuntimeError)
+
+    def test_only_an_http_404_means_not_found_whatever_the_text_says(self):
+        # A chat id with 404 in it appears in the message; the body says "not found".
+        what = 'GET https://x.test/conversation/6a404b00-0000-4000-8000-000000000404'
+        not_found_body = {'status': 500, 'text': '404 not found', 'retryAfter': None}
+        failures = {
+            'a real 404': (responses(status(404)), True),
+            'a server error': (responses(not_found_body, not_found_body, not_found_body), False),
+            'a rate limit': (responses(*[status(429)] * 5), False),
+            'a refused login': (responses(status(403)), False),
+            'a dropped connection': (responses(*[RuntimeError('404 not found')] * 3), False),
+        }
+        with patch.object(retry.time, 'sleep'):
+            for label, (call, expected) in failures.items():
+                with self.subTest(label):
+                    with self.assertRaises(RuntimeError) as caught:
+                        retry.send(call, what=what)
+                    self.assertEqual(retry.is_not_found(caught.exception), expected)
+        # Only an error that carries the status counts; text alone never does.
+        self.assertFalse(retry.is_not_found(RuntimeError('HTTP 404: not found')))
+        self.assertFalse(retry.is_not_found(retry.RequestFailed('HTTP 404: not found')))
+        self.assertTrue(retry.is_not_found(retry.RequestFailed('gone', 404)))
+
     def test_callers_with_fallbacks_get_every_final_response(self):
         self.assertEqual(self.send(responses(status(400)), return_errors=True)[0]['status'], 400)
         self.assertEqual(self.send(responses(status(500), status(500), status(500)),

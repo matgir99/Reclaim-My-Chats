@@ -14,11 +14,11 @@ from unittest.mock import patch
 
 from reclaim import __main__ as cli
 from reclaim import gui
-from reclaim.core import autostart, browser, database, engine, lifecycle, status, tidy, writer
+from reclaim.core import autostart, browser, database, engine, lifecycle, retry, status, tidy, writer
 from reclaim.core.manifest import SyncState, save_chat
 from reclaim.core.model import Chat, Turn
 from reclaim.core.writer import read_chat_json, write_chat, write_raw
-from reclaim.providers import chatgpt, googleaistudio, googlegemini, kimi
+from reclaim.providers import chatgpt, claude, deepseek, googleaistudio, googlegemini, kimi
 
 
 def _chat(cid: str, title: str, text: str = 'hello', *, project: str | None = None) -> Chat:
@@ -315,7 +315,7 @@ class TestChatGPTLifecycleSignals(unittest.TestCase):
         self.assertIn('is_archived=true', getter.call_args_list[0].args[2])
 
         sess = type('S', (), {'page': object(), 'token': 'tok'})()
-        with patch.object(chatgpt, '_get', side_effect=RuntimeError('HTTP 404')):
+        with patch.object(chatgpt, '_get', side_effect=retry.RequestFailed('HTTP 404', 404)):
             self.assertEqual(chatgpt.SPEC.confirm_status(sess, 'c1'), 'deleted')
         with patch.object(chatgpt, '_get', return_value={'is_archived': True}):
             self.assertEqual(chatgpt.SPEC.confirm_status(sess, 'c1'), 'archived')
@@ -325,12 +325,71 @@ class TestChatGPTLifecycleSignals(unittest.TestCase):
             self.assertEqual(chatgpt.SPEC.confirm_status(sess, 'c1'), 'unconfirmed')
 
 
+class _FakePage:
+    """A page whose evaluate() answers with the given responses, one per request."""
+
+    def __init__(self, *answers):
+        self.answers = list(answers)
+
+    def evaluate(self, *_args):
+        answer = self.answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+
+def _answer(code: int, text: str = '') -> dict:
+    return {'status': code, 'text': text or f'body {code}', 'retryAfter': None}
+
+
+class TestDeletedMeansHttp404(unittest.TestCase):
+    """A chat is called deleted only when the service answers HTTP 404.
+
+    The text of an error can contain "404" for other reasons, such as the digits
+    of a chat id (ChatGPT) or of an organisation id (Claude). These tests go
+    through each provider's real request helper and the shared retry policy."""
+
+    PROVIDERS = ('chatgpt', 'claude', 'deepseek', 'kimi')
+    CHAT_ID = '6a404b00-0000-4000-8000-000000000404'  # contains 404 on purpose
+
+    def confirm(self, name: str, *answers) -> str:
+        page = _FakePage(*answers)
+        spec, attributes = {
+            'chatgpt': (chatgpt.SPEC, {'page': page, 'token': 'tok'}),
+            'claude': (claude.SPEC, {'page': page, 'org': 'org-404'}),
+            'deepseek': (deepseek.SPEC, {'page': page}),
+            'kimi': (kimi.SPEC, {'page': page, 'token': 'tok'}),
+        }[name]
+        session = type('S', (), attributes)()
+        with (patch.object(retry.time, 'sleep'),
+              patch.object(kimi, 'base_url', return_value='https://kimi.example')):
+            return spec.confirm_status(session, self.CHAT_ID)
+
+    def test_an_http_404_means_deleted(self):
+        for name in self.PROVIDERS:
+            with self.subTest(name):
+                self.assertEqual(self.confirm(name, _answer(404)), 'deleted')
+
+    def test_any_other_failure_leaves_the_chat_unconfirmed_even_if_the_text_says_404(self):
+        said_404 = 'upstream said 404 not found'
+        failures = {
+            'a server error': [_answer(500, said_404)] * 3,
+            'a rate limit': [_answer(429)] * 6,
+            'a refused login': [_answer(403, said_404)] * 3,
+            'a dropped connection': [RuntimeError(said_404)] * 3,
+        }
+        for name in self.PROVIDERS:
+            for label, answers in failures.items():
+                with self.subTest(name, failure=label):
+                    self.assertEqual(self.confirm(name, *answers), 'unconfirmed')
+
+
 class TestAllProviderConfirmAndSubsetAndAutostart(unittest.TestCase):
     def test_confirm_status_for_kimi_gemini_and_aistudio(self):
         ks = type('S', (), {'page': object(), 'token': 'tok'})()
         with patch.object(kimi, '_api', return_value={'chat': {'id': 'k1'}}):
             self.assertEqual(kimi.SPEC.confirm_status(ks, 'k1'), 'active')
-        with patch.object(kimi, '_api', side_effect=RuntimeError('HTTP 404 not found')):
+        with patch.object(kimi, '_api', side_effect=retry.RequestFailed('HTTP 404 not found', 404)):
             self.assertEqual(kimi.SPEC.confirm_status(ks, 'k1'), 'deleted')
 
         gs = type('S', (), {'page': object(), 'tokens': {}, 'reqid': 1})()

@@ -338,8 +338,7 @@ class DeepSeek(engine.Provider):
             fetch_record(s.page, chat_id)
             return 'active'
         except Exception as exc:
-            msg = str(exc).lower()
-            return 'deleted' if ('not found' in msg or '404' in msg) else 'unconfirmed'
+            return 'deleted' if retry.is_not_found(exc) else 'unconfirmed'
 
     def from_url(self, s, url: str) -> engine.ChatRef:
         return engine.ChatRef(id=url.rsplit('/a/chat/s/', maxsplit=1)[-1].split('?', maxsplit=1)[0][:40])

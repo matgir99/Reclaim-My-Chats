@@ -31,7 +31,10 @@ unchanged chats, the download loop with its progress events, saving, the
 run manifest and the exit code. Requests made from the page go
 through `reclaim/core/retry.py`, one policy for all providers: 401/403 stop
 at once, 429 waits as long as `Retry-After` asks, server errors and failed
-requests are retried briefly.
+requests are retried briefly. A request that fails for good raises an error
+that carries the HTTP status of the last response (`retry.RequestFailed`), and
+a provider decides a chat is deleted only from that status being 404
+(`retry.is_not_found`), never from the error text.
 
 Provider modules acquire conversations from each service, normalize them to
 the models in `reclaim/core/model.py`, and the engine saves each chat with
