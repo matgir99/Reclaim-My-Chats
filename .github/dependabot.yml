@@ -2,20 +2,12 @@ version: 2
 updates:
   # uv.lock pins every package the builds and checks install; Dependabot
   # updates it and pyproject.toml together.
+  #
+  # flet_integration/pyproject.toml is deliberately not watched: its only
+  # dependency is Flet, which must stay on the app's pinned version
+  # (tests/test_flet_pins.py). Update it in the same PR as the app's pin.
   - package-ecosystem: uv
     directory: "/"
-    target-branch: develop
-    schedule:
-      interval: monthly
-    open-pull-requests-limit: 2
-    groups:
-      python-updates:
-        patterns: ["*"]
-      python-security:
-        applies-to: security-updates
-        patterns: ["*"]
-  - package-ecosystem: pip
-    directory: "/flet_integration"
     target-branch: develop
     schedule:
       interval: monthly

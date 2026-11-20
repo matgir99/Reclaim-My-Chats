@@ -1,7 +1,11 @@
 name: Upstream watch
 
 # Weekly: report reference projects (docs/UPSTREAM_REVIEW.md) with commits
-# after the revision last reviewed, as one GitHub issue.
+# after the revision last reviewed, and newer releases of the runtime
+# dependencies that uv.lock installs, as one GitHub issue, which is closed
+# when nothing is left. A schedule runs on the default branch, so scheduled
+# runs check out develop, where reviews and dependency updates land before a
+# release; a manual run uses the branch it is started on.
 on:
   schedule:
     - cron: '23 6 * * 1'
@@ -13,11 +17,13 @@ permissions:
 
 jobs:
   watch:
-    name: Check reference projects
+    name: Check reference projects and dependency releases
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'schedule' && 'develop' || github.ref }}
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'

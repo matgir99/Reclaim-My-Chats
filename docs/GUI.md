@@ -130,7 +130,14 @@ These startup checks need no provider accounts. A real authenticated dry run
 and update still need manual testing with your own account.
 
 Flet is pinned to 1.0.5. Version 1.0.4 fixed the Flutter JNI dependency
-conflict that broke fresh integration-test builds with 1.0.0.
+conflict that broke fresh integration-test builds with 1.0.0. The device
+tests' own project, `flet_integration/pyproject.toml`, pins the same version
+(`tests/test_flet_pins.py` checks this), so upgrade Flet in both places in one
+PR. Dependabot does not offer these upgrades reliably; the weekly upstream
+watch reports each new minor or major Flet release instead (see
+[UPSTREAM_REVIEW.md](UPSTREAM_REVIEW.md#weekly-check)). Flet 1.1 is left for a
+deliberate upgrade: it makes the default theme's surfaces neutral instead of
+tinted by the seed colour, so the window needs a look after the update.
 
 On Linux, the `.deb` package installs a menu entry and icon automatically, and
 the `.tar.gz` bundle ships a `.desktop` template alongside the icon (set `Exec=`
