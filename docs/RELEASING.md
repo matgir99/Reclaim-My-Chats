@@ -19,7 +19,9 @@ development version and release artifacts the exact tagged version.
 
 The workflow builds the Python wheel and source distribution with an explicit
 version override before creating the tag. It checks their metadata, installs
-the wheel in a fresh environment, and builds desktop downloads using only the
+the wheel in a fresh environment and uses the command line from it in an empty
+home (`scripts/smoke_wheel.py`: version, `init`, `status`; CI runs the same
+script on every pull request), and builds desktop downloads using only the
 `gui-pack` dependencies: Linux `.tar.gz`, `.AppImage`, and `.deb` on Ubuntu
 22.04 (`glibc 2.35`), Windows portable `.zip` and per-user `-setup.exe`
 installer, and macOS Apple Silicon (`arm64`) and Intel (`x86_64`) `.dmg` and
