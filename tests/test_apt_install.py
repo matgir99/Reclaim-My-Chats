@@ -30,6 +30,11 @@ if [ -n "${FAKE_FAIL:-}" ]; then exit 100; fi
 """
 
 AZURE = 'deb http://azure.archive.ubuntu.com/ubuntu/ jammy main universe\n'
+# What GitHub's Ubuntu images write (actions/runner-images configure-apt-sources.sh);
+# their source files then say mirror+file:/etc/apt/apt-mirrors.txt.
+MIRRORS = ('http://azure.archive.ubuntu.com/ubuntu/\tpriority:1\n'
+           'https://archive.ubuntu.com/ubuntu/\tpriority:2\n'
+           'https://security.ubuntu.com/ubuntu/\tpriority:3\n')
 
 
 @unittest.skipUnless(shutil.which('bash') and shutil.which('timeout'),
@@ -44,13 +49,15 @@ class TestAptInstall(unittest.TestCase):
         self.log = self.tmp / 'calls.log'
         self.sources = self.tmp / 'sources.list'
         self.sources.write_text(AZURE, encoding='utf-8')
+        self.mirrors = self.tmp / 'apt-mirrors.txt'
+        self.mirrors.write_text(MIRRORS, encoding='utf-8')
 
     def tearDown(self):
         self._temp.cleanup()
 
     def run_script(self, *packages: str, **fake: str) -> subprocess.CompletedProcess:
         env = {**os.environ, 'SUDO': '', 'APT_GET': str(self.fake),
-               'APT_SOURCES': str(self.sources), 'APT_ATTEMPT_LIMIT': '1s',
+               'APT_SOURCES': f'{self.mirrors} {self.sources}', 'APT_ATTEMPT_LIMIT': '1s',
                'FAKE_LOG': str(self.log), 'FAKE_STATE': str(self.tmp / 'updates'), **fake}
         return subprocess.run(['bash', str(SCRIPT), *packages], env=env, capture_output=True,
                               text=True, timeout=60, check=False)
@@ -65,6 +72,7 @@ class TestAptInstall(unittest.TestCase):
         self.assertEqual(actions, ['update', 'install -y --download-only xvfb libgtk-3-0',
                                    'install -y --no-download xvfb libgtk-3-0'])
         self.assertEqual(self.sources.read_text(encoding='utf-8'), AZURE)
+        self.assertEqual(self.mirrors.read_text(encoding='utf-8'), MIRRORS)
 
     def test_a_stalled_mirror_is_cut_off_and_the_main_mirror_used(self):
         started = time.monotonic()
@@ -74,6 +82,8 @@ class TestAptInstall(unittest.TestCase):
         self.assertIn('attempt 1 of 3 failed or took longer than 1s', done.stdout)
         self.assertEqual(self.sources.read_text(encoding='utf-8'),
                          AZURE.replace('azure.archive.ubuntu.com', 'archive.ubuntu.com'))
+        self.assertEqual(self.mirrors.read_text(encoding='utf-8').splitlines()[0],
+                         'http://archive.ubuntu.com/ubuntu/\tpriority:1')
         calls = self.calls()
         self.assertEqual(sum(' update' in call for call in calls), 2)
         self.assertTrue(calls[-1].endswith('install -y --no-download xvfb'))
@@ -91,6 +101,13 @@ class TestAptInstall(unittest.TestCase):
 
 
 class TestWorkflowsUseIt(unittest.TestCase):
+    def test_the_runner_mirror_list_is_switched_by_default(self):
+        # On GitHub's images the source files only point at this list (November 2026
+        # release run: three attempts on the stalled Azure mirror, the switch had no effect).
+        text = SCRIPT.read_text(encoding='utf-8')
+        defaults = text.split('APT_SOURCES:-', 1)[1].split('}', 1)[0].split()
+        self.assertIn('/etc/apt/apt-mirrors.txt', defaults)
+
     def test_every_linux_package_install_goes_through_the_script(self):
         for name in ('gui-test.yml', 'desktop-test.yml', 'release.yml'):
             text = (WORKFLOWS / name).read_text(encoding='utf-8')
