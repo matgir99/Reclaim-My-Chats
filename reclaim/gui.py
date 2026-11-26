@@ -111,7 +111,8 @@ def _review_items(events: list[ProgressEvent]) -> tuple[list[tuple[ProgressEvent
 def _browser_status_text(root: Path) -> str:
     chrome = browser.find_chrome(root)
     if chrome:
-        label = 'Microsoft Edge' if Path(chrome).name.lower().startswith('msedge') else 'Chrome'
+        basename = chrome.replace('\\', '/').rsplit('/', 1)[-1].lower()
+        label = 'Microsoft Edge' if basename.startswith('msedge') else 'Chrome'
         return f'{label} detected: {chrome}'
     bundled = browser.find_playwright_chromium()
     if bundled:
