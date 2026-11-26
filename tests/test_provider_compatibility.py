@@ -446,6 +446,38 @@ class TestChatGPTOfficialExport(unittest.TestCase):
         self.assertIn('This edit could not be applied to the earlier text', imported.turns[3].text)
         self.assertIn('```python\nprint(9)\n```', imported.turns[3].text)
 
+        # Official exports omit `recipient` on Canvas calls; mismatched recipients still reject.
+        no_recip_create = {
+            'author': {'role': 'assistant'},
+            'content': {'content_type': 'code',
+                        'text': json.dumps({'name': 'doc', 'type': 'document',
+                                            'content': 'Draft line'})},
+            'metadata': {},
+        }
+        no_recip_reply = {
+            'author': {'role': 'tool', 'name': 'canmore.create_textdoc'},
+            'content': {'content_type': 'text', 'parts': ['ok']},
+            'metadata': {'canvas': {'textdoc_id': 'doc2', 'title': 'Doc',
+                                    'textdoc_type': 'document', 'version': 1}},
+        }
+        mismatch_call = {
+            'author': {'role': 'assistant'}, 'recipient': 'web.run',
+            'content': {'content_type': 'text', 'parts': ['{}']}, 'metadata': {},
+        }
+        mismatch_reply = {
+            'author': {'role': 'tool', 'name': 'canmore.update_textdoc'},
+            'content': {'content_type': 'text', 'parts': ['ok']},
+            'metadata': {'canvas': {'textdoc_id': 'doc2', 'title': 'Doc', 'version': 2}},
+        }
+        exported_conv = export_chain('canvas-exp', export_text('user', 'Draft'),
+                                     no_recip_create, no_recip_reply,
+                                     mismatch_call, mismatch_reply)
+        exp_chat = chatgpt_import.parse_conversation({**exported_conv, 'id': 'canvas-exp'})
+        assert exp_chat is not None
+        self.assertEqual(len(exp_chat.turns), 2)
+        self.assertEqual(exp_chat.turns[1].text, '**Canvas: Doc**\n\nDraft line')
+        self.assertNotIn('is_visually_hidden_from_conversation', no_recip_create['metadata'])
+
 
 class TestClaudeCompatibility(unittest.TestCase):
     def test_short_offset_pages_do_not_hide_remaining_chats(self):

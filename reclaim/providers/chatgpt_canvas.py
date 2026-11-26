@@ -195,6 +195,42 @@ def _replay_step(name: str, call: dict, meta: dict, textdoc_id: str,
     return _replay_update(doc, body, known)
 
 
+def _matches_canvas_call(name: str, call: dict) -> bool:
+    recipient = call.get('recipient')
+    if recipient is not None:
+        return recipient == name
+    # Official exports can omit `recipient`; require assistant role and JSON tool payload.
+    return ((call.get('author') or {}).get('role') == 'assistant'
+            and _parse_canvas_json(_call_text(call)) is not None)
+
+
+def _hide_call_node(out: list[dict], call: dict) -> None:
+    """Mark an unrecipiented Canvas call hidden in `out` without mutating `mapping`."""
+    if call.get('recipient') is not None:
+        return
+    for idx in range(len(out) - 1, -1, -1):
+        prev = out[idx]
+        if prev.get('message') is call:
+            meta = dict(call.get('metadata') or {})
+            meta['is_visually_hidden_from_conversation'] = True
+            out[idx] = {**prev, 'message': {**call, 'metadata': meta}}
+            return
+
+
+def _canvas_reply_context(node: dict, mapping: dict) -> tuple[str, dict, dict] | None:
+    reply = node.get('message') or {}
+    author = reply.get('author') or {}
+    name = author.get('name') if author.get('role') == 'tool' else None
+    meta = (reply.get('metadata') or {}).get('canvas') if isinstance(reply.get('metadata'), dict) else None
+    parent = mapping.get(node.get('parent')) if node.get('parent') else None
+    call = parent.get('message') if isinstance(parent, dict) else None
+    if (name in _CANVAS_TOOLS and isinstance(meta, dict) and not meta.get('is_failure')
+            and isinstance(meta.get('textdoc_id'), str) and meta['textdoc_id']
+            and isinstance(call, dict) and _matches_canvas_call(name, call)):
+        return name, call, meta
+    return None
+
+
 def replay_canvases(nodes: list[dict], mapping: dict) -> list[dict]:
     """Convert successful Canvas tool replies along `nodes` into assistant turns.
 
@@ -203,17 +239,13 @@ def replay_canvases(nodes: list[dict], mapping: dict) -> list[dict]:
     documents: dict[str, _CanvasDoc] = {}
     out: list[dict] = []
     for node in nodes:
-        reply = node.get('message') or {}
-        author = reply.get('author') or {}
-        name = author.get('name') if author.get('role') == 'tool' else None
-        meta = (reply.get('metadata') or {}).get('canvas') if isinstance(reply.get('metadata'), dict) else None
-        parent = mapping.get(node.get('parent')) if node.get('parent') else None
-        call = parent.get('message') if isinstance(parent, dict) else None
-        if (name in _CANVAS_TOOLS and isinstance(meta, dict) and not meta.get('is_failure')
-                and isinstance(meta.get('textdoc_id'), str) and meta['textdoc_id']
-                and isinstance(call, dict) and call.get('recipient') == name):
+        ctx = _canvas_reply_context(node, mapping)
+        if ctx is not None:
+            name, call, meta = ctx
+            _hide_call_node(out, call)
             block = _replay_step(name, call, meta, meta['textdoc_id'], documents)
             if block:
+                reply = node['message']
                 out.append({
                     **node,
                     'message': {
