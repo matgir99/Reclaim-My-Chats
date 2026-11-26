@@ -34,7 +34,9 @@ Markdown format:
 
 from __future__ import annotations
 
+import errno
 import json
+import os
 import re
 import time
 from collections.abc import Collection
@@ -177,6 +179,16 @@ def own_file_names(payload: dict | None) -> set[str]:
     return names
 
 
+def _check_parent_dirs(folder: Path) -> None:
+    for ancestor in folder.parents:
+        if ancestor.exists():
+            if not ancestor.is_dir():
+                raise NotADirectoryError(
+                    errno.ENOTDIR, os.strerror(errno.ENOTDIR), str(ancestor),
+                )
+            return
+
+
 def _may_take(folder: Path, source_url: str | None, own_names: Collection[str]) -> bool:
     """Whether a folder without a readable chat.json can hold this chat.
 
@@ -196,6 +208,7 @@ def _may_take(folder: Path, source_url: str | None, own_names: Collection[str]) 
     try:
         files = [entry for entry in folder.iterdir() if not entry.is_dir()]
     except FileNotFoundError:
+        _check_parent_dirs(folder)
         return True
     if all(entry.name in own_names for entry in files):
         return True

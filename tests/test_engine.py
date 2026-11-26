@@ -378,6 +378,18 @@ class TestEngine(unittest.TestCase):
                 browser.wait_for_login(page, 'kimi', 'Kimi', lambda: None, interval=0)
         bounds.assert_called_with(page, state='minimized')
 
+        class _ClosedPage:
+            url = 'https://kimi.ai/'
+            context = None
+
+            def is_closed(self):
+                return True
+
+        with (patch.object(browser, 'login_timeout', return_value=30),
+              patch('reclaim.core.browser.emit')):
+            with self.assertRaises(browser.LoginCancelledError):
+                browser.wait_for_login(_ClosedPage(), 'kimi', 'Kimi', lambda: None, interval=0)
+
         # ArchiveController(custom_root) binds config.use_root and passes root to browser.launch.
         with tempfile.TemporaryDirectory() as root_dir:
             root = Path(root_dir)

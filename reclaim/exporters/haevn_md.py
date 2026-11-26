@@ -40,6 +40,9 @@ SOURCE_NAMES = {
     'googleaistudio': 'AI Studio',
     'deepseek': 'DeepSeek',
     'chatgpt': 'ChatGPT',
+    'claude': 'Claude',
+    'googlegemini': 'Gemini',
+    'kimi': 'Kimi',
 }
 for _p in ('kimi', 'claude', 'gemini', 'grok', 'ollama'):
     SOURCE_NAMES[f'kept/{_p}'] = _p.capitalize()
@@ -87,9 +90,9 @@ _MD_SECTION_RE = re.compile(r'^## (User|Assistant)\s*$', re.MULTILINE)
 
 
 _DIR_PROVIDER = {'Google AI Studio': 'googleaistudio', 'Deepseek Chat': 'deepseek',
-                 'ChatGPT': 'chatgpt', 'Kimi Chat': 'kept/kimi',
-                 'Claude': 'kept/claude', 'Gemini': 'kept/gemini',
-                 'Grok': 'kept/grok'}
+                 'ChatGPT': 'chatgpt', 'Kimi Chat': 'kimi',
+                 'Claude': 'claude', 'Google Gemini': 'googlegemini',
+                 'Gemini': 'kept/gemini', 'Grok': 'kept/grok'}
 
 
 def _fallback_payload_from_md(chat_dir: Path) -> dict | None:

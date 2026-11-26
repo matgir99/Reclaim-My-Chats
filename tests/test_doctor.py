@@ -74,6 +74,12 @@ class TestDoctor(unittest.TestCase):
         self.assertEqual(checks['Browser'].status, doctor.OK)
         self.assertFalse(any(c.status == doctor.PROBLEM for c in checks.values()))
 
+    def test_fresh_nonexistent_root_reports_writable_log_file(self):
+        fresh = self.root / 'fresh-user-data' / 'ReclaimMyChats'
+        with patch.object(doctor.browser, 'find_chrome', return_value='/usr/bin/chrome'):
+            checks = self.by_area(doctor.run_checks(fresh))
+        self.assertEqual(checks['Log file'].status, doctor.OK)
+
     def test_problems_come_with_advice(self):
         (self.root / '.reclaim.json').write_text('{"archive": 42}')
         with (patch.object(doctor.browser, 'find_chrome', return_value=None),
@@ -118,9 +124,27 @@ class TestDoctor(unittest.TestCase):
         exe.parent.mkdir(parents=True)
         exe.write_text('stub')
         with (patch.dict(os.environ, {'HOME': str(self.root),
+                                      'USERPROFILE': str(self.root),
                                       'PLAYWRIGHT_BROWSERS_PATH': '~/rel-cache'}),
               patch.object(doctor.browser, '_playwright_chromium_revision', return_value='9999')):
             self.assertEqual(doctor.browser.find_playwright_chromium(), str(exe.resolve()))
+
+    def test_windows_find_chrome_checks_localappdata_and_edge_fallback(self):
+        edge = r'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe'
+        local_chrome = str(self.root / 'Google' / 'Chrome' / 'Application' / 'chrome.exe')
+        existing = {edge, local_chrome}
+
+        def fake_exists(path_obj: Path) -> bool:
+            return str(path_obj) in existing
+
+        with (patch.dict(os.environ, {'LOCALAPPDATA': str(self.root), 'RECLAIM_CHROME_PATH': ''},
+                         clear=False),
+              patch.object(doctor.browser, '_is_windows', return_value=True),
+              patch.object(doctor.browser.Path, 'exists', autospec=True, side_effect=fake_exists),
+              patch.object(doctor.browser.shutil, 'which', return_value=None)):
+            self.assertEqual(doctor.browser.find_chrome(self.root), local_chrome)
+            existing.remove(local_chrome)
+            self.assertEqual(doctor.browser.find_chrome(self.root), edge)
 
     def test_database_locks_and_synced_login_data(self):
         db = self.root / 'chats'

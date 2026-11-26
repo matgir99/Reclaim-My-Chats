@@ -242,7 +242,9 @@ time.sleep(float(sys.argv[2]))
 class TestLocks(Temp):
     def holder(self, seconds: float):
         import subprocess
-        return subprocess.Popen([sys.executable, '-c', _HOLDER, str(self.tmp), str(seconds)],
+        # On Windows a venv's sys.executable can be a stub launcher whose child survives .kill().
+        python = getattr(sys, '_base_executable', sys.executable) if os.name == 'nt' else sys.executable
+        return subprocess.Popen([python, '-c', _HOLDER, str(self.tmp), str(seconds)],
                                 stdout=subprocess.PIPE, text=True,
                                 cwd=Path(__file__).resolve().parents[1])
 

@@ -206,7 +206,7 @@ class ArchiveController:
             ctx, page = browser.launch(playwright, profile_dir=profile, root=self.root)
             try:
                 for index, name in enumerate(chosen, 1):
-                    if index > 1 and self._stop.is_set():
+                    if index > 1 and (self._stop.is_set() or browser._page_closed(page)):
                         break
                     codes.append((name, self._run_one(name, parsed[name], mode, sink,
                                                       page, index, len(chosen))))

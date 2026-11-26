@@ -40,6 +40,8 @@ class _SafeFileHandler(logging.handlers.RotatingFileHandler):
 
 _handler: _SafeFileHandler | None = None
 _handler_path: Path | None = None
+_capture_depth = 0
+_capture_lock = threading.Lock()
 _local = threading.local()
 
 
@@ -70,6 +72,16 @@ def get_logger(root: Path | None = None) -> logging.Logger:
         log.addHandler(handler)
         _handler, _handler_path = handler, path
     return log
+
+
+def close_logger() -> None:
+    """Close and detach the active log file handler so Windows does not keep the file locked."""
+    global _handler, _handler_path
+    if _handler is not None:
+        logging.getLogger('reclaim').removeHandler(_handler)
+        with suppress(Exception):
+            _handler.close()
+        _handler, _handler_path = None, None
 
 
 class _Tee(io.TextIOBase):
@@ -136,11 +148,14 @@ def capture(root: Path | None, label: str):
 
     If the log cannot be opened (for example a read-only data folder), the
     run continues without it."""
+    global _capture_depth
     try:
         log = get_logger(root)
     except OSError:
         yield None
         return
+    with _capture_lock:
+        _capture_depth += 1
     out, err = sys.stdout, sys.stderr
     tee_out, tee_err = _Tee(out, log, logging.INFO), _Tee(err, log, logging.WARNING)
     sys.stdout, sys.stderr = tee_out, tee_err
@@ -155,3 +170,8 @@ def capture(root: Path | None, label: str):
         tee_err.finish()
         sys.stdout, sys.stderr = out, err
         log.info('=== %s: finished', label)
+        with _capture_lock:
+            _capture_depth = max(0, _capture_depth - 1)
+            should_close = _capture_depth == 0
+        if should_close:
+            close_logger()

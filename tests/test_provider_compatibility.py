@@ -375,6 +375,77 @@ class TestChatGPTOfficialExport(unittest.TestCase):
             single.write_text(json.dumps({'conversations': first}))
             self.assertEqual(len(chatgpt_import.collect_conversations(single)), 2)
 
+    def test_writing_block_drafts_keep_subject_and_content(self):
+        directive = '\ue200cite\ue202turn0writing0\ue201'
+        refs = [{'type': 'client_defined_widget', 'matched_text': directive, 'alt': '',
+                 'data': {'widget_type': 'writing_block', 'subject': 'Status [Q4]',
+                          'content': 'Everything is green.'}}]
+        node = message(f'Intro {directive}', content_references=refs)
+        native, _ = chatgpt._node_to_turn(node)
+        imported = chatgpt_import._node_to_turn(node)
+        expected = 'Intro **Status \\[Q4\\]**\n\nEverything is green.'
+        assert native is not None and imported is not None
+        self.assertEqual(native.text, expected)
+        self.assertEqual(imported.text, expected)
+
+    def test_canvas_create_update_and_version_gap_replay(self):
+        create_call = {
+            'author': {'role': 'assistant'}, 'recipient': 'canmore.create_textdoc',
+            'channel': 'final',
+            'content': {'content_type': 'text',
+                        'parts': [json.dumps({'name': 'hello', 'type': 'code/python',
+                                              'content': 'print(1)\nprint(2)'})]},
+            'metadata': {},
+        }
+        create_reply = {
+            'author': {'role': 'tool', 'name': 'canmore.create_textdoc'}, 'recipient': 'all',
+            'content': {'content_type': 'text', 'parts': ['ok']},
+            'metadata': {'canvas': {'textdoc_id': 'doc1', 'title': 'Hello',
+                                    'textdoc_type': 'code/python', 'version': 1}},
+        }
+        update_call = {
+            'author': {'role': 'assistant'}, 'recipient': 'canmore.update_textdoc',
+            'content': {'content_type': 'code',
+                        'text': json.dumps({'updates': [{'pattern': r'print\(2\)',
+                                                         'replacement': 'print(3)'}]})},
+            'metadata': {},
+        }
+        update_reply = {
+            'author': {'role': 'tool', 'name': 'canmore.update_textdoc'}, 'recipient': 'all',
+            'content': {'content_type': 'text', 'parts': ['ok']},
+            'metadata': {'canvas': {'textdoc_id': 'doc1', 'title': 'Hello',
+                                    'textdoc_type': 'code/python', 'from_version': 1,
+                                    'version': 2}},
+        }
+        gap_call = {
+            'author': {'role': 'assistant'}, 'recipient': 'canmore.update_textdoc',
+            'content': {'content_type': 'code',
+                        'text': json.dumps({'updates': [{'pattern': 'missing',
+                                                         'replacement': 'print(9)'}]})},
+            'metadata': {},
+        }
+        gap_reply = {
+            'author': {'role': 'tool', 'name': 'canmore.update_textdoc'}, 'recipient': 'all',
+            'content': {'content_type': 'text', 'parts': ['ok']},
+            'metadata': {'canvas': {'textdoc_id': 'doc1', 'title': 'Hello',
+                                    'textdoc_type': 'code/python', 'from_version': 5,
+                                    'version': 6}},
+        }
+        conv = export_chain('canvas', export_text('user', 'Make a script'),
+                            create_call, create_reply, update_call, update_reply,
+                            gap_call, gap_reply)
+        with patch.object(chatgpt, '_get', return_value=conv):
+            live_chat, raw = chatgpt.fetch_conversation(None, 'synthetic-token', 'canvas')
+        imported = chatgpt_import.parse_conversation({**conv, 'id': 'canvas'})
+        assert imported is not None
+        self.assertEqual([t.text for t in live_chat.turns], [t.text for t in imported.turns])
+        self.assertEqual(raw['mapping']['canvas-2']['message']['author']['role'], 'tool')
+        self.assertIn('**Canvas: Hello**\n\n```python\nprint(1)\nprint(2)\n```', imported.turns[1].text)
+        self.assertIn('**Canvas: Hello (edited)**\n\n```python\nprint(1)\nprint(3)\n```',
+                      imported.turns[2].text)
+        self.assertIn('This edit could not be applied to the earlier text', imported.turns[3].text)
+        self.assertIn('```python\nprint(9)\n```', imported.turns[3].text)
+
 
 class TestClaudeCompatibility(unittest.TestCase):
     def test_short_offset_pages_do_not_hide_remaining_chats(self):

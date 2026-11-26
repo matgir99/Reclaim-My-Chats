@@ -318,6 +318,9 @@ class TestHaevnExport(unittest.TestCase):
         self.assertIn('![image_1.png](image_1.png)', md)
         self.assertIn('**Attachment:** [doc.pdf](doc.pdf)', md)
         self.assertIn('**Attachment (not downloaded):** [lost.txt](https://u)', md)
+        self.assertIn('source: "Gemini"', chat_to_haevn_md({'id': 'g1', 'title': 'G', 'provider': 'googlegemini', 'turns': []}))
+        self.assertIn('source: "Claude"', chat_to_haevn_md({'id': 'c1', 'title': 'C', 'provider': 'claude', 'turns': []}))
+        self.assertIn('source: "Kimi"', chat_to_haevn_md({'id': 'k1', 'title': 'K', 'provider': 'kimi', 'turns': []}))
 
     def test_export_zip_from_written_chats(self):
         import tempfile

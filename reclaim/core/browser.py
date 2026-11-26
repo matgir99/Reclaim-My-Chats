@@ -84,10 +84,44 @@ class BrowserUnavailableError(RuntimeError):
     """No usable system or Playwright Chromium installation was found."""
 
 
+def _is_windows() -> bool:
+    return os.name == 'nt'
+
+
+def _windows_chrome_candidates(localappdata: str | None = None) -> list[str]:
+    candidates = [
+        r'C:\Program Files\Google\Chrome\Application\chrome.exe',
+        r'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe',
+        r'C:\Program Files\Chromium\Application\chrome.exe',
+    ]
+    base = os.environ.get('LOCALAPPDATA') if localappdata is None else localappdata
+    if base:
+        candidates.extend([
+            str(Path(base) / 'Google' / 'Chrome' / 'Application' / 'chrome.exe'),
+            str(Path(base) / 'Chromium' / 'Application' / 'chrome.exe'),
+        ])
+    return candidates
+
+
+def _windows_edge_candidates() -> list[str]:
+    return [
+        r'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe',
+        r'C:\Program Files\Microsoft\Edge\Application\msedge.exe',
+    ]
+
+
+def _first_existing(paths: list[str]) -> str | None:
+    for candidate in paths:
+        if Path(candidate).exists():
+            return candidate
+    return None
+
+
 def find_chrome(root: Path | None = None) -> str | None:
     """Locate a system Chrome/Chromium binary, or None to use Playwright's bundled one.
 
-    Order: RECLAIM_CHROME_PATH env var -> saved settings -> known OS paths -> PATH lookup.
+    Order: RECLAIM_CHROME_PATH env var -> saved settings -> known OS paths -> PATH lookup
+    -> Windows Microsoft Edge fallback.
     """
     env = os.environ.get('RECLAIM_CHROME_PATH', '').strip()
     if env:
@@ -97,28 +131,24 @@ def find_chrome(root: Path | None = None) -> str | None:
         if configured:
             return configured
     candidates = [
-        # Linux
         '/usr/bin/google-chrome-stable',
         '/usr/bin/google-chrome',
         '/usr/bin/chromium',
         '/usr/bin/chromium-browser',
-        # macOS
         '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
         '/Applications/Chromium.app/Contents/MacOS/Chromium',
-        # Windows
-        r'C:\Program Files\Google\Chrome\Application\chrome.exe',
-        r'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe',
-        r'C:\Program Files\Chromium\Application\chrome.exe',
+        *(_windows_chrome_candidates() if _is_windows() else []),
     ]
-    for c in candidates:
-        if Path(c).exists():
-            return c
+    found = _first_existing(candidates)
+    if found:
+        return found
     for name in ('google-chrome-stable', 'google-chrome', 'chromium',
-                 'chromium-browser', 'chrome', 'msedge'):
-        p = shutil.which(name)
-        if p:
+                 'chromium-browser', 'chrome'):
+        if p := shutil.which(name):
             return p
-    return None
+    if _is_windows() and (edge := _first_existing(_windows_edge_candidates())):
+        return edge
+    return shutil.which('msedge')
 
 
 def _playwright_package_dir() -> Path | None:
@@ -156,7 +186,7 @@ def _playwright_cache_dir() -> Path | None:
         return Path(env).expanduser().resolve()
     if sys.platform == 'darwin':
         return Path.home() / 'Library' / 'Caches' / 'ms-playwright'
-    if os.name == 'nt' or sys.platform in ('win32', 'nt', 'cygwin'):
+    if _is_windows() or sys.platform in ('win32', 'nt', 'cygwin'):
         base = os.environ.get('LOCALAPPDATA') or str(Path.home() / 'AppData' / 'Local')
         return Path(base) / 'ms-playwright'
     base = os.environ.get('XDG_CACHE_HOME') or str(Path.home() / '.cache')
@@ -306,10 +336,27 @@ def login_done(page, provider: str) -> None:
     time.sleep(2)
 
 
-def _try_probe(probe: Callable[[], Any]) -> Any:
+def _page_closed(page) -> bool:
+    check = getattr(page, 'is_closed', None)
+    if not callable(check):
+        return False
+    with contextlib.suppress(Exception):
+        return bool(check())
+    return False
+
+
+def _is_closed_error(exc: BaseException) -> bool:
+    return 'TargetClosedError' in type(exc).__name__ or 'has been closed' in str(exc).lower()
+
+
+def _try_probe(probe: Callable[[], Any], page=None) -> Any:
+    if _page_closed(page):
+        raise LoginCancelledError('browser window was closed')
     try:
         return probe()
-    except Exception:
+    except Exception as exc:
+        if _is_closed_error(exc) or _page_closed(page):
+            raise LoginCancelledError('browser window was closed') from exc
         return None
 
 
@@ -320,21 +367,21 @@ def _sleep_stopping(interval: float, page=None) -> bool:
         if interval > 0:
             time.sleep(interval)
         _flush_bring_forward(page)
-        return _should_stop()
+        return _should_stop() or _page_closed(page)
     end = time.time() + interval
     while time.time() < end:
-        if _should_stop():
+        if _should_stop() or _page_closed(page):
             return True
         _flush_bring_forward(page)
         time.sleep(min(0.2, max(0.0, end - time.time())))
     _flush_bring_forward(page)
-    return _should_stop()
+    return _should_stop() or _page_closed(page)
 
 
 def wait_for_login(page, provider: str, service: str,
                    probe: Callable[[], Any], *, interval: float = 3.0) -> Any:
     """Return `probe()` once authenticated, waiting in the browser window if needed."""
-    result = _try_probe(probe)
+    result = _try_probe(probe, page)
     if result:
         return result
     if login_wait_disabled():
@@ -344,11 +391,11 @@ def wait_for_login(page, provider: str, service: str,
     ask_for_login(page, provider, service, timeout)
     deadline = time.time() + timeout
     while time.time() < deadline:
-        if _should_stop():
+        if _should_stop() or _page_closed(page):
             set_window_bounds(page, state='minimized')
             raise LoginCancelledError(f'{service} login stopped by user')
         _flush_bring_forward(page)
-        result = _try_probe(probe)
+        result = _try_probe(probe, page)
         if result:
             login_done(page, provider)
             return result
@@ -365,6 +412,8 @@ def _wait_url_slice(page, ready_url: str | Callable[[str], bool], chunk_ms: int)
     except Exception as exc:
         if 'timeout' in str(exc).lower() or type(exc).__name__ == 'TimeoutError':
             return False
+        if _is_closed_error(exc) or _page_closed(page):
+            raise LoginCancelledError('browser window was closed') from exc
         raise
 
 
@@ -385,7 +434,7 @@ def interactive_login(page, check_url_fragment: str, ready_url: str | Callable[[
     ask_for_login(page, provider, provider_name, wait_ms // 1000)
     deadline = time.time() + (wait_ms / 1000)
     while True:
-        if _should_stop():
+        if _should_stop() or _page_closed(page):
             set_window_bounds(page, state='minimized')
             raise LoginCancelledError(f'{provider_name} login stopped by user')
         _flush_bring_forward(page)

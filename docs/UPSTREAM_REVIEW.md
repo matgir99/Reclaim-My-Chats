@@ -234,10 +234,20 @@ message recipient, so a reply directly followed by a reasoning step counts as
 one). Scheduled-task runs stay separate replies here already, since the
 parser never merges consecutive replies.
 
+**26 November 2026.** Reviewed the remaining upstream changes since the
+November update:
+
+| Project and inspected revision | Findings and decision |
+|---|---|
+| [chatgpt-exporter, 9364915](https://github.com/pionxzh/chatgpt-exporter/tree/9364915555528d0ec2a1c70c22dc207e3c1f2078) | Canvas documents and versioned edits (`canmore.*`, both `text` and `code` tool calls), and `writing_block` drafts in interactive replies. Adopted both into native downloads and official imports. Userscript/screenshot changes do not apply. |
+| [HAEVN, 52de7c5](https://github.com/aiamblichus/haevn/tree/52de7c5a7f5a8de0342486f640089a73cc4357cc) | CLI/extension fragment recovery, UI, and documentation work; HAEVN Markdown frontmatter format and DeepSeek API reader unchanged. Aligned `reclaim export haevn-md` source names for native `claude`, `googlegemini`, and `kimi`. |
+| [better-deepseek, bf0aba3](https://github.com/EdgeTypE/better-deepseek/tree/bf0aba32d452f84d43b46a4d6ecd6c22f6d26ac8) | Defensive bearer-token normalization in page requests; rest is UI cards, announcement panel, and system-prompt scheduling. Adopted token prefix cleanup in DeepSeek page fetches. |
+
 ## Runtime and bot updates
 
 Playwright uses a version range rather than vendored provider code. The
 November checks ran with Playwright 1.64.1 and Chrome 157. Flet remains an
 optional pinned GUI dependency. Dependabot's Flet 1.0.5 and Actions
 major-version updates were merged into `develop` after their checks passed.
-Flet 1.1 was released days before this review; it stays for a later update.
+Flet was upgraded to 1.1.3 on 26 November 2026 (including Flet #7067 for signed
+Windows `flet pack` bundles).

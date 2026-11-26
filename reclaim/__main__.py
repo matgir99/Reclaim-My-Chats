@@ -43,7 +43,9 @@ Examples:
 
 from __future__ import annotations
 
+import contextlib
 import importlib
+import io
 import sys
 
 PROVIDERS = {
@@ -178,8 +180,17 @@ def _hint(exc: Exception) -> str:
     return ''
 
 
+def _configure_stdio() -> None:
+    """Use UTF-8 for wrapped CLI streams so Unicode titles and dashes never garble on Windows."""
+    for stream in (sys.stdout, sys.stderr):
+        if isinstance(stream, io.TextIOWrapper):
+            with contextlib.suppress(OSError, ValueError):
+                stream.reconfigure(encoding='utf-8', errors='replace')
+
+
 def main(argv=None):
     from .core import config, database, locks
+    _configure_stdio()
     try:
         return _dispatch(argv)
     except (config.SettingsError, database.DatabaseError, locks.LockedError) as exc:

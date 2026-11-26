@@ -72,16 +72,26 @@ def smoke(archive: Path) -> None:
     """Launch `archive` in an isolated RECLAIM_HOME and verify providers + startup."""
     with tempfile.TemporaryDirectory(prefix='reclaim-desktop-smoke-') as temp:
         root = Path(temp)
+        fake_home = root / 'home'
+        fake_home.mkdir()
         binary = _prepare_binary(archive, root)
         result = root / 'result.json'
         env = dict(os.environ)
-        for key in ('PYTHONPATH', 'PYTHONHOME', 'VIRTUAL_ENV'):
+        for key in ('PYTHONPATH', 'PYTHONHOME', 'VIRTUAL_ENV', 'FLET_VIEW_PATH'):
             env.pop(key, None)
+        env['HOME'] = str(fake_home)
+        env['USERPROFILE'] = str(fake_home)
         env['XDG_CACHE_HOME'] = str(root / 'cache')
         env['RECLAIM_HOME'] = str(root / 'data')
         env['RECLAIM_SMOKE_FILE'] = str(result)
         subprocess.run([str(binary), '--smoke-test'], cwd=root, env=env,
                        timeout=90, check=True)
+        uses_preunpacked_client = (
+            archive.name.endswith(('.tar.gz', '.AppImage', '.deb', '-setup.exe'))
+            or (archive.name.endswith('.zip') and platform.system() != 'Darwin')
+        )
+        if uses_preunpacked_client and (fake_home / '.flet').exists():
+            raise RuntimeError(f'{archive.name}: extracted Flet client into ~/.flet at runtime')
         data = json.loads(result.read_text(encoding='utf-8'))
         if not data.get('ok'):
             raise RuntimeError(f'desktop startup failed: {data.get("error")}')

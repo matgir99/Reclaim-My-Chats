@@ -28,6 +28,7 @@ from urllib.parse import urlencode
 from ..core import browser, engine, retry
 from ..core.events import EventSink
 from ..core.model import Attachment, Chat, Turn
+from .chatgpt_canvas import replay_canvases
 from .chatgpt_import import _IMG_EXT, _content_parts, _linearize, _visible_message
 
 BASE_URL = 'https://chatgpt.com'
@@ -320,8 +321,9 @@ def _add_files(page, token: str, turn: Turn, node: dict, asset_ids: list[str]) -
 
 def fetch_conversation(page, token: str, conv_id: str, title: str = '') -> tuple[Chat, dict]:
     data = _get(page, token, f'{BASE_URL}/backend-api/conversation/{conv_id}')
+    mapping = data.get('mapping') or {}
     turns = []
-    for node in _linearize(data.get('mapping') or {}, data.get('current_node')):
+    for node in replay_canvases(_linearize(mapping, data.get('current_node')), mapping):
         turn, asset_ids = _node_to_turn(node)
         if turn is not None:
             _add_files(page, token, turn, node, asset_ids)

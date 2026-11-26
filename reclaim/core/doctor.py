@@ -130,6 +130,14 @@ def _browser_check(root: Path) -> Check:
     )
 
 
+def _nearest_existing(path: Path) -> Path | None:
+    """First existing ancestor of `path` (`path` itself if it exists), or None."""
+    for candidate in (path, *path.parents):
+        if candidate.exists():
+            return candidate
+    return None
+
+
 def run_checks(root: Path | None = None) -> list[Check]:
     """Everything that can be checked without contacting a provider."""
     root = Path(root) if root is not None else config.default_root()
@@ -146,8 +154,8 @@ def run_checks(root: Path | None = None) -> list[Check]:
         checks += [Check('Database', INFO, 'Not checked until the settings are fixed.'),
                    Check('Login data', INFO, 'Not checked until the settings are fixed.')]
     checks.append(_browser_check(root))
-    log_dir = logs.log_dir(root)
-    writable = os.access(log_dir if log_dir.exists() else root, os.W_OK)
+    target = _nearest_existing(logs.log_dir(root))
+    writable = target is not None and os.access(target, os.W_OK)
     checks.append(Check('Log file', OK if writable else WARNING, str(logs.log_file(root)),
                         '' if writable else 'The data folder is read-only; runs are not logged.'))
     return checks
