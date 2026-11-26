@@ -396,9 +396,10 @@ class TestSyncState(unittest.TestCase):
             json.dumps({'archive': ''}), encoding='utf-8')
         self.assertEqual(config.archive_root(self.tmp), self.tmp)
         # absolute path -> used as-is (any symlink target works)
+        abs_archive = Path(self.tmp.anchor) / 'abs' / 'archive'
         (self.tmp / '.reclaim.json').write_text(
-            json.dumps({'archive': '/abs/archive'}), encoding='utf-8')
-        self.assertEqual(config.archive_root(self.tmp), Path('/abs/archive'))
+            json.dumps({'archive': str(abs_archive)}), encoding='utf-8')
+        self.assertEqual(config.archive_root(self.tmp), abs_archive)
         # a value that is not a path stops instead of silently using the default
         (self.tmp / '.reclaim.json').write_text(
             json.dumps({'archive': 42}), encoding='utf-8')

@@ -714,3 +714,31 @@ class TestOptionalGui(unittest.TestCase):
         with patch.object(gui, 'ft', None), patch.object(gui.sys, 'stderr', stderr):
             self.assertEqual(gui.main(), 2)
         self.assertIn('reclaimmychats[gui]', stderr.getvalue())
+
+    def test_startup_exception_logs_and_reports_when_stderr_is_absent(self):
+        with tempfile.TemporaryDirectory() as temp:
+            fake_ft = type('FakeFt', (), {
+                'run': staticmethod(lambda _app: (_ for _ in ()).throw(RuntimeError('boom'))),
+            })
+            with (patch.dict(gui.os.environ, {'RECLAIM_HOME': temp}),
+                  patch.object(gui, 'ft', fake_ft),
+                  patch.object(gui.sys, 'stderr', None),
+                  patch.object(gui, '_report_startup_error') as report):
+                self.assertEqual(gui.main(), 1)
+            report.assert_called_once()
+            message = report.call_args.args[0]
+            self.assertIn('boom', message)
+            self.assertIn('reclaim.log', message)
+            logged = gui.logs.log_file(Path(temp)).read_text(encoding='utf-8')
+            self.assertIn('RuntimeError: boom', logged)
+
+        stderr = StringIO()
+        fake_ft = type('FakeFt', (), {
+            'run': staticmethod(lambda _app: (_ for _ in ()).throw(RuntimeError('boom'))),
+        })
+        with tempfile.TemporaryDirectory() as temp:
+            with (patch.dict(gui.os.environ, {'RECLAIM_HOME': temp}),
+                  patch.object(gui, 'ft', fake_ft),
+                  patch.object(gui.sys, 'stderr', stderr)):
+                with self.assertRaisesRegex(RuntimeError, 'boom'):
+                    gui.main()

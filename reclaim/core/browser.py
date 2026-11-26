@@ -84,10 +84,40 @@ class BrowserUnavailableError(RuntimeError):
     """No usable system or Playwright Chromium installation was found."""
 
 
+def _windows_chrome_candidates(localappdata: str | None = None) -> list[str]:
+    candidates = [
+        r'C:\Program Files\Google\Chrome\Application\chrome.exe',
+        r'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe',
+        r'C:\Program Files\Chromium\Application\chrome.exe',
+    ]
+    base = os.environ.get('LOCALAPPDATA') if localappdata is None else localappdata
+    if base:
+        candidates.extend([
+            str(Path(base) / 'Google' / 'Chrome' / 'Application' / 'chrome.exe'),
+            str(Path(base) / 'Chromium' / 'Application' / 'chrome.exe'),
+        ])
+    return candidates
+
+
+def _windows_edge_candidates() -> list[str]:
+    return [
+        r'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe',
+        r'C:\Program Files\Microsoft\Edge\Application\msedge.exe',
+    ]
+
+
+def _first_existing(paths: list[str]) -> str | None:
+    for candidate in paths:
+        if Path(candidate).exists():
+            return candidate
+    return None
+
+
 def find_chrome(root: Path | None = None) -> str | None:
     """Locate a system Chrome/Chromium binary, or None to use Playwright's bundled one.
 
-    Order: RECLAIM_CHROME_PATH env var -> saved settings -> known OS paths -> PATH lookup.
+    Order: RECLAIM_CHROME_PATH env var -> saved settings -> known OS paths -> PATH lookup
+    -> Windows Microsoft Edge fallback.
     """
     env = os.environ.get('RECLAIM_CHROME_PATH', '').strip()
     if env:
@@ -97,28 +127,24 @@ def find_chrome(root: Path | None = None) -> str | None:
         if configured:
             return configured
     candidates = [
-        # Linux
         '/usr/bin/google-chrome-stable',
         '/usr/bin/google-chrome',
         '/usr/bin/chromium',
         '/usr/bin/chromium-browser',
-        # macOS
         '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
         '/Applications/Chromium.app/Contents/MacOS/Chromium',
-        # Windows
-        r'C:\Program Files\Google\Chrome\Application\chrome.exe',
-        r'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe',
-        r'C:\Program Files\Chromium\Application\chrome.exe',
+        *(_windows_chrome_candidates() if os.name == 'nt' else []),
     ]
-    for c in candidates:
-        if Path(c).exists():
-            return c
+    found = _first_existing(candidates)
+    if found:
+        return found
     for name in ('google-chrome-stable', 'google-chrome', 'chromium',
-                 'chromium-browser', 'chrome', 'msedge'):
-        p = shutil.which(name)
-        if p:
+                 'chromium-browser', 'chrome'):
+        if p := shutil.which(name):
             return p
-    return None
+    if os.name == 'nt' and (edge := _first_existing(_windows_edge_candidates())):
+        return edge
+    return shutil.which('msedge')
 
 
 def _playwright_package_dir() -> Path | None:

@@ -16,9 +16,19 @@ def _verify_linux_tarball(path: Path) -> None:
         raise ValueError(f'{path}: unexpectedly small tarball')
     with tarfile.open(path, 'r:gz') as bundle:
         names = set(bundle.getnames())
-    required = {'ReclaimMyChats/ReclaimMyChats', 'ReclaimMyChats/org.reclaimmychats.app.desktop'}
+    required = {
+        'ReclaimMyChats/ReclaimMyChats',
+        'ReclaimMyChats/org.reclaimmychats.app.desktop',
+        'ReclaimMyChats/_internal/flet_desktop/app/flet/flet',
+    }
     if not required <= names:
-        raise ValueError(f'{path}: missing executable or desktop entry')
+        raise ValueError(f'{path}: missing executable, client, or desktop entry')
+    if any(
+        n.startswith('ReclaimMyChats/_internal/flet_desktop/app/flet-linux-')
+        and n.endswith('.tar.gz')
+        for n in names
+    ):
+        raise ValueError(f'{path}: still contains compressed Flet client archive')
 
 
 def _verify_windows_zip(path: Path) -> None:
@@ -28,6 +38,13 @@ def _verify_windows_zip(path: Path) -> None:
         names = set(bundle.namelist())
     if 'ReclaimMyChats.exe' not in names and 'ReclaimMyChats/ReclaimMyChats.exe' not in names:
         raise ValueError(f'{path}: missing application executable')
+    if (
+        'ReclaimMyChats/ReclaimMyChats.exe' in names
+        and 'ReclaimMyChats/_internal/flet_desktop/app/flet/flet.exe' not in names
+    ):
+        raise ValueError(f'{path}: missing unpacked Flet client')
+    if 'ReclaimMyChats/_internal/flet_desktop/app/flet-windows.zip' in names:
+        raise ValueError(f'{path}: still contains compressed flet-windows.zip')
 
 
 def _verify_macos_zip(path: Path) -> None:

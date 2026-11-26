@@ -72,6 +72,16 @@ def get_logger(root: Path | None = None) -> logging.Logger:
     return log
 
 
+def close_logger() -> None:
+    """Close and detach the active log file handler so Windows does not keep the file locked."""
+    global _handler, _handler_path
+    if _handler is not None:
+        logging.getLogger('reclaim').removeHandler(_handler)
+        with suppress(Exception):
+            _handler.close()
+        _handler, _handler_path = None, None
+
+
 class _Tee(io.TextIOBase):
     """A text stream that writes through and logs each complete line."""
 
@@ -155,3 +165,4 @@ def capture(root: Path | None, label: str):
         tee_err.finish()
         sys.stdout, sys.stderr = out, err
         log.info('=== %s: finished', label)
+        close_logger()

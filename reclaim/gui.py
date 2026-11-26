@@ -1371,16 +1371,34 @@ async def app(page) -> None:
     await window.run_startup_check_if_enabled()
 
 
+def _report_startup_error(message: str) -> None:
+    if sys.stderr is not None:
+        print(message, file=sys.stderr)
+    elif os.name == 'nt':
+        import ctypes
+
+        ctypes.windll.user32.MessageBoxW(0, message, 'Reclaim My Chats', 0x10)
+
+
 def main() -> int:
     if ft is None:
-        message = 'The GUI requires Flet. Install it with: pip install "reclaimmychats[gui]"'
-        if sys.stderr is not None:
-            print(message, file=sys.stderr)
-        elif os.name == 'nt':
-            import ctypes
-            ctypes.windll.user32.MessageBoxW(0, message, 'Reclaim My Chats', 0x10)
+        _report_startup_error(
+            'The GUI requires Flet. Install it with: pip install "reclaimmychats[gui]"',
+        )
         return 2
-    ft.run(app)
+    try:
+        ft.run(app)
+    except Exception as exc:
+        with contextlib.suppress(OSError):
+            logs.get_logger().exception('Reclaim My Chats failed to start')
+            logs.close_logger()
+        if sys.stderr is not None:
+            raise
+        _report_startup_error(
+            f'Reclaim My Chats could not start: {exc}\n\n'
+            f'Details were written to:\n{logs.log_file()}',
+        )
+        return 1
     return 0
 
 

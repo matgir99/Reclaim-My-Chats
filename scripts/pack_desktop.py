@@ -197,6 +197,48 @@ def build_linux_appimage(
     return output_path
 
 
+def _extract_zip_safely(archive: Path, dest: Path) -> None:
+    dest_root = dest.resolve()
+    with zipfile.ZipFile(archive) as zf:
+        for info in zf.infolist():
+            target = (dest_root / info.filename).resolve()
+            if target != dest_root and not target.is_relative_to(dest_root):
+                raise RuntimeError(f'unsafe zip entry: {info.filename}')
+        zf.extractall(dest)
+
+
+def _extract_client_archive(app_base: Path, system: str) -> Path:
+    if system == 'windows':
+        archive = app_base / 'flet-windows.zip'
+        if not archive.is_file():
+            raise RuntimeError(f'bundled Flet client archive not found: {archive}')
+        _extract_zip_safely(archive, app_base)
+        return archive
+    matches = sorted(app_base.glob('flet-linux-*.tar.gz'))
+    if not matches:
+        raise RuntimeError(f'bundled Flet client archive not found under {app_base}')
+    archive = matches[0]
+    with tarfile.open(archive, 'r:gz') as tf:
+        tf.extractall(app_base, filter='data')
+    return archive
+
+
+def unpack_bundled_flet_client(app_dir: Path, system: str) -> Path:
+    """Unpack the Flet client inside `--onedir` bundles so first launch skips `~/.flet`."""
+    app_base = app_dir / '_internal' / 'flet_desktop' / 'app'
+    exe_name = 'flet.exe' if system == 'windows' else 'flet'
+    client_dir = app_base / 'flet'
+    if (client_dir / exe_name).is_file():
+        return client_dir
+    archive = _extract_client_archive(app_base, system)
+    if not (client_dir / exe_name).is_file():
+        raise RuntimeError(f'unpacked Flet client missing {client_dir / exe_name}')
+    archive.unlink(missing_ok=True)
+    archive.with_name(archive.name + '.sha256').unlink(missing_ok=True)
+    (app_base / '.last-used').unlink(missing_ok=True)
+    return client_dir
+
+
 def _ar_member(name: str, data: bytes) -> bytes:
     header = (
         f'{name:<16}'
@@ -211,7 +253,11 @@ def _ar_member(name: str, data: bytes) -> bytes:
     return header + data + pad
 
 
-def _write_deb_ar(pkg_root: Path, output_path: Path) -> None:
+def _write_deb_ar(
+    pkg_root: Path,
+    output_path: Path,
+    symlinks: dict[str, str] | None = None,
+) -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
         control_tar = tmp_path / 'control.tar.gz'
@@ -223,6 +269,12 @@ def _write_deb_ar(pkg_root: Path, output_path: Path) -> None:
             for item in sorted(pkg_root.iterdir()):
                 if item.name != 'DEBIAN':
                     tar.add(item, arcname=f'./{item.name}')
+            for arcname, target in (symlinks or {}).items():
+                info = tarfile.TarInfo(arcname)
+                info.type = tarfile.SYMTYPE
+                info.linkname = target
+                info.mode = 0o777
+                tar.addfile(info)
         output_path.write_bytes(
             b'!<arch>\n'
             + _ar_member('debian-binary', b'2.0\n')
@@ -265,7 +317,6 @@ def build_linux_deb(
         shutil.copytree(app_dir, pkg_root / 'opt' / APP_NAME, symlinks=True)
         bin_dir = pkg_root / 'usr' / 'bin'
         bin_dir.mkdir(parents=True)
-        (bin_dir / 'reclaim-my-chats').symlink_to(f'/opt/{APP_NAME}/{APP_NAME}')
         apps_dir = pkg_root / 'usr' / 'share' / 'applications'
         apps_dir.mkdir(parents=True)
         _rewrite_desktop_entry(desktop, apps_dir / desktop.name, f'/opt/{APP_NAME}/{APP_NAME}')
@@ -273,21 +324,32 @@ def build_linux_deb(
         icons_dir.mkdir(parents=True)
         shutil.copy2(icon, icons_dir / f'{BUNDLE_ID}.png')
 
-        _chmod_deb_tree(pkg_root)
         dpkg_deb = shutil.which('dpkg-deb')
         if dpkg_deb:
+            (bin_dir / 'reclaim-my-chats').symlink_to(f'/opt/{APP_NAME}/{APP_NAME}')
+            _chmod_deb_tree(pkg_root)
             subprocess.run([dpkg_deb, '--build', '--root-owner-group',
                             str(pkg_root), str(output_path)], check=True)
         else:
-            _write_deb_ar(pkg_root, output_path)
+            _chmod_deb_tree(pkg_root)
+            _write_deb_ar(
+                pkg_root,
+                output_path,
+                symlinks={'./usr/bin/reclaim-my-chats': f'/opt/{APP_NAME}/{APP_NAME}'},
+            )
     return output_path
 
 
 def _chmod_deb_tree(pkg_root: Path) -> None:
     pkg_root.chmod(0o755)
     for path in pkg_root.rglob('*'):
-        if not path.is_symlink() and path.is_dir():
+        if path.is_symlink():
+            continue
+        if path.is_dir():
             path.chmod(0o755)
+        elif path.is_file():
+            mode = path.stat().st_mode & 0o777
+            path.chmod(mode | 0o444 | (0o111 if mode & 0o100 else 0))
 
 
 def build_windows_zip(app_dir: Path, archive: Path) -> Path:
@@ -346,7 +408,8 @@ def write_inno_script(
         '',
         '[Run]',
         (f'Filename: "{{app}}\\{APP_NAME}.exe"; '
-         f'Description: "Launch {PRODUCT_NAME}"; Flags: nowait postinstall skipifsilent'),
+         f'Description: "Launch {PRODUCT_NAME}"; '
+         'Flags: nowait postinstall skipifsilent runasoriginaluser'),
         '',
     ]
     iss_path.write_text('\n'.join(lines), encoding='utf-8')
@@ -426,6 +489,7 @@ def _package_linux(stage: Path, icons: dict[str, Path], output: Path,
         shutil.copy2(icons['png'], icon)
     if not (app_dir / APP_NAME).is_file() or not desktop.is_file():
         raise RuntimeError(f'flet pack did not produce unpacked app under {app_dir}')
+    unpack_bundled_flet_client(app_dir, 'linux')
     return [
         build_linux_tarball(app_dir, desktop, icon, output / f'{stem}.tar.gz'),
         build_linux_appimage(app_dir, desktop, icon, version, output / f'{stem}.AppImage'),
@@ -438,6 +502,7 @@ def _package_windows(stage: Path, icons: dict[str, Path], output: Path,
     app_dir = stage / APP_NAME
     if not (app_dir / f'{APP_NAME}.exe').is_file():
         raise RuntimeError(f'flet pack did not produce {app_dir / APP_NAME}.exe')
+    unpack_bundled_flet_client(app_dir, 'windows')
     artifacts = [build_windows_zip(app_dir, output / f'{stem}.zip')]
     installer = build_windows_installer(
         app_dir, icons['ico'], version, output / f'{stem}-setup.exe', stage,
