@@ -9,7 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from reclaim.core import browser, config
+from reclaim.core import browser, config, fsutil, locks, logs
 from reclaim.core import status
 from reclaim.core.events import ProgressEvent
 from reclaim.core.manifest import SyncState, report_dry_run
@@ -225,3 +225,36 @@ class TestArchiveController(unittest.TestCase):
         for names in ([], ['unknown']):
             with self.assertRaises(ValueError):
                 controller.run(names)
+
+    def test_nested_log_capture_and_case_normalized_locks(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            with logs.capture(root, 'outer'):
+                with logs.capture(root, 'inner'):
+                    print('inside nested capture')
+                print('after inner capture')
+            text = logs.log_file(root).read_text(encoding='utf-8')
+            self.assertIn('inside nested capture', text)
+            self.assertIn('after inner capture', text)
+            self.assertIn('=== outer: finished', text)
+
+            db = root / 'chats'
+            with locks.hold(db, 'update'):
+                self.assertTrue(locks.held_here(db))
+                alt = root / '.' / ('CHATS' if config.os.name == 'nt' else 'chats')
+                self.assertTrue(locks.held_here(alt))
+
+            attempts = 0
+
+            def flaky_rename() -> None:
+                nonlocal attempts
+                attempts += 1
+                if attempts < 2:
+                    err = PermissionError('locked by antivirus')
+                    err.winerror = 5  # type: ignore[attr-defined]
+                    raise err
+
+            with (patch.object(fsutil, '_is_windows', return_value=True),
+                  patch.object(fsutil.time, 'sleep')):
+                fsutil.windows_retry_op(flaky_rename)
+            self.assertEqual(attempts, 2)

@@ -36,6 +36,7 @@ from ..core.manifest import SyncState, finish_run, stats_text
 from ..core.model import Attachment, Chat, Turn
 from ..core.writer import write_chat
 from . import chatgpt_references
+from .chatgpt_canvas import replay_canvases
 
 PROVIDER = 'chatgpt'
 
@@ -173,7 +174,8 @@ def parse_conversation(conv: dict, attachments: list[Attachment] | None = None) 
     mapping = conv.get('mapping') or {}
     nodes = _linearize(mapping, conv.get('current_node'))
     preambles = _export_preambles(nodes)
-    turns = [t for i, t in enumerate(_node_to_turn(n) for n in nodes) if t and i not in preambles]
+    flagged = [n for i, n in enumerate(nodes) if i not in preambles]
+    turns = [t for t in (_node_to_turn(n) for n in replay_canvases(flagged, mapping)) if t]
     if not turns:
         return None
     if attachments:

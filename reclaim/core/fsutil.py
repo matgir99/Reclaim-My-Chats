@@ -12,7 +12,31 @@ from __future__ import annotations
 import contextlib
 import os
 import tempfile
+import time
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
+
+
+def _is_windows() -> bool:
+    return os.name == 'nt'
+
+
+def windows_retry_op(op: Callable[[], Any],
+                     delays: tuple[float, ...] = (0.05, 0.1, 0.25)) -> None:
+    """Retry transient Windows sharing/scanner locks (`WinError 5` / `32`)."""
+    if not _is_windows():
+        op()
+        return
+    for delay in delays:
+        try:
+            op()
+            return
+        except PermissionError as exc:
+            if getattr(exc, 'winerror', None) not in (5, 32):
+                raise
+            time.sleep(delay)
+    op()
 
 
 def atomic_write_bytes(path: Path, data: bytes, *, mode: int | None = None) -> None:
@@ -24,9 +48,9 @@ def atomic_write_bytes(path: Path, data: bytes, *, mode: int | None = None) -> N
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
-        if mode is not None and os.name != 'nt':
+        if mode is not None and not _is_windows():
             os.chmod(tmp, mode)
-        os.replace(tmp, path)
+        windows_retry_op(lambda: os.replace(tmp, path))
     except BaseException:
         with contextlib.suppress(OSError):
             os.unlink(tmp)

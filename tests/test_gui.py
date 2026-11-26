@@ -15,7 +15,7 @@ from reclaim import gui
 
 
 class _Window:
-    pass
+    on_event: Any = None
 
 
 class _Page:
@@ -23,6 +23,8 @@ class _Page:
         self.window = _Window()
         self.controls = []
         self.dialog = None
+        self.on_disconnect: Any = None
+        self.on_close: Any = None
 
     def add(self, *controls):
         self.controls.extend(controls)
@@ -695,6 +697,20 @@ class TestGuiLoginRequest(unittest.IsolatedAsyncioTestCase):
                           fallback_dialog.content.content.controls[0].value)
             page.pop_dialog()
 
+            with patch.object(gui.browser, 'find_chrome', return_value=r'C:\Program Files\Microsoft\Edge\Application\msedge.exe'):
+                window._setup_wizard()
+            edge_dialog = page.dialog
+            assert edge_dialog is not None
+            self.assertIn('Microsoft Edge detected:',
+                          edge_dialog.content.content.controls[0].value)
+            page.pop_dialog()
+
+            # Window close/disconnect stops an active run.
+            window._running = True
+            page.on_disconnect(None)
+            self.assertTrue(controller.stopped)
+            window._running = False
+
             with patch.object(gui.browser, 'find_chrome', return_value='/usr/bin/chrome'):
                 window._setup_wizard()
             dialog = page.dialog
@@ -714,6 +730,18 @@ class TestOptionalGui(unittest.TestCase):
         with patch.object(gui, 'ft', None), patch.object(gui.sys, 'stderr', stderr):
             self.assertEqual(gui.main(), 2)
         self.assertIn('reclaimmychats[gui]', stderr.getvalue())
+
+    def test_startup_error_omits_log_path_when_log_cannot_open(self):
+        reported = []
+        fake_ft = type('FakeFt', (), {'run': staticmethod(lambda _: (_ for _ in ()).throw(RuntimeError('boom')))})()
+        with (patch.object(gui, 'ft', fake_ft),
+              patch.object(gui.sys, 'stderr', None),
+              patch.object(gui.logs, 'get_logger', side_effect=PermissionError('read-only')),
+              patch.object(gui, '_report_startup_error', side_effect=reported.append)):
+            self.assertEqual(gui.main(), 1)
+        self.assertEqual(len(reported), 1)
+        self.assertIn('boom', reported[0])
+        self.assertNotIn('Details were written to:', reported[0])
 
     def test_startup_exception_logs_and_reports_when_stderr_is_absent(self):
         with tempfile.TemporaryDirectory() as temp:

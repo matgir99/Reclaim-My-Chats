@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import math
 import os
 import platform
 import re
@@ -450,8 +451,14 @@ def build_macos_dmg(app_bundle: Path, dmg_path: Path) -> Path:
         src.mkdir()
         subprocess.run(['ditto', str(app_bundle), str(src / app_bundle.name)], check=True)
         (src / 'Applications').symlink_to('/Applications')
+        content_bytes = sum(
+            p.stat().st_size for p in src.rglob('*') if p.is_file() and not p.is_symlink()
+        )
+        # hdiutil's auto-sizing can underallocate for Flet 1.1 bundles ("No space left").
+        size_mb = max(32, math.ceil(content_bytes / (1024 * 1024) * 1.35) + 64)
         subprocess.run(['hdiutil', 'create', '-volname', PRODUCT_NAME,
-                        '-srcfolder', str(src), '-ov', '-format', 'UDZO', str(dmg_path)],
+                        '-srcfolder', str(src), '-megabytes', str(size_mb),
+                        '-ov', '-format', 'UDZO', str(dmg_path)],
                        check=True)
     return dmg_path
 

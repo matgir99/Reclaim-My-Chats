@@ -111,7 +111,8 @@ def _review_items(events: list[ProgressEvent]) -> tuple[list[tuple[ProgressEvent
 def _browser_status_text(root: Path) -> str:
     chrome = browser.find_chrome(root)
     if chrome:
-        return f'Chrome detected: {chrome}'
+        label = 'Microsoft Edge' if Path(chrome).name.lower().startswith('msedge') else 'Chrome'
+        return f'{label} detected: {chrome}'
     bundled = browser.find_playwright_chromium()
     if bundled:
         return f'Playwright Chromium detected: {bundled}'
@@ -158,6 +159,10 @@ class ReclaimWindow:
         page.window.min_width = 650
         page.window.min_height = 550
         page.scroll = ft.ScrollMode.AUTO
+        page.on_disconnect = self._stop_on_close
+        page.on_close = self._stop_on_close
+        if hasattr(page, 'window'):
+            page.window.on_event = self._on_window_event
 
         self.archive_path = ft.Text(str(self._database_path() or ''),
                                     selectable=True, key='archive-path')
@@ -508,6 +513,15 @@ class ReclaimWindow:
             self._stopping = False
             self.login_banner.visible = False
         self._selection_changed()
+
+    def _stop_on_close(self, _=None) -> None:
+        if self._running or self.controller.busy:
+            self._stopping = True
+            self.controller.stop()
+
+    def _on_window_event(self, event) -> None:
+        if getattr(event, 'type', None) == ft.WindowEventType.CLOSE:
+            self._stop_on_close()
 
     def _stop_run(self, _=None) -> None:
         if not self._running or self._stopping:
@@ -1389,15 +1403,15 @@ def main() -> int:
     try:
         ft.run(app)
     except Exception as exc:
+        logged = False
         with contextlib.suppress(OSError):
             logs.get_logger().exception('Reclaim My Chats failed to start')
             logs.close_logger()
+            logged = True
         if sys.stderr is not None:
             raise
-        _report_startup_error(
-            f'Reclaim My Chats could not start: {exc}\n\n'
-            f'Details were written to:\n{logs.log_file()}',
-        )
+        suffix = f'\n\nDetails were written to:\n{logs.log_file()}' if logged else ''
+        _report_startup_error(f'Reclaim My Chats could not start: {exc}{suffix}')
         return 1
     return 0
 

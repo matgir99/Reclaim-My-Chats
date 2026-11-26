@@ -316,3 +316,24 @@ class TestDesktopPackaging(unittest.TestCase):
               patch.dict(os.environ, {'FLET_VIEW_PATH': 'custom-view'}, clear=True)):
             mod._configure_frozen_env()
             self.assertEqual(os.environ.get('FLET_VIEW_PATH'), 'custom-view')
+
+    def test_build_macos_dmg_passes_explicit_megabytes_headroom(self):
+        app_bundle = self.root / 'ReclaimMyChats.app'
+        app_bundle.mkdir()
+        dmg_out = self.root / 'out' / 'Reclaim.dmg'
+        calls = []
+
+        def fake_run(cmd, check=False):
+            calls.append(cmd)
+            if cmd[0] == 'ditto':
+                Path(cmd[2]).mkdir(parents=True, exist_ok=True)
+                (Path(cmd[2]) / 'payload.bin').write_bytes(b'x' * 2048)
+
+        with (patch.object(pack_desktop.subprocess, 'run', side_effect=fake_run),
+              patch.object(pack_desktop.Path, 'symlink_to')):
+            pack_desktop.build_macos_dmg(app_bundle, dmg_out)
+        hdiutil_cmd = calls[-1]
+        self.assertEqual(hdiutil_cmd[0], 'hdiutil')
+        self.assertIn('-megabytes', hdiutil_cmd)
+        idx = hdiutil_cmd.index('-megabytes')
+        self.assertGreaterEqual(int(hdiutil_cmd[idx + 1]), 64)

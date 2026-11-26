@@ -822,6 +822,18 @@ class TestDispatch(unittest.TestCase):
             ['googleaistudio', 'deepseek', 'kimi', 'chatgpt',
              'claude', 'googlegemini'])
 
+    def test_configure_stdio_forces_utf8_on_wrapped_streams(self):
+        import reclaim.__main__ as cli
+        raw = io.BytesIO()
+        wrapped = io.TextIOWrapper(raw, encoding='cp1252')
+        with patch.object(sys, 'stdout', wrapped), patch.object(sys, 'stderr', io.StringIO()):
+            cli._configure_stdio()
+            wrapped.write('status — ok')
+            wrapped.flush()
+            self.assertEqual(wrapped.encoding, 'utf-8')
+        self.assertEqual(raw.getvalue(), 'status — ok'.encode())
+        wrapped.detach()
+
 
 if __name__ == '__main__':
     unittest.main()

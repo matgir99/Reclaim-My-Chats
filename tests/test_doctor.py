@@ -74,6 +74,12 @@ class TestDoctor(unittest.TestCase):
         self.assertEqual(checks['Browser'].status, doctor.OK)
         self.assertFalse(any(c.status == doctor.PROBLEM for c in checks.values()))
 
+    def test_fresh_nonexistent_root_reports_writable_log_file(self):
+        fresh = self.root / 'fresh-user-data' / 'ReclaimMyChats'
+        with patch.object(doctor.browser, 'find_chrome', return_value='/usr/bin/chrome'):
+            checks = self.by_area(doctor.run_checks(fresh))
+        self.assertEqual(checks['Log file'].status, doctor.OK)
+
     def test_problems_come_with_advice(self):
         (self.root / '.reclaim.json').write_text('{"archive": 42}')
         with (patch.object(doctor.browser, 'find_chrome', return_value=None),
@@ -131,11 +137,11 @@ class TestDoctor(unittest.TestCase):
         def fake_exists(path_obj: Path) -> bool:
             return str(path_obj) in existing
 
-        with (patch.dict(os.environ, {'LOCALAPPDATA': str(self.root)}, clear=False),
-              patch.object(doctor.browser.os, 'name', 'nt'),
+        with (patch.dict(os.environ, {'LOCALAPPDATA': str(self.root), 'RECLAIM_CHROME_PATH': ''},
+                         clear=False),
+              patch.object(doctor.browser, '_is_windows', return_value=True),
               patch.object(doctor.browser.Path, 'exists', autospec=True, side_effect=fake_exists),
               patch.object(doctor.browser.shutil, 'which', return_value=None)):
-            os.environ.pop('RECLAIM_CHROME_PATH', None)
             self.assertEqual(doctor.browser.find_chrome(self.root), local_chrome)
             existing.remove(local_chrome)
             self.assertEqual(doctor.browser.find_chrome(self.root), edge)

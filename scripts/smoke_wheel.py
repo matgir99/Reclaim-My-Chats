@@ -34,7 +34,7 @@ def _reclaim(python: Path, home: Path, *args: str) -> str:
     done = subprocess.run(
         [str(python), '-I', '-m', 'reclaim', *args],
         cwd=home.parent, env={**os.environ, 'RECLAIM_HOME': str(home)},
-        capture_output=True, text=True, check=False,
+        capture_output=True, encoding='utf-8', errors='replace', check=False,
     )
     if done.returncode != 0:
         raise SystemExit(f'reclaim {" ".join(args)} exited with {done.returncode}:\n'
