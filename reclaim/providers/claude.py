@@ -20,7 +20,6 @@ skipped in v1 (known gap — artifacts/research reports live there).
 
 from __future__ import annotations
 
-import contextlib
 import json
 import time
 from types import SimpleNamespace
@@ -70,8 +69,7 @@ def ensure_logged_in(page) -> str:
     # already exists: from about:blank or another provider's page in
     # `reclaim all`, every request fails with "Failed to fetch".
     if urlsplit(page.url).hostname != urlsplit(BASE_URL).hostname:
-        with contextlib.suppress(Exception):
-            page.goto(BASE_URL, wait_until='domcontentloaded', timeout=60000)
+        browser.open_login_page(page, BASE_URL)
         time.sleep(4)
     browser.wait_for_login(page, PROVIDER, 'Claude',
                            lambda: bool(_cookies(page).get('sessionKey')))

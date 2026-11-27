@@ -27,7 +27,9 @@ and prints the proposed work without writing database files.
 
 `reclaim all` reads `providers` from `.reclaim.json`, skips disabled
 providers, and uses one shared browser session. An explicit single-provider
-command ignores the enabled list. The GUI uses the same controller (`ArchiveController`)
+command ignores the enabled list. If a provider cannot open or the login
+times out, the other providers continue. The command reports the failing
+provider and exits with code 2. The GUI uses the same controller (`ArchiveController`)
 for selected, all, dry-run, rebuild, live check, and capture operations.
 
 Database setup, locks, diagnostics, and captures also share controller/core logic:

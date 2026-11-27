@@ -267,6 +267,34 @@ class TestEngine(unittest.TestCase):
               self.assertRaisesRegex(RuntimeError, 'Login timeout')):
             browser.wait_for_login(page, 'kimi', 'Kimi', lambda: None)
 
+    def test_login_polling_does_not_sleep_past_the_deadline(self):
+        page = object()
+        with (patch.object(browser, 'login_timeout', return_value=30),
+              patch.object(browser, 'ask_for_login'),
+              patch.object(browser, 'set_window_bounds') as bounds,
+              patch.object(browser.time, 'monotonic', side_effect=[0, 29.5, 29.5, 30]),
+              patch.object(browser, '_sleep_stopping', return_value=False) as sleep,
+              self.assertRaisesRegex(RuntimeError, 'Login timeout for Kimi after 30 seconds')):
+            browser.wait_for_login(page, 'kimi', 'Kimi', lambda: None)
+        sleep.assert_called_once_with(0.5, page)
+        bounds.assert_called_once_with(page, state='minimized')
+
+    def test_google_login_timeout_reports_the_configured_wait(self):
+        class _Page:
+            url = 'https://accounts.google.com/signin'
+
+        page = _Page()
+        with (patch.object(browser, 'login_timeout', return_value=30),
+              patch.object(browser, 'ask_for_login') as ask,
+              patch.object(browser, 'set_window_bounds') as bounds,
+              patch.object(browser.time, 'monotonic', side_effect=[0, 29.875, 30]),
+              patch.object(browser, '_wait_url_slice', return_value=False) as wait,
+              self.assertRaisesRegex(RuntimeError, 'Login timeout for Google after 30 seconds')):
+            browser.interactive_login(page, 'accounts.google.com', 'https://example.test', 'Google')
+        ask.assert_called_once_with(page, '', 'Google', 30)
+        wait.assert_called_once_with(page, 'https://example.test', 125)
+        bounds.assert_called_once_with(page, state='minimized')
+
     def test_cross_thread_bring_browser_forward_wait_for_login_and_clear(self):
         worker_tid = threading.get_ident()
         owner_calls: list[int] = []

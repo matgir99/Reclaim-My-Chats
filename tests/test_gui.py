@@ -260,6 +260,32 @@ class TestGui(unittest.IsolatedAsyncioTestCase):
         await dialog.actions[2].on_click(None)  # Merge all passes confirmed IDs past brake
         self.assertEqual(ctrl.only_ids, ['id-gone', 'id-rest'])
 
+    async def test_merge_all_skips_providers_that_failed_the_check(self):
+        class _PartialController(_Controller):
+            def run(self, providers, mode='update', sink=None, *, log=False, only_ids=None):
+                self.calls.append((list(providers), mode))
+                assert sink is not None
+                if mode == 'dry-run':
+                    sink(ProgressEvent('chat_planned', 'kimi', 'Incomplete result', 1, 1,
+                                       'fetch (new)', detail='kimi-id'))
+                    sink(ProgressEvent('error', 'kimi', message='Connection reset'))
+                    sink(ProgressEvent('chat_planned', 'chatgpt', 'New result', 1, 1,
+                                       'fetch (new)', detail='chatgpt-id'))
+                    return RunSummary((('kimi', 2), ('chatgpt', 0)))
+                return RunSummary((('chatgpt', 0),))
+
+        ctrl = _PartialController()
+        self.window.controller = ctrl
+        await self.window._run(['kimi', 'chatgpt'], 'dry-run')
+        self.assertIn('Connection reset', self.window.provider_status['kimi'].value)
+        dialog = self.page.dialog
+        assert dialog is not None and dialog.actions is not None
+        planned = dialog.content.content.controls
+        self.assertEqual(len(planned), 1)
+        self.assertIn('New result', planned[0].label)
+        await dialog.actions[2].on_click(None)
+        self.assertEqual(ctrl.calls[-1], (['chatgpt'], 'update'))
+
     async def test_startup_check_disables_login_wait_in_worker_and_keeps_needs_login(self):
         observed_wait_disabled: list[bool] = []
 
@@ -648,7 +674,7 @@ class TestGuiLoginRequest(unittest.IsolatedAsyncioTestCase):
             page = _Page()
             window = gui.ReclaimWindow(page, Path(temp), _Controller())
             await window.refresh_archive()
-            request = 'Log in to Kimi in the browser window. Waiting up to 15 minutes...'
+            request = 'Log in to Kimi in the browser window. Waiting up to 120 seconds...'
             window._event(ProgressEvent('provider_started', 'kimi', current=1, total=1))
             window._event(ProgressEvent('login_needed', 'kimi', message=request))
             self.assertEqual(window.current.value, f'Kimi: {request}')

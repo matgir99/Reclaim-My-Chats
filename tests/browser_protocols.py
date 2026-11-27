@@ -12,14 +12,18 @@ from __future__ import annotations
 
 import json
 import unittest
+from contextlib import nullcontext
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import ClassVar
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from urllib.parse import urlsplit
 
 from playwright.sync_api import Browser, Playwright, Route, sync_playwright
 
 from reclaim.core import browser as reclaim_browser
+from reclaim.core.events import ProgressEvent
+from reclaim.core.service import ArchiveController
 from reclaim.providers import chatgpt, claude, deepseek
 
 
@@ -134,6 +138,32 @@ class TestBrowserProtocols(unittest.TestCase):
             self.assertEqual(claude.ensure_logged_in(self.page), 'synthetic-org')
             self.assertEqual(claude._get(self.page, 'https://claude.ai' + path + '?limit=1'), [])
         self.assertEqual(urlsplit(self.page.url).hostname, 'claude.ai')
+
+    def test_blocked_providers_fail_before_sign_in_and_the_next_provider_runs(self):
+        self.context.route('https://chat.deepseek.com/**',
+                           lambda route: route.fulfill(status=451, body='Network restriction'))
+        self.context.route('https://www.kimi.ai/**', lambda route: route.abort('connectionreset'))
+        self.context.add_cookies([
+            {'name': 'sessionKey', 'value': 'synthetic-session', 'domain': 'claude.ai', 'path': '/'},
+            {'name': 'lastActiveOrg', 'value': 'synthetic-org', 'domain': 'claude.ai', 'path': '/'}])
+        self.responses['/api/organizations/synthetic-org/chat_conversations'] = []
+        events: list[ProgressEvent] = []
+        with (TemporaryDirectory() as root,
+              patch('playwright.sync_api.sync_playwright', return_value=nullcontext()),
+              patch('reclaim.providers.kimi.base_url', return_value='https://www.kimi.ai'),
+              patch.object(reclaim_browser, 'launch', return_value=(Mock(), self.page)),
+              patch.object(reclaim_browser, 'ask_for_login',
+                           side_effect=AssertionError('unexpected sign-in prompt')) as ask,
+              patch.object(claude.time, 'sleep')):
+            result = ArchiveController(Path(root)).run(
+                ['deepseek', 'kimi', 'claude'], 'check', events.append)
+        ask.assert_not_called()
+        errors = {e.provider: e.message for e in events if e.kind == 'error'}
+        self.assertEqual(result.codes, (('deepseek', 2), ('kimi', 2), ('claude', 0)), errors)
+        self.assertEqual(result.exit_code, 2)
+        self.assertIn('HTTP 451', errors['deepseek'])
+        self.assertIn('ERR_CONNECTION_RESET', errors['kimi'])
+        self.assertTrue(any(e.kind == 'checked' and e.provider == 'claude' for e in events))
 
     def test_deepseek_token_is_read_in_page_and_api_envelope_unwrapped(self):
         self.responses['/api/v0/chat_session/fetch_page'] = {
