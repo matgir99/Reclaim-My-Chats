@@ -143,7 +143,7 @@ def main(argv=None):
                     default=str(config.archive_root() / 'Google AI Studio'))
     args = ap.parse_args(argv)
     out_dir = Path(args.output_dir)
-    titles = json.loads(Path(args.titles).read_text(encoding='utf-8')) if args.titles else {}
+    titles = json.loads(Path(args.titles).read_text(encoding='utf-8-sig')) if args.titles else {}
 
     started = time.time()
     with offline_session(out_dir.parent, 'parse googleaistudio'):
