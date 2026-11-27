@@ -140,10 +140,15 @@ def _replay_update(doc: _CanvasDoc, body: dict | None, known: bool) -> str | Non
         return None
     content = doc.content if known else None
     for pattern, replacement, multiple in updates:
+        rewrite = pattern in _FULL_REWRITE_PATTERNS
         if content is None:
-            content = _expand_literal(replacement) if pattern in _FULL_REWRITE_PATTERNS else None
+            content = _expand_literal(replacement) if rewrite else None
         else:
-            content = _apply_update(content, pattern, replacement, multiple=multiple)
+            # A rewrite selects the whole text on its first match. With
+            # `multiple`, `finditer` would also yield the empty match at the
+            # end and append the new text a second time.
+            content = _apply_update(content, pattern, replacement,
+                                    multiple=multiple and not rewrite)
     doc.content = content
     label = f'Canvas: {doc.title} (edited)'
     if content is not None:

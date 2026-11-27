@@ -239,7 +239,7 @@ November update:
 
 | Project and inspected revision | Findings and decision |
 |---|---|
-| [chatgpt-exporter, 9364915](https://github.com/pionxzh/chatgpt-exporter/tree/9364915555528d0ec2a1c70c22dc207e3c1f2078) | Canvas documents and versioned edits (`canmore.*`, both `text` and `code` tool calls), and `writing_block` drafts in interactive replies. Adopted both into native downloads and official imports. Userscript/screenshot changes do not apply. |
+| [chatgpt-exporter, 9364915](https://github.com/pionxzh/chatgpt-exporter/tree/9364915555528d0ec2a1c70c22dc207e3c1f2078) | Canvas documents and versioned edits (`canmore.*`, both `text` and `code` tool calls), and `writing_block` drafts in interactive replies. Adopted both into native downloads and official imports. One deliberate difference: a whole-document rewrite (`.*` and similar patterns) is applied once even when the call sets `multiple`, because a repeated regex search also matches the empty text at the end and would show the new document twice. Userscript/screenshot changes do not apply. |
 | [HAEVN, e09c97d](https://github.com/aiamblichus/haevn/tree/e09c97de056ec1234debeba89570294cc8ec42f1) | CLI/extension fragment recovery, rough `date:` frontmatter, model metadata, AI Studio picker selector, UI, and documentation work; HAEVN Markdown import and DeepSeek API reader remain compatible. Aligned `reclaim export haevn-md` source names for native `claude`, `googlegemini`, and `kimi`. |
 | [better-deepseek, bf0aba3](https://github.com/EdgeTypE/better-deepseek/tree/bf0aba32d452f84d43b46a4d6ecd6c22f6d26ac8) | Defensive bearer-token normalization in page requests; rest is UI cards, announcement panel, and system-prompt scheduling. Adopted token prefix cleanup in DeepSeek page fetches. |
 
