@@ -2,7 +2,14 @@
 
 import asyncio
 
+import flet as ft
 import flet.testing as ftt
+
+
+async def scroll_down(tester) -> None:
+    """Seven provider rows push the run buttons below the 720-pixel test screen."""
+    await tester.drag(await tester.find_by_key('provider-status-chatgpt'), ft.Offset(0, -400))
+    await tester.pump_and_settle()
 
 
 async def test_opens_and_shows_every_provider(flet_app: ftt.FletTestApp):
@@ -11,6 +18,9 @@ async def test_opens_and_shows_every_provider(flet_app: ftt.FletTestApp):
     for provider in ('chatgpt', 'claude', 'googlegemini', 'googleaistudio',
                      'deepseek', 'kimi', 'antigravity'):
         assert (await tester.find_by_key(f'provider-{provider}')).count == 1
+    # main.py points Antigravity at a folder that does not exist.
+    assert (await tester.find_by_text('Not found on this computer')).count == 1
+    assert (await tester.find_by_text('Check')).count == 1
     assert (await tester.find_by_key('archive-path')).count == 1
     assert (await tester.find_by_text('0 chats in the database')).count == 1
 
@@ -24,7 +34,8 @@ async def test_update_selected_and_dry_run(flet_app: ftt.FletTestApp):
     await tester.pump_and_settle()
     assert (await tester.find_by_text(
         'Update completed successfully · Google AI Studio: ok, DeepSeek: ok, '
-        'ChatGPT: ok, Claude: ok, Google Gemini: ok, Google Antigravity: ok')).count == 1
+        'ChatGPT: ok, Claude: ok, Google Gemini: ok')).count == 1
+    await scroll_down(tester)
     await tester.tap(await tester.find_by_key('dry-run'))
     await asyncio.sleep(0.5)
     await tester.pump_and_settle()
@@ -35,6 +46,7 @@ async def test_update_selected_and_dry_run(flet_app: ftt.FletTestApp):
 async def test_rebuild_confirmation_and_failure(flet_app: ftt.FletTestApp):
     tester = flet_app.tester
     await tester.pump_and_settle()
+    await scroll_down(tester)
     await tester.tap(await tester.find_by_key('rebuild'))
     await tester.pump_and_settle()
     assert (await tester.find_by_key('confirm-rebuild')).count == 1
@@ -56,6 +68,7 @@ async def test_settings_open_and_archive_path_visible(flet_app: ftt.FletTestApp)
     await tester.tap(await tester.find_by_key('settings-kimi'))
     await tester.tap(await tester.find_by_key('save-settings'))
     await tester.pump_and_settle()
+    await scroll_down(tester)
     await tester.tap(await tester.find_by_key('update-all'))
     await asyncio.sleep(0.5)
     await tester.pump_and_settle()

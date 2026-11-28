@@ -21,14 +21,16 @@ encrypted; they are counted and reported, not saved.
 from __future__ import annotations
 
 import codecs
+import hashlib
 import json
 import os
 import re
+import shutil
 import sqlite3
+import tempfile
 from collections.abc import Iterator
-from contextlib import contextmanager, suppress
+from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -54,20 +56,41 @@ def data_dir() -> Path:
     return Path(override).expanduser() if override else Path.home() / '.gemini' / 'antigravity'
 
 
+def _source_file(path: Path, stack: ExitStack) -> tuple[Path, str]:
+    """Which file to open, and how, without creating anything in Antigravity's folder.
+
+    Antigravity's databases use a write-ahead log. Opened read-only, SQLite
+    creates the log's `-wal` and `-shm` files when they are missing. Without
+    both, nothing has the database open and no log is pending, so it is read
+    as unchanging (`immutable`); with both, read-only reads the log as well;
+    with only one, a temporary copy is read."""
+    wal, shm = (path.with_name(f'{path.name}-{end}') for end in ('wal', 'shm'))
+    if wal.exists() and shm.exists():
+        return path, 'mode=ro'
+    if not wal.exists() and not shm.exists():
+        return path, 'mode=ro&immutable=1'
+    copy = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix='reclaim-antigravity-')))
+    for part in (path, wal):
+        if part.exists():
+            shutil.copy2(part, copy / part.name)
+    return copy / path.name, 'mode=ro'
+
+
 @contextmanager
 def _reading(path: Path) -> Iterator[sqlite3.Connection]:
-    """A read-only connection; SQLite errors name the file."""
-    try:
-        con = sqlite3.connect(f'{path.resolve().as_uri()}?mode=ro', uri=True, timeout=10)
-    except sqlite3.Error as exc:
-        raise RuntimeError(f'could not open Antigravity file {path.name}: {exc}') from exc
-    con.row_factory = sqlite3.Row
-    try:
-        yield con
-    except sqlite3.Error as exc:
-        raise RuntimeError(f'could not read Antigravity file {path.name}: {exc}') from exc
-    finally:
-        con.close()
+    """A read-only connection that writes nothing; SQLite errors name the file."""
+    with ExitStack() as stack:
+        try:
+            target, options = _source_file(path, stack)
+            con = sqlite3.connect(f'{target.resolve().as_uri()}?{options}', uri=True, timeout=10)
+        except (OSError, sqlite3.Error) as exc:
+            raise RuntimeError(f'could not open Antigravity file {path.name}: {exc}') from exc
+        stack.callback(con.close)
+        con.row_factory = sqlite3.Row
+        try:
+            yield con
+        except sqlite3.Error as exc:
+            raise RuntimeError(f'could not read Antigravity file {path.name}: {exc}') from exc
 
 
 @dataclass
@@ -81,6 +104,7 @@ class Conversation:
     parent: str = ''          # the conversation that started this subagent
     parent_title: str = ''
     agent: str = ''           # the subagent's kind, e.g. 'research'
+    modified: str = ''        # Antigravity's own time of the last change, for the order
 
 
 def _summaries(root: Path) -> dict[str, dict]:
@@ -117,14 +141,33 @@ def _project_names(root: Path) -> dict[str, str]:
     return names
 
 
-def _modified(path: Path) -> str:
-    """When the conversation last changed: its file, or its pending write-ahead log."""
-    stamp = path.stat().st_mtime
-    with suppress(OSError):
-        wal = path.with_name(f'{path.name}-wal').stat()
-        if wal.st_size:
-            stamp = max(stamp, wal.st_mtime)
-    return datetime.fromtimestamp(stamp, UTC).isoformat(timespec='microseconds')
+def _artifact_files(folder: Path) -> list[Path]:
+    """The agent's artifacts: files at the top of the conversation's brain folder."""
+    if not folder.is_dir():
+        return []
+    return [path for path in sorted(folder.iterdir())
+            if not path.name.startswith('.') and not path.name.endswith('.metadata.json')
+            and path.is_file()]
+
+
+def _version(path: Path, brain: Path) -> str:
+    """What identifies this version of a conversation: the last step's time and
+    a fingerprint of every step (index, status, size) and artifact (size, time).
+    File times of the database are not used: Antigravity rewrites the file when
+    it moves its log into it, without any step changing."""
+    with _reading(path) as con:
+        rows = con.execute('SELECT idx, status, length(step_payload) FROM steps '
+                           'ORDER BY idx').fetchall()
+        last = con.execute('SELECT step_payload FROM steps ORDER BY idx DESC LIMIT 1').fetchone()
+    digest = hashlib.sha256(';'.join(f'{i}:{s}:{n}' for i, s, n in rows).encode())
+    for artifact in _artifact_files(brain):
+        stat = artifact.stat()
+        digest.update(f'|{artifact.name}:{stat.st_size}:{stat.st_mtime_ns}'.encode())
+    try:
+        when = steps_mod.created_at(Message(last[0])) if last else ''
+    except FormatError:
+        when = ''
+    return f'{when or "no steps"} · {len(rows)} steps · {digest.hexdigest()[:12]}'
 
 
 def _read_steps(path: Path, step_type: int | None = None) -> list[tuple[int, Message]]:
@@ -159,14 +202,19 @@ def _name_subagents(found: list[Conversation]) -> None:
         with suppress(RuntimeError, FormatError):  # then the parent's title is used
             tools = _read_steps(by_id[parent_id].path, steps_mod.GENERIC)
             titles.update(steps_mod.subagent_titles([step for _, step in tools]))
+    # Every name first, then the parents' names: a subagent can start subagents.
+    names = {c.id: c.title for c in found}
     for conv in found:
-        if not conv.parent:
-            continue
-        parent = by_id.get(conv.parent)
-        conv.parent_title = parent.title if parent else ''
-        kind = f'{conv.agent} subagent' if conv.agent else 'subagent'
-        name = titles.get(conv.id) or conv.parent_title or _first_message(conv.path) or conv.id
-        conv.title = f'{name} ({kind})'
+        if conv.parent:
+            kind = f'{conv.agent} subagent' if conv.agent else 'subagent'
+            parent = by_id.get(conv.parent)
+            name = (titles.get(conv.id) or (parent.title if parent else '')
+                    or _first_message(conv.path) or conv.id)
+            names[conv.id] = f'{name} ({kind})'
+    for conv in found:
+        if conv.parent:
+            conv.parent_title = names.get(conv.parent, '')
+            conv.title = names[conv.id]
 
 
 def list_conversations(root: Path) -> tuple[list[Conversation], int]:
@@ -176,35 +224,32 @@ def list_conversations(root: Path) -> tuple[list[Conversation], int]:
     found = []
     for path in sorted(folder.glob('*.db')):
         try:
-            updated_at = _modified(path)
-        except OSError:
-            continue  # removed while the folder was being read
+            updated_at = _version(path, root / 'brain' / path.stem)
+        except (OSError, RuntimeError):
+            if not path.exists():
+                continue  # removed while the folder was being read
+            updated_at = 'unreadable'  # fetched every time, so its error is reported
         meta = summaries.get(path.stem, {})
         title = _annotation_title(root, path.stem) or str(meta.get('title') or '').strip()
         found.append(Conversation(
             id=path.stem, path=path, title=title,
             project=projects.get(str(meta.get('project_id') or '')),
             updated_at=updated_at, parent=str(meta.get('parent_conversation_id') or ''),
-            agent=str(meta.get('agent_name') or '').strip()))
+            agent=str(meta.get('agent_name') or '').strip(),
+            modified=str(meta.get('last_modified_time') or '')))
     for conv in found:
         if not conv.title and not conv.parent:
             conv.title = _first_message(conv.path)
     _name_subagents(found)
-    found.sort(key=lambda c: c.updated_at, reverse=True)
+    found.sort(key=lambda c: (c.modified, c.updated_at), reverse=True)  # newest first
     readable = {c.id for c in found}
     old = sum(1 for path in folder.glob('*.pb') if path.stem not in readable)
     return found, old
 
 
 def _artifacts(folder: Path) -> list[Attachment]:
-    """The agent's artifacts: files at the top of the conversation's brain folder."""
-    if not folder.is_dir():
-        return []
     files = []
-    for path in sorted(folder.iterdir()):
-        if (path.name.startswith('.') or path.name.endswith('.metadata.json')
-                or not path.is_file()):
-            continue
+    for path in _artifact_files(folder):
         with suppress(OSError):
             files.append(Attachment(filename=path.name, data=path.read_bytes(),
                                     kind='image' if path.suffix.lower() in _IMAGES
@@ -255,6 +300,9 @@ class Antigravity(engine.Provider):
     noun = 'conversations'
     pace = 0.0
     uses_browser = False
+
+    def present(self) -> bool:
+        return (data_dir() / 'conversations').is_dir()
 
     def open(self, page):
         root = data_dir()

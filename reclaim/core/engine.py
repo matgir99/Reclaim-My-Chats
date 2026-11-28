@@ -116,6 +116,11 @@ class Provider:
         """The result of a live check (Diagnostics)."""
         return f'logged in · {len(refs)} {self.noun} listed'
 
+    def present(self) -> bool:
+        """Whether this computer has what the provider reads. When the settings
+        name no providers, only present ones run; a web service always is."""
+        return True
+
 
 def build_parser(provider: Provider) -> argparse.ArgumentParser:
     """The options every provider command accepts (`reclaim <provider> --help`)."""

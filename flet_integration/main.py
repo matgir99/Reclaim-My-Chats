@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import tempfile
 import time
 from pathlib import Path
@@ -58,6 +59,8 @@ class FakeController:
 
 async def main(page: ft.Page) -> None:
     root = Path(tempfile.mkdtemp(prefix='reclaim-flet-test-'))
+    # The same on every computer: no Antigravity folder, so its row is off.
+    os.environ['RECLAIM_ANTIGRAVITY_DIR'] = str(root / 'no-antigravity')
     window = ReclaimWindow(page, root, FakeController())
     await window.refresh_archive()
 

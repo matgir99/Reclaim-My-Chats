@@ -32,7 +32,7 @@ import os
 import sys
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -391,16 +391,20 @@ def _set_or_drop(data: dict, key: str, value: Any, *, keep_empty: bool = False) 
         data[key] = value
 
 
-def selected_providers(root: Path, available: list[str]) -> tuple[list[str], list[str], list[str]]:
+def selected_providers(root: Path, available: list[str], *,
+                       present: Callable[[str], bool] | None = None,
+                       ) -> tuple[list[str], list[str], list[str]]:
     """Split `available` per the config's "providers" list.
 
     Returns (chosen, skipped, unknown): providers to run, providers
     skipped by config, and config names that match no provider (typos).
-    No/empty "providers" key -> everything chosen.
+    No/empty "providers" key -> every provider that `present` finds on this
+    computer (all of them without `present`); a listed one always runs.
     """
     want = load(root).get('providers')
     if not isinstance(want, list) or not want:
-        return list(available), [], []
+        here = [p for p in available if present is None or present(p)]
+        return here, [p for p in available if p not in here], []
     chosen = [p for p in available if p in want]
     skipped = [p for p in available if p not in want]
     unknown = [p for p in want if p not in available]

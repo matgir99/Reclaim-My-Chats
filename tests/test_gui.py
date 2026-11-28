@@ -639,6 +639,10 @@ class TestGuiDiagnostics(unittest.IsolatedAsyncioTestCase):
         # Antigravity's conversations are files on this computer: no login, nothing to capture.
         self.assertEqual(self.window.provider_login_buttons['antigravity'].content, 'Check')
         self.assertEqual(self.window.provider_login_buttons['chatgpt'].content, 'Log in')
+        self.window._update_chip_for_event(gui.ProgressEvent('checked', 'antigravity'))
+        self.assertEqual(self.window.provider_chips['antigravity'].value, 'Checked')
+        self.window._update_chip_for_event(gui.ProgressEvent('checked', 'chatgpt'))
+        self.assertEqual(self.window.provider_chips['chatgpt'].value, 'Logged in')
         await self.window._diagnostics()
         options = [o.key for o in self.dialog_control('capture-provider').options]
         self.assertNotIn('antigravity', options)

@@ -117,8 +117,10 @@ command line) keeps its conversations on your computer, in
 `~/.gemini/antigravity` (`%USERPROFILE%\.gemini\antigravity` on Windows).
 Reclaim My Chats reads them from there: no browser and no login, and nothing
 in that folder is changed. Its row in the window has **Check** instead of
-**Log in**; the check counts the conversations it finds. Set
-`RECLAIM_ANTIGRAVITY_DIR` if Antigravity keeps them somewhere else.
+**Log in**; the check counts the conversations it finds. When the settings
+name no providers, Antigravity is included only if that folder exists, so
+computers without it are not affected. Set `RECLAIM_ANTIGRAVITY_DIR` if
+Antigravity keeps them somewhere else.
 
 Each conversation is saved with your messages and the agent's replies, one
 line for each action the agent took as Antigravity shows it (for example

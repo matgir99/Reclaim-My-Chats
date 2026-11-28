@@ -4,8 +4,10 @@ The Flet window manages database updates for all seven providers in a
 provider table with per-row status chips, saved chat counts, **last download**
 and **last checked** times, and **Log in** / **Review** buttons. Google
 Antigravity's conversations are files on this computer, so its row has
-**Check** instead of **Log in**: it counts the conversations Antigravity keeps,
-and its updates never open the browser. On startup
+**Check** instead of **Log in**: it counts the conversations Antigravity keeps
+(the chip then says *Checked*), and its updates never open the browser. Without
+a providers list in the settings, its row is on only when Antigravity's folder
+exists; otherwise it reads *Not found on this computer*. On startup
 without settings or an initialized database, a **First-run setup** banner
 guides folder selection, Chrome detection, provider selection, and logging in.
 When any provider waits for manual sign-in, a banner shows which provider needs

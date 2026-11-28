@@ -92,9 +92,12 @@ def _run_all(rest: list[str]) -> int:
     from .core import config, service
     service.provider_module(ALL_PROVIDERS[0]).parse_args(list(rest))
     root = config.default_root()
-    chosen, skipped, unknown = config.selected_providers(root, ALL_PROVIDERS)
+    chosen, skipped, unknown = config.selected_providers(root, ALL_PROVIDERS,
+                                                         present=service.present)
     for prov in skipped:
-        print(f'  {prov}: skipped (not in {config.CONFIG_NAME} providers)')
+        reason = (f'not in {config.CONFIG_NAME} providers' if service.present(prov)
+                  else 'not found on this computer')
+        print(f'  {prov}: skipped ({reason})')
     for prov in unknown:
         print(f'  warning: {config.CONFIG_NAME} lists unknown provider '
               f'"{prov}" (known: {", ".join(ALL_PROVIDERS)})')

@@ -25,8 +25,11 @@ provider whose class sets `uses_browser = False` reads files on this
 computer: Google Antigravity (`providers/antigravity.py`). It is handed no
 page, a run of only such providers takes no lock on the login data folder,
 and the browser opens when the first provider that needs it starts
-(`service._Browser`); such a provider has no responses to capture, so
-`capture` refuses it. Imports and the offline AI Studio parser use the same
+(`service._Browser`). A browser that cannot start fails the providers that
+need it, each with the error, and not the others. Such a provider has no
+responses to capture, so `capture` refuses it, and when the settings name no
+providers it runs only if `Provider.present()` finds its files
+(`config.selected_providers(..., present=service.present)`). Imports and the offline AI Studio parser use the same
 checks through `offline_session`. An in-process lock also stops concurrent
 GUI clicks.
 
@@ -53,7 +56,9 @@ one protobuf message per step. `providers/antigravity_steps.py` reads that
 wire format directly (no protobuf library), using only the field numbers it
 needs, taken from the schema embedded in Antigravity's `agy` program; a step
 that does not parse stops that chat with a message instead of saving it
-incomplete. See [UPSTREAM_REVIEW.md](UPSTREAM_REVIEW.md#google-antigravity)
+incomplete. The databases are opened so that SQLite creates nothing in
+Antigravity's folder (`antigravity._source_file`: `immutable` when no
+write-ahead log is open, a temporary copy when only half of one is there). See [UPSTREAM_REVIEW.md](UPSTREAM_REVIEW.md#google-antigravity)
 for the layout.
 
 Provider modules acquire conversations from each service, normalize them to

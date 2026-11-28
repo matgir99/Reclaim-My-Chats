@@ -15,10 +15,12 @@ import sys
 import threading
 import traceback
 import time
+from collections.abc import Callable
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 from . import browser, config, database, locks, logs
 from .database import PROVIDER_DIRS
@@ -50,6 +52,12 @@ def uses_browser(name: str) -> bool:
     return bool(getattr(spec, 'uses_browser', True))
 
 
+def present(name: str) -> bool:
+    """Whether this computer has what the provider reads (see engine.Provider.present)."""
+    check = getattr(getattr(provider_module(name), 'SPEC', None), 'present', None)
+    return bool(check()) if callable(check) else True
+
+
 class _Browser:
     """The run's browser, opened when the first provider that needs it starts."""
 
@@ -59,19 +67,27 @@ class _Browser:
         self._ctx = None
         self.page = None
         self.failed = False
+        self.error: Exception | None = None
 
     def __enter__(self) -> _Browser:
         return self
 
     def get(self):
-        """The page, launching the browser first, or replacing a tab that failed."""
+        """The page, launching the browser first, or replacing a tab that failed.
+        A browser that could not start is not tried again in the same run."""
+        if self.error is not None:
+            raise RuntimeError(f'the browser could not start: {self.error}')
         if self.page is None:
             from playwright.sync_api import sync_playwright  # imported only when needed
             if self.profile is None:
                 raise RuntimeError('no login data folder was locked for this run')
-            playwright = self._stack.enter_context(sync_playwright())
-            self._ctx, self.page = browser.launch(playwright, profile_dir=self.profile,
-                                                  root=self.root)
+            try:
+                playwright = self._stack.enter_context(sync_playwright())
+                self._ctx, self.page = browser.launch(playwright, profile_dir=self.profile,
+                                                      root=self.root)
+            except Exception as exc:
+                self.error = exc
+                raise
         elif self.failed:
             self.page = browser.replace_failed_page(self.page)
         self.failed = False
@@ -259,9 +275,11 @@ class ArchiveController:
             for index, name in enumerate(chosen, 1):
                 if index > 1 and (self._stop.is_set() or pages.closed()):
                     break
-                page = pages.get() if uses_browser(name) else None
+                # The browser starts inside _run_one, so a browser that cannot start
+                # fails the providers that need it and not the ones that read files.
+                get_page = pages.get if uses_browser(name) else lambda: None
                 code, failed = self._run_one(name, parsed[name], mode, sink,
-                                             page, index, len(chosen))
+                                             get_page, index, len(chosen))
                 pages.failed = pages.failed or failed
                 codes.append((name, code))
         summary = RunSummary(tuple(codes))
@@ -270,7 +288,7 @@ class ArchiveController:
         return summary
 
     def _run_one(self, name: str, args, mode: str, sink: EventSink,
-                 page, index: int, total: int) -> tuple[int, bool]:
+                 get_page: Callable[[], Any], index: int, total: int) -> tuple[int, bool]:
         """Return the provider's exit code and whether its browser tab needs replacing.
 
         A run that may write also records the attempt for the status view.
@@ -280,6 +298,7 @@ class ArchiveController:
         error = None
         reset_page = False
         try:
+            page = get_page()
             if mode == 'check':  # diagnostics: log in and list, nothing else
                 from . import engine
                 code = engine.check(provider_module(name).SPEC, page, sink)

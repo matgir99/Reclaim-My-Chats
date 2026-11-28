@@ -21,7 +21,7 @@ else:
 from .core import autostart, browser, config, database, doctor, lifecycle, locks, logs, releases, render, status, tidy
 from .core.events import EventSink, ProgressEvent
 from .core.service import (ALL_PROVIDERS, ArchiveController, BusyOperationError, RunSummary,
-                           uses_browser)
+                           present, uses_browser)
 
 DISPLAY_NAMES = {
     'googleaistudio': 'Google AI Studio',
@@ -54,8 +54,13 @@ class Controller(Protocol):
 
 
 def configured_providers(root: Path) -> list[str]:
-    chosen, _, _ = config.selected_providers(root, ALL_PROVIDERS)
+    chosen, _, _ = config.selected_providers(root, ALL_PROVIDERS, present=present)
     return chosen
+
+
+def _disabled_text(name: str) -> str:
+    """Why a provider's row is off: the settings, or nothing to read on this computer."""
+    return 'Disabled in settings' if present(name) else 'Not found on this computer'
 
 
 def open_directory(path: Path) -> None:
@@ -193,7 +198,7 @@ class ReclaimWindow:
                            weight=ft.FontWeight.BOLD, key=f'provider-chip-{name}')
             chip_box = ft.Container(content=chip, bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
                                     padding=6, border_radius=12)
-            text = ft.Text('Loading' if enabled else 'Disabled in settings',
+            text = ft.Text('Loading' if enabled else _disabled_text(name),
                            key=f'provider-status-{name}', expand=True)
             # A provider that reads files on this computer has no login: its live check lists them.
             login_btn = ft.TextButton('Log in' if uses_browser(name) else 'Check',
@@ -358,7 +363,7 @@ class ReclaimWindow:
                 self.provider_status[info.provider].value = status_text(info)
                 self._set_chip(info.provider, 'Error' if info.last_error else 'Ready')
             else:
-                self.provider_status[info.provider].value = 'Disabled in settings'
+                self.provider_status[info.provider].value = _disabled_text(info.provider)
                 self._set_chip(info.provider, 'Disabled')
 
     def _set_chip(self, provider: str, state: str) -> None:
@@ -578,14 +583,17 @@ class ReclaimWindow:
             self.login_banner.visible = False
 
     def _update_chip_for_event(self, event: ProgressEvent) -> None:
+        # A provider reading files on this computer was checked, not logged in to.
+        checked = 'Logged in' if event.provider not in ALL_PROVIDERS or uses_browser(
+            event.provider) else 'Checked'
         label = {'provider_started': 'Running', 'logged_in': 'Running',
                  'login_needed': 'Needs login', 'error': 'Error',
-                 'checked': 'Logged in', 'stopped': 'Stopped'}.get(event.kind)
+                 'checked': checked, 'stopped': 'Stopped'}.get(event.kind)
         if label is not None:
             self._set_chip(event.provider, label)
         elif event.kind == 'provider_completed' and event.message == 'exit 0':
             chip = self.provider_chips.get(event.provider)
-            if chip is not None and chip.value not in ('Logged in', 'Stopped'):
+            if chip is not None and chip.value not in ('Logged in', 'Checked', 'Stopped'):
                 self._set_chip(event.provider, 'Ready')
 
     def _show_progress(self, event: ProgressEvent) -> None:

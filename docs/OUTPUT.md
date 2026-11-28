@@ -101,7 +101,10 @@ conversation's `brain/<id>/` folder in Antigravity, such as plans and reports)
 are saved in the chat's folder under a final **Artifacts** heading. `raw.json`
 holds every step decoded: its type, status and time, the text of messages and
 replies, the agent's thinking, tool names and arguments, and the first 20,000
-characters of each tool's output.
+characters of each tool's output. Its `provider_updated_at` is the time of the
+last step, the number of steps and a fingerprint of the steps and artifacts
+(for example `2026-11-21T21:58:13Z · 909 steps · 3f9a0c1b2d4e`), so a
+conversation is saved again only when a step or an artifact changed.
 
 `chat.json` contains:
 

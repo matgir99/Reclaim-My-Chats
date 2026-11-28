@@ -11,6 +11,7 @@ import json
 import os
 import sqlite3
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -134,27 +135,27 @@ class Store:
                                                    encoding='utf-8')
 
     def add(self, cid: str, steps: list[bytes], *, title: str = '', project: str = '',
-            parent: str = '', agent: str = '', source: int = 22, mtime: float = 0) -> Path:
+            parent: str = '', agent: str = '', source: int = 22, when: int = 0) -> Path:
         path = self.root / 'conversations' / f'{cid}.db'
         with sqlite3.connect(path) as con:
             con.execute('CREATE TABLE trajectory_meta (trajectory_id TEXT, cascade_id TEXT, '
                         'trajectory_type INTEGER, source INTEGER)')
             con.execute('INSERT INTO trajectory_meta VALUES (?, ?, 4, ?)', ('t-' + cid, cid, source))
             con.execute('CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, '
-                        'step_payload BLOB)')
+                        'status INTEGER, step_payload BLOB)')
             for idx, payload in enumerate(steps):
                 try:
-                    kind = S.Message(payload).num(S.STEP_TYPE)
+                    message = S.Message(payload)
+                    kind, status = message.num(S.STEP_TYPE), message.num(S.STEP_STATUS)
                 except S.FormatError:
-                    kind = 0
-                con.execute('INSERT INTO steps VALUES (?, ?, ?)', (idx, kind, payload))
+                    kind, status = 0, 0
+                con.execute('INSERT INTO steps VALUES (?, ?, ?, ?)', (idx, kind, status, payload))
         con.close()
+        modified = time.strftime('%Y-%m-%d %H:%M:%S+00:00', time.gmtime(when)) if when else ''
         with sqlite3.connect(self.root / 'conversation_summaries.db') as con:
             con.execute('INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?, ?)',
-                        (cid, title, project, parent, agent, ''))
+                        (cid, title, project, parent, agent, modified))
         con.close()
-        if mtime:
-            os.utime(path, (mtime, mtime))
         return path
 
     def annotate(self, cid: str, text: str) -> None:
@@ -254,22 +255,22 @@ class TestProvider(unittest.TestCase):
         store = self.store
         store.project('p1', 'Home Server')
         store.add(ID['plain'], [user('fix the printer'), planner(response='Done.')],
-                  title='Printer Fix', project='p1', mtime=1_790_000_300)
+                  title='Printer Fix', project='p1', when=1_790_000_300)
         store.add(ID['renamed'], [user('hello'), planner(response='Hi.')],
-                  title='Old Title', mtime=1_790_000_200)
+                  title='Old Title', when=1_790_000_200)
         store.annotate(ID['renamed'],
                        'title:"Caf\\303\\251 \\"plans\\"" last_user_view_time:{seconds:1}\n')
         store.add(ID['untitled'], [user('what is   the\nweather'), planner(response='Sunny.')],
-                  mtime=1_790_000_100, source=17)
+                  when=1_790_000_100, source=17)
         store.add(ID['parent'], [user('audit it'),
                                  tool('invoke_subagent', prefix='Started',
                                       parts=(agent_part(ID['child'], 'Code Auditor'),)),
                                  planner(response='Audit started.')],
-                  title='Audit', project='p1', mtime=1_790_000_050)
+                  title='Audit', project='p1', when=1_790_000_050)
         store.add(ID['child'], [system('agent_message', f'[Message] sender={ID["parent"]} '
                                                         'content=Find bugs.'),
                                 planner(response='Found none.')],
-                  project='p1', parent=ID['parent'], agent='research', mtime=1_790_000_040)
+                  project='p1', parent=ID['parent'], agent='research', when=1_790_000_040)
         store.artifact(ID['plain'], 'walkthrough.md', b'# Walkthrough\n')
         store.artifact(ID['plain'], 'walkthrough.md.metadata.json', b'{}')
         store.artifact(ID['plain'], '.hidden', b'x')
@@ -296,7 +297,8 @@ class TestProvider(unittest.TestCase):
             'Code Auditor (research subagent)'])
         self.assertEqual([r.project for r in refs],
                          ['Home Server', None, None, 'Home Server', 'Home Server'])
-        self.assertTrue(all(r.updated_at.startswith('2026-') for r in refs))
+        self.assertTrue(all(r.updated_at.startswith('2026-') and ' steps · ' in r.updated_at
+                            for r in refs))
         warnings = [e.message for e in events if e.kind == 'warning']
         self.assertEqual(len(warnings), 1)
         self.assertIn('1 conversation(s) saved by an earlier Antigravity version', warnings[0])
@@ -346,6 +348,53 @@ class TestProvider(unittest.TestCase):
         self.assertTrue((self.app / 'chats' / 'Google Antigravity' / 'Home Server'
                          / 'Printer Fix').is_dir())
 
+    def test_reading_creates_nothing_in_antigravitys_folder(self):
+        self.fill()
+        folder = self.store.root / 'conversations'
+        with sqlite3.connect(folder / f'{ID["plain"]}.db') as con:
+            con.execute('PRAGMA journal_mode=WAL')  # as Antigravity's files are
+        con.close()
+        before = sorted(p.name for p in folder.iterdir())
+        self.assertEqual(self.update()[0], 0)
+        self.assertEqual(sorted(p.name for p in folder.iterdir()), before)
+        # A log left without its index (only -wal): a copy is read instead.
+        (folder / f'{ID["plain"]}.db-wal').write_bytes(b'')
+        session = antigravity.SPEC.open(None)
+        with routed(lambda _event: None):
+            ref = antigravity.SPEC.from_url(session, ID['plain'])
+        self.assertEqual(antigravity.SPEC.fetch(session, ref).chat.title, 'Printer Fix')
+        self.assertFalse((folder / f'{ID["plain"]}.db-shm').exists())
+
+    def test_only_a_change_in_steps_or_artifacts_saves_again(self):
+        self.fill()
+        self.assertEqual(self.update()[0], 0)
+        path = self.store.root / 'conversations' / f'{ID["plain"]}.db'
+        os.utime(path, (2_000_000_000, 2_000_000_000))  # rewritten, no step changed
+        saved = [e.title for e in self.update()[1] if e.kind == 'chat_completed']
+        self.assertEqual(saved, [])
+        self.store.artifact(ID['plain'], 'walkthrough.md', b'# Walkthrough, revised\n')
+        saved = [e.title for e in self.update()[1] if e.kind == 'chat_completed']
+        self.assertEqual(saved, ['Printer Fix'])
+        md = self.app / 'chats' / 'Google Antigravity' / 'Home Server' / 'Printer Fix'
+        self.assertIn(b'revised', (md / 'walkthrough.md').read_bytes())
+
+    def test_a_subagent_of_a_subagent_names_its_parent_the_same_way_every_time(self):
+        store = self.store
+        top, mid, low = (f'{n}0000000-0000-4000-8000-000000000000' for n in (5, 9, 1))
+        store.add(top, [user('plan it'), tool('invoke_subagent', prefix='Started', parts=(
+            agent_part(mid, 'Planner'),))], title='Top')
+        store.add(mid, [system('agent_message', f'[Message] sender={top} content=Plan.'),
+                        tool('invoke_subagent', prefix='Started',
+                             parts=(agent_part(low, 'Checker'),))],
+                  parent=top, agent='research')
+        store.add(low, [system('agent_message', f'[Message] sender={mid} content=Check.'),
+                        planner(response='Checked.')], parent=mid, agent='research')
+        found, _ = antigravity.list_conversations(store.root)
+        named = {c.id: (c.title, c.parent_title) for c in found}
+        self.assertEqual(named[mid], ('Planner (research subagent)', 'Top'))
+        self.assertEqual(named[low], ('Checker (research subagent)',
+                                      'Planner (research subagent)'))
+
     def test_a_missing_folder_stops_with_what_to_do(self):
         with patch.dict(os.environ, {antigravity.ENV_DIR: str(self.home / 'nowhere')}):
             with self.assertRaises(RuntimeError) as caught:
@@ -365,6 +414,53 @@ class TestProvider(unittest.TestCase):
 
 
 class TestRunsWithoutABrowser(unittest.TestCase):
+    def test_without_a_providers_list_antigravity_runs_only_when_it_is_here(self):
+        from reclaim.core import config
+        from reclaim.core.service import ALL_PROVIDERS, present
+        with tempfile.TemporaryDirectory() as temp:
+            root, store = Path(temp), Store(Path(temp) / 'gemini')
+            with patch.dict(os.environ, {antigravity.ENV_DIR: str(root / 'nowhere')}):
+                chosen, skipped, _ = config.selected_providers(root, ALL_PROVIDERS,
+                                                               present=present)
+                self.assertNotIn('antigravity', chosen)
+                self.assertEqual(skipped, ['antigravity'])
+                config.save(root, providers=['antigravity'], archive=None)
+                chosen, _, _ = config.selected_providers(root, ALL_PROVIDERS, present=present)
+                self.assertEqual(chosen, ['antigravity'])  # named: runs, and says what is wrong
+            (root / '.reclaim.json').unlink()
+            with patch.dict(os.environ, {antigravity.ENV_DIR: str(store.root)}):
+                chosen, _, _ = config.selected_providers(root, ALL_PROVIDERS, present=present)
+            self.assertEqual(chosen, ALL_PROVIDERS)
+
+    def test_a_browser_that_cannot_start_fails_only_the_web_providers(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = Store(Path(temp) / 'gemini')
+            store.add(ID['plain'], [user('hi'), planner(response='Hello.')], title='Hi')
+            launches: list[int] = []
+
+            def launch(*_args, **_kwargs):
+                launches.append(1)
+                raise RuntimeError('No Chrome or Chromium was found')
+
+            class _Playwright:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_):
+                    return False
+
+            events: list[ProgressEvent] = []
+            with (patch.dict(os.environ, {antigravity.ENV_DIR: str(store.root)}),
+                  patch('reclaim.core.service.browser.launch', side_effect=launch),
+                  patch('playwright.sync_api.sync_playwright', return_value=_Playwright())):
+                summary = ArchiveController(Path(temp) / 'app').run(
+                    ['chatgpt', 'antigravity', 'claude'], 'update', events.append)
+        self.assertEqual(summary.codes, (('chatgpt', 2), ('antigravity', 0), ('claude', 2)))
+        self.assertEqual(launches, [1])  # not tried again for Claude
+        errors = {e.provider: e.message for e in events if e.kind == 'error'}
+        self.assertIn('No Chrome or Chromium was found', errors['chatgpt'])
+        self.assertIn('the browser could not start', errors['claude'])
+
     def test_capture_is_refused_and_only_web_providers_open_the_browser(self):
         self.assertFalse(uses_browser('antigravity'))
         self.assertTrue(uses_browser('chatgpt'))
