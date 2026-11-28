@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterator
 
 # Fields never contain the separator \ue202; excluding it keeps matching
 # linear (CodeQL py/redos: an unclosed marker backtracked exponentially).
@@ -28,6 +29,9 @@ _MARKER = re.compile(r'\ue200([a-z_]+)((?:\ue202[^\ue200\ue201\ue202]*)*)\ue201'
 _PRIVATE_USE = re.compile(r'[\ue200-\ue20f]')
 _EMPTY_LINK = re.compile(r'\[([^\]]*)\]\(\)')
 _HTTP = re.compile(r'https?://', re.IGNORECASE)
+_FENCE_LINE = re.compile(r' {0,3}(`{3,}|~{3,})(.*)')
+_WRITING_START = re.compile(r':::writing\{(.*)\}[ \t]*')
+_WRITING_SUBJECT = re.compile(r'(?:^|[ \t])subject="([^"]*)"')
 
 
 def _dict(value) -> dict:
@@ -202,6 +206,46 @@ def _writing_block(data: dict) -> str:
         return content
     heading = f'**{_escape_text(subject)}**'
     return f'{heading}\n\n{content}' if content else heading
+
+
+def _unfenced_lines(lines: list[str]) -> Iterator[tuple[int, str]]:
+    """Yield Markdown lines outside backtick and tilde code fences."""
+    fence = ''
+    for index, raw in enumerate(lines):
+        line = raw.rstrip('\r\n')
+        marker = _FENCE_LINE.fullmatch(line)
+        if fence:
+            if marker and marker[1].startswith(fence) and not marker[2].strip():
+                fence = ''
+        elif marker and (marker[1][0] == '~' or '`' not in marker[2]):
+            fence = marker[1]
+        else:
+            yield index, line
+
+
+def render_writing_directives(text: str) -> str:
+    """Render complete writing blocks stored as text in official exports."""
+    if ':::writing{' not in text:
+        return text
+    lines = text.splitlines(keepends=True)
+    output: list[str] = []
+    copied = 0
+    start: int | None = None
+    subject = ''
+    for index, line in _unfenced_lines(lines):
+        if opening := _WRITING_START.fullmatch(line):
+            start = index
+            match = _WRITING_SUBJECT.search(opening[1])
+            subject = match[1] if match else ''
+        elif start is not None and line.rstrip(' \t') == ':::':
+            output.extend(lines[copied:start])
+            content = ''.join(lines[start + 1:index])
+            output.append(_writing_block({'subject': subject, 'content': content}))
+            output.append(lines[index][len(line):])
+            copied = index + 1
+            start = None
+    output.extend(lines[copied:])
+    return ''.join(output)
 
 
 def _inline(ref: dict) -> str:
