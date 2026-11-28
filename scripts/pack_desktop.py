@@ -17,6 +17,7 @@ import tarfile
 import tempfile
 import zipfile
 import zlib
+from functools import cache
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -68,67 +69,114 @@ def _png_chunk(kind: bytes, data: bytes) -> bytes:
     return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', crc)
 
 
-def _icon_pixel(nx: float, ny: float) -> bytes:
-    if nx**4 + ny**4 > 0.88**4:
-        return b'\x00\x00\x00\x00'
-    bubble = (nx / 0.50) ** 2 + ((ny + 0.06) / 0.36) ** 2 <= 1.0
-    tail = -0.26 <= nx <= -0.04 and 0.20 <= ny <= 0.44 and nx + ny <= 0.20
+def _rounded_box(x: float, y: float, bounds: tuple[float, float, float, float],
+                 radius: float) -> bool:
+    left, top, right, bottom = bounds
+    dx = max(left + radius - x, 0.0, x - (right - radius))
+    dy = max(top + radius - y, 0.0, y - (bottom - radius))
+    return dx * dx + dy * dy <= radius * radius
+
+
+def _icon_pixel(x: float, y: float) -> tuple[int, int, int, int]:
+    """An indigo tile with a speech bubble and a download arrow."""
+    if not _rounded_box(x, y, (0.06, 0.06, 0.94, 0.94), 0.21):
+        return (0, 0, 0, 0)
+    bubble = _rounded_box(x, y, (0.21, 0.224, 0.79, 0.681), 0.13)
+    tail = 0.306 <= x <= 0.471 and 0.62 <= y <= 0.765 and x - 0.306 <= 1.35 * (0.765 - y)
     if bubble or tail:
-        return b'\xff\xff\xff\xff'
-    return b'\x25\x63\xeb\xff'
+        shaft = 0.467 <= x <= 0.533 and 0.307 <= y <= 0.455
+        tip = 0.43 <= y <= 0.552 and abs(x - 0.5) <= (0.552 - y) * 0.97
+        if shaft or tip:
+            return (43, 64, 172, 255)
+        if _rounded_box(x, y, (0.376, 0.577, 0.624, 0.621), 0.022):
+            return (16, 126, 120, 255)
+        return (248, 250, 255, 255)
+    shade = 0.34 * x + 0.66 * y
+    return (round(76 - 49 * shade), round(112 - 66 * shade), round(250 - 93 * shade), 255)
+
+
+def _sample_icon_pixel(x: int, y: int, size: int) -> bytes:
+    # Sample four points per pixel so the silhouette stays clear at taskbar sizes.
+    colors = [
+        color for dy in (0.25, 0.75) for dx in (0.25, 0.75)
+        if (color := _icon_pixel((x + dx) / size, (y + dy) / size))[3]
+    ]
+    if not colors:
+        return b'\x00\x00\x00\x00'
+    count = len(colors)
+    rgb = [round(sum(color[channel] for color in colors) / count) for channel in range(3)]
+    return bytes([*rgb, round(255 * count / 4)])
+
+
+@cache
+def _icon_rgba(size: int) -> bytes:
+    return b''.join(_sample_icon_pixel(x, y, size) for y in range(size) for x in range(size))
 
 
 def _icon_png_bytes(size: int = 256) -> bytes:
-    """Render a minimal 256x256 RGBA PNG application icon without Pillow."""
-    half = size / 2
-    rows = bytearray()
-    for y in range(size):
-        rows.append(0)
-        ny = (y + 0.5 - half) / half
-        for x in range(size):
-            rows.extend(_icon_pixel((x + 0.5 - half) / half, ny))
+    pixels = _icon_rgba(size)
+    stride = size * 4
+    rows = b''.join(b'\x00' + pixels[i:i + stride] for i in range(0, len(pixels), stride))
     ihdr = struct.pack('>IIBBBBB', size, size, 8, 6, 0, 0, 0)
-    idat = zlib.compress(bytes(rows), 9)
     return (
         b'\x89PNG\r\n\x1a\n'
         + _png_chunk(b'IHDR', ihdr)
-        + _png_chunk(b'IDAT', idat)
+        + _png_chunk(b'IDAT', zlib.compress(rows, 9))
         + _png_chunk(b'IEND', b'')
     )
 
 
-def _icon_ico_bytes(size: int = 32) -> bytes:
-    """Render an uncompressed 32-bit BGRA BMP icon wrapped in an `.ico` container."""
-    half = size / 2
-    xor_rows = bytearray()
-    for y in range(size - 1, -1, -1):  # BMP rows are bottom-to-top
-        ny = (y + 0.5 - half) / half
-        for x in range(size):
-            r, g, b, a = _icon_pixel((x + 0.5 - half) / half, ny)
-            xor_rows.extend((b, g, r, a))
+def _ico_bitmap(size: int) -> bytes:
+    """A bottom-up BGRA bitmap for the smaller Windows icon sizes."""
+    pixels = _icon_rgba(size)
+    stride = size * 4
+    rgba = b''.join(pixels[i:i + stride] for i in range(len(pixels) - stride, -1, -stride))
+    bgra = bytearray(rgba)
+    bgra[::4] = rgba[2::4]
+    bgra[2::4] = rgba[::4]
     and_mask = b'\x00' * (size * ((size + 31) // 32) * 4)
     dib_header = struct.pack('<IiiHHIIiiII', 40, size, size * 2, 1, 32, 0,
-                             len(xor_rows), 0, 0, 0, 0)
-    dib = dib_header + bytes(xor_rows) + and_mask
-    ico_header = struct.pack('<HHH', 0, 1, 1)
-    ico_entry = struct.pack('<BBBBHHII', size, size, 0, 0, 1, 32, len(dib), 22)
-    return ico_header + ico_entry + dib
+                             len(bgra), 0, 0, 0, 0)
+    return dib_header + bytes(bgra) + and_mask
+
+
+def _icon_ico_bytes() -> bytes:
+    sizes = (16, 32, 48, 64, 128, 256)
+    directory = bytearray(struct.pack('<HHH', 0, 1, len(sizes)))
+    offset = len(directory) + 16 * len(sizes)
+    frames = []
+    for size in sizes:
+        frame = _icon_png_bytes(size) if size == 256 else _ico_bitmap(size)
+        encoded_size = size % 256  # ICO stores a 256-pixel dimension as zero.
+        directory.extend(struct.pack('<BBBBHHII', encoded_size, encoded_size, 0, 0,
+                                     1, 32, len(frame), offset))
+        frames.append(frame)
+        offset += len(frame)
+    return bytes(directory) + b''.join(frames)
+
+
+def _icon_icns_bytes() -> bytes:
+    records = []
+    for kind, size in ((b'icp4', 16), (b'icp5', 32), (b'icp6', 64),
+                       (b'ic07', 128), (b'ic08', 256), (b'ic09', 512)):
+        png = _icon_png_bytes(size)
+        records.append(kind + struct.pack('>I', 8 + len(png)) + png)
+    data = b''.join(records)
+    return b'icns' + struct.pack('>I', 8 + len(data)) + data
 
 
 def write_icons(stage: Path) -> dict[str, Path]:
-    """Write `.png`, `.ico`, and `.icns` icon files derived from one RGBA image."""
+    """Write native icon files for Linux, Windows, and macOS from the same artwork."""
     icon_dir = stage / 'icons'
     icon_dir.mkdir(parents=True, exist_ok=True)
-    png_bytes = _icon_png_bytes(256)
     png_path = icon_dir / f'{BUNDLE_ID}.png'
-    png_path.write_bytes(png_bytes)
+    png_path.write_bytes(_icon_png_bytes())
 
     ico_path = icon_dir / f'{BUNDLE_ID}.ico'
-    ico_path.write_bytes(_icon_ico_bytes(32))
+    ico_path.write_bytes(_icon_ico_bytes())
 
     icns_path = icon_dir / f'{BUNDLE_ID}.icns'
-    ic08 = b'ic08' + struct.pack('>I', 8 + len(png_bytes)) + png_bytes
-    icns_path.write_bytes(b'icns' + struct.pack('>I', 8 + len(ic08)) + ic08)
+    icns_path.write_bytes(_icon_icns_bytes())
     return {'png': png_path, 'ico': ico_path, 'icns': icns_path}
 
 
@@ -463,7 +511,7 @@ def build_macos_dmg(app_bundle: Path, dmg_path: Path) -> Path:
     return dmg_path
 
 
-def _run_flet_pack(system: str, stage: Path, version: str, icon_path: Path | None) -> None:
+def _run_flet_pack(system: str, stage: Path, version: str, icon_path: Path) -> None:
     sibling = Path(sys.executable).with_name('flet.exe' if os.name == 'nt' else 'flet')
     flet = str(sibling) if sibling.is_file() else shutil.which('flet')
     if flet is None:
@@ -476,11 +524,9 @@ def _run_flet_pack(system: str, stage: Path, version: str, icon_path: Path | Non
     cmd = [
         *launcher, 'pack', str(ROOT / 'desktop' / 'main.py'),
         '--name', APP_NAME, '--product-name', PRODUCT_NAME,
-        '--product-version', version, '--bundle-id', BUNDLE_ID,
+        '--product-version', version, '--bundle-id', BUNDLE_ID, '--icon', str(icon_path),
         '--distpath', str(stage), '--yes',
     ]
-    if icon_path is not None:
-        cmd.extend(['--icon', str(icon_path)])
     if system in ('linux', 'windows'):
         cmd.append('--onedir')
     cmd.extend(f'--pyinstaller-build-args=--exclude-module={mod}' for mod in EXCLUDED_MODULES)
@@ -545,8 +591,8 @@ def build(version: str, output: Path, arch: str | None = None) -> list[Path]:
     try:
         with tempfile.TemporaryDirectory(prefix='reclaim-icons-') as icon_tmp:
             icons = write_icons(Path(icon_tmp))
-            _run_flet_pack(system, stage, version,
-                           icons['png'] if system == 'linux' else None)
+            icon_format = {'linux': 'png', 'windows': 'ico', 'darwin': 'icns'}[system]
+            _run_flet_pack(system, stage, version, icons[icon_format])
 
             output.mkdir(parents=True, exist_ok=True)
             stem = f'{ARCHIVE_NAME}-{version}-{label}-{target_arch}'

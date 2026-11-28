@@ -5,7 +5,7 @@ Optional keys (settings version 2):
     {"version": 2, "providers": ["googleaistudio", "chatgpt"],
      "archive": "/path/to/database", "profile": "/path/to/login-data",
      "kimi_region": "international", "chrome_path": "/usr/bin/google-chrome",
-     "login_timeout": 900}
+     "login_timeout": 120}
 
 - "providers" restricts which providers `reclaim all` and the window use.
   Providers not listed are skipped entirely: no browser window, no login
@@ -18,7 +18,7 @@ Optional keys (settings version 2):
 - "chrome_path" chooses the Chrome/Chromium executable.
   `RECLAIM_CHROME_PATH` overrides it for one command.
 - "login_timeout" is the seconds to wait for a manual login (minimum 30,
-  default 900). `RECLAIM_LOGIN_TIMEOUT` overrides it for one command.
+  default 120). `RECLAIM_LOGIN_TIMEOUT` overrides it for one command.
 
 A missing file means defaults. An unreadable or invalid file raises
 `SettingsError`: falling back to defaults would silently use another
@@ -46,7 +46,7 @@ KIMI_REGIONS = {
     'international': 'https://www.kimi.ai',
     'mainland': 'https://www.kimi.com',
 }
-DEFAULT_LOGIN_TIMEOUT = 900
+DEFAULT_LOGIN_TIMEOUT = 120
 
 
 class SettingsError(ValueError):

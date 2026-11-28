@@ -113,8 +113,7 @@ def get_token(page) -> str:
 
 
 def ensure_logged_in(page):
-    with contextlib.suppress(Exception):  # navigation quirks are fine; the token probe decides
-        page.goto(base_url(), wait_until='domcontentloaded', timeout=60000)
+    browser.open_login_page(page, base_url())
     time.sleep(4)
     return browser.wait_for_login(page, PROVIDER, 'Kimi', lambda: get_token(page))
 

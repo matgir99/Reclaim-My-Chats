@@ -52,6 +52,10 @@ class LoginCancelledError(RuntimeError):
     """Raised when the user stops the run while waiting for a manual login."""
 
 
+class ProviderNavigationError(RuntimeError):
+    """The provider's login page could not be reached."""
+
+
 def _should_stop() -> bool:
     from . import engine
     return engine.should_stop()
@@ -259,11 +263,22 @@ def on_host(host: str) -> Callable[[str], bool]:
     return lambda url: urlsplit(url).hostname == host
 
 
+def open_login_page(page, url: str) -> None:
+    """Open the provider before asking for sign-in."""
+    from playwright.sync_api import Error
+
+    try:
+        response = page.goto(url, wait_until='domcontentloaded', timeout=60000)
+    except Error as exc:
+        raise ProviderNavigationError(str(exc)) from exc
+    if response is not None and response.status == 451:
+        raise ProviderNavigationError(
+            f'Access to {urlsplit(url).hostname} is blocked (HTTP 451).')
+
+
 def login_timeout(root: Path | None = None) -> int:
     """Seconds to wait for a login in the browser window (`RECLAIM_LOGIN_TIMEOUT` or settings)."""
-    with contextlib.suppress(config.SettingsError):
-        return config.login_timeout(root)
-    return int(os.environ.get('RECLAIM_LOGIN_TIMEOUT', '900'))
+    return config.login_timeout(root)
 
 
 def _register_active_page(page) -> None:
@@ -272,6 +287,14 @@ def _register_active_page(page) -> None:
         _active_page = page
         _active_owner = threading.get_ident()
         _bring_forward_requested.clear()
+
+
+def replace_failed_page(page):
+    """Use a fresh tab so Chromium's pending error page cannot interrupt navigation."""
+    replacement = page.context.new_page()
+    page.close()
+    _register_active_page(replacement)
+    return replacement
 
 
 def clear_active_page() -> None:
@@ -323,10 +346,9 @@ def ask_for_login(page, provider: str, service: str, seconds: int) -> None:
     `service` (a login_needed event: the window and the terminal show it)."""
     _register_active_page(page)
     bring_browser_forward(page)
-    minutes = max(1, round(seconds / 60))
     emit(None, 'login_needed', provider,
          message=f'Log in to {service} in the browser window. '
-                 f'Waiting up to {minutes} minutes...')
+                 f'Waiting up to {seconds} seconds...')
 
 
 def login_done(page, provider: str) -> None:
@@ -368,14 +390,20 @@ def _sleep_stopping(interval: float, page=None) -> bool:
             time.sleep(interval)
         _flush_bring_forward(page)
         return _should_stop() or _page_closed(page)
-    end = time.time() + interval
-    while time.time() < end:
+    end = time.monotonic() + interval
+    while time.monotonic() < end:
         if _should_stop() or _page_closed(page):
             return True
         _flush_bring_forward(page)
-        time.sleep(min(0.2, max(0.0, end - time.time())))
+        time.sleep(min(0.2, max(0.0, end - time.monotonic())))
     _flush_bring_forward(page)
     return _should_stop() or _page_closed(page)
+
+
+def _login_timeout_error(page, service: str, seconds: int) -> RuntimeError:
+    set_window_bounds(page, state='minimized')
+    return RuntimeError(f'Login timeout for {service} after {seconds} seconds. '
+                        'Retry or increase the login wait in Settings or with RECLAIM_LOGIN_TIMEOUT.')
 
 
 def wait_for_login(page, provider: str, service: str,
@@ -389,8 +417,8 @@ def wait_for_login(page, provider: str, service: str,
         raise LoginRequiredError(f'{service} login required')
     timeout = login_timeout()
     ask_for_login(page, provider, service, timeout)
-    deadline = time.time() + timeout
-    while time.time() < deadline:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
         if _should_stop() or _page_closed(page):
             set_window_bounds(page, state='minimized')
             raise LoginCancelledError(f'{service} login stopped by user')
@@ -399,10 +427,11 @@ def wait_for_login(page, provider: str, service: str,
         if result:
             login_done(page, provider)
             return result
-        if _sleep_stopping(interval, page):
+        remaining = max(0.0, deadline - time.monotonic())
+        if _sleep_stopping(min(interval, remaining), page):
             set_window_bounds(page, state='minimized')
             raise LoginCancelledError(f'{service} login stopped by user')
-    raise RuntimeError(f'{service} login timeout (Login timeout)')
+    raise _login_timeout_error(page, service, timeout)
 
 
 def _wait_url_slice(page, ready_url: str | Callable[[str], bool], chunk_ms: int) -> bool:
@@ -432,15 +461,13 @@ def interactive_login(page, check_url_fragment: str, ready_url: str | Callable[[
         raise LoginRequiredError(f'{provider_name} login required')
     wait_ms = timeout_ms if timeout_ms is not None else login_timeout() * 1000
     ask_for_login(page, provider, provider_name, wait_ms // 1000)
-    deadline = time.time() + (wait_ms / 1000)
-    while True:
+    deadline = time.monotonic() + (wait_ms / 1000)
+    while (remaining_ms := int((deadline - time.monotonic()) * 1000)) > 0:
         if _should_stop() or _page_closed(page):
             set_window_bounds(page, state='minimized')
             raise LoginCancelledError(f'{provider_name} login stopped by user')
         _flush_bring_forward(page)
-        remaining_ms = max(1, int((deadline - time.time()) * 1000))
         if _wait_url_slice(page, ready_url, min(500, remaining_ms)):
-            break
-        if time.time() >= deadline:
-            page.wait_for_url(ready_url, timeout=1)
-    login_done(page, provider)
+            login_done(page, provider)
+            return
+    raise _login_timeout_error(page, provider_name, wait_ms // 1000)

@@ -666,12 +666,13 @@ class ReclaimWindow:
         self._log_lines.clear()
         self.log.value = ''
         self._provider_count = len(providers)
-        completed_ok = False
+        review_providers: list[str] = []
         try:
             result = await self._execute(providers, mode, url=url, only_ids=only_ids,
                                          no_login_wait=no_login_wait)
             self._show_result(result, mode)
-            completed_ok = True
+            if mode == 'dry-run':
+                review_providers = [name for name, code in result.codes if code == 0]
         except BusyOperationError as exc:
             self._error(str(exc))
         except locks.LockedError as exc:
@@ -692,10 +693,10 @@ class ReclaimWindow:
             self._set_running(False)
             if mode != 'capture' and not self.blocked:
                 await self.refresh_archive(
-                    preserve_prefixes=('Live check:', 'Capture:', 'Needs login:'))
+                    preserve_prefixes=('Live check:', 'Capture:', 'Needs login:', 'Error:'))
             self.page.update()
-        if completed_ok and mode == 'dry-run':
-            self._maybe_show_review_dialog(providers)
+        if review_providers:
+            self._maybe_show_review_dialog(review_providers)
 
     async def _execute(self, providers: list[str], mode: str, *, url: str = '',
                        only_ids: list[str] | None = None,
@@ -730,7 +731,7 @@ class ReclaimWindow:
         return await task
 
     def _maybe_show_review_dialog(self, providers: list[str]) -> None:
-        planned, warnings = _review_items(self._run_events)
+        planned, warnings = _review_items([e for e in self._run_events if e.provider in providers])
         if planned:
             self._review_plan_dialog(providers, planned, warnings)
 

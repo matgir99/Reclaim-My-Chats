@@ -204,12 +204,16 @@ class ArchiveController:
         codes: list[tuple[str, int]] = []
         with sync_playwright() as playwright, engine.stoppable(self._stop):
             ctx, page = browser.launch(playwright, profile_dir=profile, root=self.root)
+            reset_page = False
             try:
                 for index, name in enumerate(chosen, 1):
                     if index > 1 and (self._stop.is_set() or browser._page_closed(page)):
                         break
-                    codes.append((name, self._run_one(name, parsed[name], mode, sink,
-                                                      page, index, len(chosen))))
+                    if reset_page:
+                        page = browser.replace_failed_page(page)
+                    code, reset_page = self._run_one(name, parsed[name], mode, sink,
+                                                     page, index, len(chosen))
+                    codes.append((name, code))
             finally:
                 browser.clear_active_page()
                 ctx.close()
@@ -219,13 +223,15 @@ class ArchiveController:
         return summary
 
     def _run_one(self, name: str, args, mode: str, sink: EventSink,
-                 page, index: int, total: int) -> int:
-        """One provider. Its failure is reported and becomes its exit code (2),
-        so the next provider still runs; a run that may write also records
-        this attempt for the status view (`.reclaim_last_attempt.json`)."""
+                 page, index: int, total: int) -> tuple[int, bool]:
+        """Return the provider's exit code and whether its browser tab needs replacing.
+
+        A run that may write also records the attempt for the status view.
+        """
         started = time.time()
         emit(sink, 'provider_started', name, current=index, total=total)
         error = None
+        reset_page = False
         try:
             if mode == 'check':  # diagnostics: log in and list, nothing else
                 from . import engine
@@ -245,6 +251,7 @@ class ArchiveController:
         except Exception as exc:
             code = 2
             error = str(exc)
+            reset_page = isinstance(exc, browser.ProviderNavigationError)
             emit(sink, 'error', name, message=str(exc), detail=traceback.format_exc())
         if mode != 'dry-run' and not _readonly(args):
             out = Path(getattr(args, 'output_dir',
@@ -260,4 +267,4 @@ class ArchiveController:
                 record_check(self.root, name, started)
         emit(sink, 'provider_completed', name, current=index,
              total=total, message=f'exit {code}')
-        return code
+        return code, reset_page

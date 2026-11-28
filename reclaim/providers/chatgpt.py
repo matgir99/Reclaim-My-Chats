@@ -18,7 +18,6 @@ are excluded per project policy.
 
 from __future__ import annotations
 
-import contextlib
 import json
 import re
 import time
@@ -105,8 +104,7 @@ def get_session_token(page) -> str:
 def ensure_logged_in(page):
     """Return an access token, asking the user to log in in the browser
     window first when the session has none."""
-    with contextlib.suppress(Exception):  # navigation quirks are fine; the token probe decides
-        page.goto(BASE_URL, wait_until='domcontentloaded', timeout=60000)
+    browser.open_login_page(page, BASE_URL)
     time.sleep(4)
     return browser.wait_for_login(page, PROVIDER, 'ChatGPT', lambda: get_session_token(page))
 

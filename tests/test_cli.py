@@ -783,6 +783,29 @@ class TestReleasesAndChecks(unittest.TestCase):
 class TestDispatch(unittest.TestCase):
     """reclaim/__main__.py arg routing — offline, no browser."""
 
+    def test_ai_studio_titles_accept_utf8_with_or_without_bom(self):
+        import reclaim.__main__ as cli
+
+        title = 'Møte ≈ 東京'
+        prompt = {'chunkedPrompt': {'chunks': [{'role': 'user', 'text': 'Synthetic prompt'}]}}
+        for encoding in ('utf-8', 'utf-8-sig'):
+            with self.subTest(encoding=encoding), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                prompts = root / 'prompts'
+                prompts.mkdir()
+                (prompts / 'example.json').write_text(json.dumps(prompt), encoding='utf-8')
+                titles = root / 'titles.json'
+                titles.write_text(json.dumps({'example': title}, ensure_ascii=False),
+                                  encoding=encoding)
+                with (patch.dict(os.environ, {'RECLAIM_HOME': str(root)}),
+                      redirect_stdout(io.StringIO())):
+                    result = cli.main(['parse', 'googleaistudio', '--from-folder', str(prompts),
+                                       '--titles', str(titles)])
+
+                self.assertEqual(result, 0)
+                saved, = (root / 'chats' / 'Google AI Studio').glob('*/chat.json')
+                self.assertEqual(json.loads(saved.read_text(encoding='utf-8'))['title'], title)
+
     def test_help_and_empty(self):
         import reclaim.__main__ as cli
         self.assertEqual(cli.main([]), 0)
