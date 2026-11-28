@@ -43,6 +43,7 @@ SOURCE_NAMES = {
     'claude': 'Claude',
     'googlegemini': 'Gemini',
     'kimi': 'Kimi',
+    'antigravity': 'Antigravity',
 }
 for _p in ('kimi', 'claude', 'gemini', 'grok', 'ollama'):
     SOURCE_NAMES[f'kept/{_p}'] = _p.capitalize()
@@ -92,6 +93,7 @@ _MD_SECTION_RE = re.compile(r'^## (User|Assistant)\s*$', re.MULTILINE)
 _DIR_PROVIDER = {'Google AI Studio': 'googleaistudio', 'Deepseek Chat': 'deepseek',
                  'ChatGPT': 'chatgpt', 'Kimi Chat': 'kimi',
                  'Claude': 'claude', 'Google Gemini': 'googlegemini',
+                 'Google Antigravity': 'antigravity',
                  'Gemini': 'kept/gemini', 'Grok': 'kept/grok'}
 
 

@@ -165,10 +165,10 @@ def live_checks(root: Path | None = None, providers: list[str] | None = None,
                 controller=None, echo: EventSink | None = None) -> list[Check]:
     """Log in to each provider and list its chats, writing nothing. `echo`
     also receives the run's events, for example to show login requests."""
-    from .service import ALL_PROVIDERS, ArchiveController
+    from .service import ALL_PROVIDERS, ArchiveController, present
     root = Path(root) if root is not None else config.default_root()
     if providers is None:
-        providers, _, _ = config.selected_providers(root, ALL_PROVIDERS)
+        providers, _, _ = config.selected_providers(root, ALL_PROVIDERS, present=present)
     events: list[ProgressEvent] = []
     (controller or ArchiveController(root)).run(providers, 'check',
                                                 fanout(events.append, echo))

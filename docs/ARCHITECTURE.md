@@ -5,10 +5,11 @@ Both write the same on-disk database format.
 
 ```text
 reclaim CLI ───────┐
-                   ├── ArchiveController ── shared Playwright session
-Flet desktop GUI ──┘                        ├── ChatGPT, Claude, Gemini
-                                          ├── Google AI Studio, DeepSeek, Kimi
-                                          └── writer, sync state, run manifests
+                   ├── ArchiveController ─┬─ shared Playwright session
+Flet desktop GUI ──┘                      │   ├── ChatGPT, Claude, Gemini
+                                          │   └── Google AI Studio, DeepSeek, Kimi
+                                          ├─ Google Antigravity (files on this computer)
+                                          └─ writer, sync state, run manifests
 
 Offline import and export commands ─────── importers/exporters ── database
 ```
@@ -19,7 +20,16 @@ the GUI, `reclaim all` and single-provider commands. Before a browser opens
 it validates the settings (`config.SettingsError`), checks the database
 folder (`core/database.py`: the `.reclaim-database.json` marker, adopting
 older databases), takes lock files on the login data folder and the
-database (`core/locks.py`), and opens the run log (`core/logs.py`). Imports and the offline AI Studio parser use the same
+database (`core/locks.py`), and opens the run log (`core/logs.py`). A
+provider whose class sets `uses_browser = False` reads files on this
+computer: Google Antigravity (`providers/antigravity.py`). It is handed no
+page, a run of only such providers takes no lock on the login data folder,
+and the browser opens when the first provider that needs it starts
+(`service._Browser`). A browser that cannot start fails the providers that
+need it, each with the error, and not the others. Such a provider has no
+responses to capture, so `capture` refuses it, and when the settings name no
+providers it runs only if `Provider.present()` finds its files
+(`config.selected_providers(..., present=service.present)`). Imports and the offline AI Studio parser use the same
 checks through `offline_session`. An in-process lock also stops concurrent
 GUI clicks.
 
@@ -37,7 +47,19 @@ a provider decides a chat is deleted only from that status being 404
 (`retry.is_not_found`), never from the error text. DeepSeek is the one
 exception: it answers HTTP 200 for a chat that does not exist, with business
 code 1 and the message "invalid chat session id" in the reply, and only that
-exact answer counts (`deepseek._is_missing_chat`).
+exact answer counts (`deepseek._is_missing_chat`). Antigravity has no
+requests: a conversation is deleted when its file is gone from Antigravity's
+folder.
+
+Antigravity keeps each conversation as a SQLite file whose `steps` table holds
+one protobuf message per step. `providers/antigravity_steps.py` reads that
+wire format directly (no protobuf library), using only the field numbers it
+needs, taken from the schema embedded in Antigravity's `agy` program; a step
+that does not parse stops that chat with a message instead of saving it
+incomplete. The databases are opened so that SQLite creates nothing in
+Antigravity's folder (`antigravity._source_file`: `immutable` when no
+write-ahead log is open, a temporary copy when only half of one is there). See [UPSTREAM_REVIEW.md](UPSTREAM_REVIEW.md#google-antigravity)
+for the layout.
 
 Provider modules acquire conversations from each service, normalize them to
 the models in `reclaim/core/model.py`, and the engine saves each chat with

@@ -1,6 +1,6 @@
 # Agents guide for Reclaim My Chats
 
-Reclaim My Chats saves conversations from ChatGPT, Claude, Google Gemini, Google AI Studio, DeepSeek, and Kimi into a local folder of Markdown, JSON, and media called the **database**. Two front ends share one controller: a Flet desktop window (`reclaim/gui.py`) and a command line (`reclaim/__main__.py`).
+Reclaim My Chats saves conversations from ChatGPT, Claude, Google Gemini, Google AI Studio, DeepSeek, Kimi, and Google Antigravity (read from its files on this computer) into a local folder of Markdown, JSON, and media called the **database**. Two front ends share one controller: a Flet desktop window (`reclaim/gui.py`) and a command line (`reclaim/__main__.py`).
 
 Read in this order:
 
@@ -29,6 +29,7 @@ If local files exist in `docs/status_and_plan/` from August 2026 (`v3.0.0`), the
 - Run Python commands from the project `.venv` (`.venv/bin/python`, `.venv/bin/reclaim`). Ignore any stale global `~/.local/bin/reclaim` install.
 - Treat `chats/` and `.playwright-profile/` in a local checkout as live user data: use them only for read-only commands (`reclaim status`, `reclaim doctor`, `--dry-run`, `--list`) unless the owner asks for more, and point `RECLAIM_HOME` at a temporary directory for any write experiment.
 - Live provider runs (`reclaim <provider>`, `reclaim all`, `reclaim doctor --live`, `reclaim capture`) launch Chrome and may wait for logins; only run them with the owner present.
+- `reclaim antigravity` opens no browser but reads the owner's Antigravity conversations in `~/.gemini/antigravity`. Treat that folder as live user data: never write to it, and send any test run's output to a temporary `RECLAIM_HOME` (or a copy via `RECLAIM_ANTIGRAVITY_DIR`).
 - When inspecting or scripting the app window on Linux (`wmctrl`, `xprop`, screenshots), match the exact title `"Reclaim My Chats"` and verify `WM_CLASS` is `com.appveyor.flet` (or run with an isolated `RECLAIM_HOME` and target that window ID).
 
 ## Checks
@@ -60,7 +61,7 @@ pyright --pythonpath .venv/bin/python reclaim tests scripts flet_integration
 | `reclaim/core/database.py`, `locks.py`, `config.py`, `logs.py`, `status.py` | Database marker, lock files, `.reclaim.json` settings validation, run logs, offline status. |
 | `reclaim/core/writer.py`, `manifest.py`, `model.py`, `fsutil.py`, `batchexecute.py`, `browser.py`, `autostart.py` | Atomic chat folder writing, sync records, chat model, helpers, browser discovery/login wait, OS autostart/notifications. |
 | `reclaim/core/doctor.py`, `capture.py`, `releases.py` | Offline/live diagnostics (`reclaim doctor [--live]`), response sanitization (`reclaim capture`), GitHub update checks. |
-| `reclaim/providers/` | Native providers (`chatgpt.py`, `chatgpt_references.py`, `claude.py`, `deepseek.py`, `googleaistudio.py`, `googlegemini.py`, `kimi.py`) and offline importers (`chatgpt_import.py`, `kept_vault.py`, `aistudio_files.py`). |
+| `reclaim/providers/` | Native providers (`chatgpt.py`, `chatgpt_references.py`, `claude.py`, `deepseek.py`, `googleaistudio.py`, `googlegemini.py`, `kimi.py`; `antigravity.py` and `antigravity_steps.py` read Antigravity's local files, no browser) and offline importers (`chatgpt_import.py`, `kept_vault.py`, `aistudio_files.py`). |
 | `reclaim/exporters/haevn_md.py` | Offline HAEVN Markdown archive exporter (`reclaim export haevn-md`). |
 | `reclaim/gui.py`, `reclaim/__main__.py`, `reclaim/desktop_smoke.py` | Flet desktop window, CLI entry point, and isolated packaged-app startup check. |
 | `tests/`, `flet_integration/`, `scripts/` | Offline unit/browser-protocol suites, Flet device integration suite, and release/maintenance scripts. |

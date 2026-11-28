@@ -13,6 +13,20 @@ from reclaim.core.events import ProgressEvent
 from reclaim.core.service import RunSummary
 from reclaim import gui
 
+_ANTIGRAVITY = tempfile.TemporaryDirectory()
+_ANTIGRAVITY_ENV = patch.dict('os.environ', {'RECLAIM_ANTIGRAVITY_DIR': _ANTIGRAVITY.name})
+
+
+def setUpModule():
+    # Every computer the same: Antigravity is present, so all seven providers are on.
+    (Path(_ANTIGRAVITY.name) / 'conversations').mkdir(exist_ok=True)
+    _ANTIGRAVITY_ENV.start()
+
+
+def tearDownModule():
+    _ANTIGRAVITY_ENV.stop()
+    _ANTIGRAVITY.cleanup()
+
 
 class _Window:
     on_event: Any = None
@@ -108,7 +122,7 @@ class TestGui(unittest.IsolatedAsyncioTestCase):
         self.temp.cleanup()
 
     async def test_opens_with_all_providers_and_archive_path(self):
-        self.assertEqual(len(self.window.checks), 6)
+        self.assertEqual(len(self.window.checks), 7)
         self.assertEqual(self.window.archive_path.value, str(self.root / 'chats'))
         self.assertEqual(self.window.archive_total.value, '0 chats in the database')
 
@@ -171,13 +185,13 @@ class TestGui(unittest.IsolatedAsyncioTestCase):
         assert dialog is not None
         assert dialog.actions is not None
         dialog.content.content.controls[1].controls[0].value = False  # Google AI Studio
-        dialog.content.content.controls[10].value = 'mainland'         # Kimi region
-        dialog.content.content.controls[11].value = '/usr/bin/chrome'  # Chrome location
-        dialog.content.content.controls[12].value = '180'              # Login wait
-        dialog.content.content.controls[13].value = True               # Check on startup
-        dialog.content.content.controls[14].value = True               # Start at login
-        self.assertFalse(dialog.content.content.controls[15].value)    # Replace older copies: off
-        dialog.content.content.controls[15].value = True               # Replace older copies
+        dialog.content.content.controls[11].value = 'mainland'         # Kimi region
+        dialog.content.content.controls[12].value = '/usr/bin/chrome'  # Chrome location
+        dialog.content.content.controls[13].value = '180'              # Login wait
+        dialog.content.content.controls[14].value = True               # Check on startup
+        dialog.content.content.controls[15].value = True               # Start at login
+        self.assertFalse(dialog.content.content.controls[16].value)    # Replace older copies: off
+        dialog.content.content.controls[16].value = True               # Replace older copies
         with patch.object(gui.autostart, 'set_autostart') as set_auto:
             await dialog.actions[1].on_click(None)
         set_auto.assert_called_once_with(True)
@@ -223,7 +237,8 @@ class TestGui(unittest.IsolatedAsyncioTestCase):
         self.page.pop_dialog()
         await self.window.run_startup_check_if_enabled()
         self.assertEqual(ctrl.calls[-1], (['googleaistudio', 'deepseek', 'kimi', 'chatgpt',
-                                           'claude', 'googlegemini'], 'dry-run'))
+                                           'claude', 'googlegemini', 'antigravity'],
+                                          'dry-run'))
 
     async def test_review_dialog_shows_moves_pairs_restore_and_confirms_brake(self):
         class _MoveController(_Controller):
@@ -469,7 +484,7 @@ class TestGuiSafeguards(unittest.IsolatedAsyncioTestCase):
         await self.actions(window)['notice-reset-settings'].on_click(None)
         self.assertFalse(window.notice.visible)
         self.assertFalse(window.update_all.disabled)
-        self.assertEqual(len(window.enabled), 6)
+        self.assertEqual(len(window.enabled), 7)
         self.assertIn('old file was kept', window.summary.value)
         self.assertEqual(len(list(self.root.glob('.reclaim.json.invalid-*'))), 1)
 
@@ -522,7 +537,7 @@ class TestGuiSafeguards(unittest.IsolatedAsyncioTestCase):
         window._settings()
         dialog = self.page.dialog
         assert dialog is not None and dialog.actions is not None
-        archive_row = dialog.content.content.controls[7]
+        archive_row = dialog.content.content.controls[8]
         archive_row.controls[0].value = str(new_folder)
         await dialog.actions[1].on_click(None)  # Save
         confirm = self.page.dialog
@@ -633,6 +648,19 @@ class TestGuiDiagnostics(unittest.IsolatedAsyncioTestCase):
             await actions['diagnostics-copy'].on_click(None)
         self.assertIn('Reclaim My Chats diagnostics', _Clipboard.copied[-1])
         self.assertIn('Diagnostics copied', self.window.summary.value)
+
+    async def test_antigravity_is_checked_not_logged_in_and_cannot_be_captured(self):
+        # Antigravity's conversations are files on this computer: no login, nothing to capture.
+        self.assertEqual(self.window.provider_login_buttons['antigravity'].content, 'Check')
+        self.assertEqual(self.window.provider_login_buttons['chatgpt'].content, 'Log in')
+        self.window._update_chip_for_event(gui.ProgressEvent('checked', 'antigravity'))
+        self.assertEqual(self.window.provider_chips['antigravity'].value, 'Checked')
+        self.window._update_chip_for_event(gui.ProgressEvent('checked', 'chatgpt'))
+        self.assertEqual(self.window.provider_chips['chatgpt'].value, 'Logged in')
+        await self.window._diagnostics()
+        options = [o.key for o in self.dialog_control('capture-provider').options]
+        self.assertNotIn('antigravity', options)
+        self.assertIn('chatgpt', options)
 
     async def test_capture_a_chat_runs_controller_and_shows_open_folder(self):
         await self.window._diagnostics()

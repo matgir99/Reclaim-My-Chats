@@ -20,7 +20,8 @@ else:
 
 from .core import autostart, browser, config, database, doctor, lifecycle, locks, logs, releases, render, status, tidy
 from .core.events import EventSink, ProgressEvent
-from .core.service import ALL_PROVIDERS, ArchiveController, BusyOperationError, RunSummary
+from .core.service import (ALL_PROVIDERS, ArchiveController, BusyOperationError, RunSummary,
+                           present, uses_browser)
 
 DISPLAY_NAMES = {
     'googleaistudio': 'Google AI Studio',
@@ -29,6 +30,7 @@ DISPLAY_NAMES = {
     'chatgpt': 'ChatGPT',
     'claude': 'Claude',
     'googlegemini': 'Google Gemini',
+    'antigravity': 'Google Antigravity',
 }
 # Events about one chat: they move the progress bar and the status line.
 CHAT_PROGRESS = frozenset({'chat_started', 'chat_skipped', 'chat_completed',
@@ -52,8 +54,13 @@ class Controller(Protocol):
 
 
 def configured_providers(root: Path) -> list[str]:
-    chosen, _, _ = config.selected_providers(root, ALL_PROVIDERS)
+    chosen, _, _ = config.selected_providers(root, ALL_PROVIDERS, present=present)
     return chosen
+
+
+def _disabled_text(name: str) -> str:
+    """Why a provider's row is off: the settings, or nothing to read on this computer."""
+    return 'Disabled in settings' if present(name) else 'Not found on this computer'
 
 
 def open_directory(path: Path) -> None:
@@ -139,7 +146,9 @@ class ReclaimWindow:
         self._run_events: list[ProgressEvent] = []
         self._live_results: list[doctor.Check] = []
         self._captured_path: Path | None = None
-        self._capture_provider = self.enabled[0] if self.enabled else ALL_PROVIDERS[0]
+        capturable = [name for name in ALL_PROVIDERS if uses_browser(name)]
+        self._capture_provider = next((name for name in self.enabled if name in capturable),
+                                      capturable[0])
         self._capture_url = ''
         self._running = False
         self._stopping = False
@@ -189,9 +198,11 @@ class ReclaimWindow:
                            weight=ft.FontWeight.BOLD, key=f'provider-chip-{name}')
             chip_box = ft.Container(content=chip, bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
                                     padding=6, border_radius=12)
-            text = ft.Text('Loading' if enabled else 'Disabled in settings',
+            text = ft.Text('Loading' if enabled else _disabled_text(name),
                            key=f'provider-status-{name}', expand=True)
-            login_btn = ft.TextButton('Log in', on_click=self._make_provider_action(name, 'check'),
+            # A provider that reads files on this computer has no login: its live check lists them.
+            login_btn = ft.TextButton('Log in' if uses_browser(name) else 'Check',
+                                      on_click=self._make_provider_action(name, 'check'),
                                       key=f'provider-login-{name}', disabled=not enabled)
             review_btn = ft.TextButton('Review', on_click=self._make_provider_action(name, 'dry-run'),
                                        key=f'provider-review-{name}', disabled=not enabled)
@@ -352,7 +363,7 @@ class ReclaimWindow:
                 self.provider_status[info.provider].value = status_text(info)
                 self._set_chip(info.provider, 'Error' if info.last_error else 'Ready')
             else:
-                self.provider_status[info.provider].value = 'Disabled in settings'
+                self.provider_status[info.provider].value = _disabled_text(info.provider)
                 self._set_chip(info.provider, 'Disabled')
 
     def _set_chip(self, provider: str, state: str) -> None:
@@ -572,14 +583,17 @@ class ReclaimWindow:
             self.login_banner.visible = False
 
     def _update_chip_for_event(self, event: ProgressEvent) -> None:
+        # A provider reading files on this computer was checked, not logged in to.
+        checked = 'Logged in' if event.provider not in ALL_PROVIDERS or uses_browser(
+            event.provider) else 'Checked'
         label = {'provider_started': 'Running', 'logged_in': 'Running',
                  'login_needed': 'Needs login', 'error': 'Error',
-                 'checked': 'Logged in', 'stopped': 'Stopped'}.get(event.kind)
+                 'checked': checked, 'stopped': 'Stopped'}.get(event.kind)
         if label is not None:
             self._set_chip(event.provider, label)
         elif event.kind == 'provider_completed' and event.message == 'exit 0':
             chip = self.provider_chips.get(event.provider)
-            if chip is not None and chip.value not in ('Logged in', 'Stopped'):
+            if chip is not None and chip.value not in ('Logged in', 'Checked', 'Stopped'):
                 self._set_chip(event.provider, 'Ready')
 
     def _show_progress(self, event: ProgressEvent) -> None:
@@ -860,7 +874,7 @@ class ReclaimWindow:
         provider_field = ft.Dropdown(
             label='Provider', value=self._capture_provider, width=210,
             options=[ft.DropdownOption(key=name, text=DISPLAY_NAMES[name])
-                     for name in ALL_PROVIDERS],
+                     for name in ALL_PROVIDERS if uses_browser(name)],
             key='capture-provider')
         url_field = ft.TextField(label='Chat URL', value=self._capture_url,
                                  expand=True, key='capture-url')

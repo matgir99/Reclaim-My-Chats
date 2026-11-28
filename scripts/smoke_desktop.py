@@ -14,7 +14,8 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-EXPECTED_PROVIDERS = {'chatgpt', 'claude', 'googlegemini', 'googleaistudio', 'deepseek', 'kimi'}
+EXPECTED_PROVIDERS = {'chatgpt', 'claude', 'googlegemini', 'googleaistudio', 'deepseek', 'kimi',
+                      'antigravity'}
 
 
 def _windows_zip_binary(root: Path, archive: Path) -> Path:
