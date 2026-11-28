@@ -9,6 +9,7 @@ from pathlib import Path
 
 import flet as ft
 
+from reclaim.core import config, database
 from reclaim.core.events import ProgressEvent
 from reclaim.core.service import RunSummary
 from reclaim.gui import ReclaimWindow
@@ -61,11 +62,11 @@ async def main(page: ft.Page) -> None:
     root = Path(tempfile.mkdtemp(prefix='reclaim-flet-test-'))
     # The same on every computer: no Antigravity folder, so its row is off.
     os.environ['RECLAIM_ANTIGRAVITY_DIR'] = str(root / 'no-antigravity')
+    # An empty database, so no first-run banner: the test surface is 720 pixels
+    # high whatever the window size, and the remote tester cannot scroll, so
+    # the run buttons below seven provider rows must fit without it.
+    database.init(config.default_archive(root))
     window = ReclaimWindow(page, root, FakeController())
-    # Tall enough for every provider row and the run buttons below them: the
-    # remote tester cannot scroll, and xvfb's screen is 1024 pixels high.
-    page.window.height = 1000
-    page.update()
     await window.refresh_archive()
 
 
