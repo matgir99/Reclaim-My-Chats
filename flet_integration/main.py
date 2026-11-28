@@ -62,6 +62,10 @@ async def main(page: ft.Page) -> None:
     # The same on every computer: no Antigravity folder, so its row is off.
     os.environ['RECLAIM_ANTIGRAVITY_DIR'] = str(root / 'no-antigravity')
     window = ReclaimWindow(page, root, FakeController())
+    # Tall enough for every provider row and the run buttons below them: the
+    # remote tester cannot scroll, and xvfb's screen is 1024 pixels high.
+    page.window.height = 1000
+    page.update()
     await window.refresh_archive()
 
 

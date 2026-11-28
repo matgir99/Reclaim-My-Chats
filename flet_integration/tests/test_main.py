@@ -5,12 +5,6 @@ import asyncio
 import flet.testing as ftt
 
 
-async def scroll_down(flet_app: ftt.FletTestApp) -> None:
-    """Seven provider rows push the run buttons below the 720-pixel test screen."""
-    await flet_app.page.scroll_to(delta=400, duration=0)
-    await flet_app.tester.pump_and_settle()
-
-
 async def test_opens_and_shows_every_provider(flet_app: ftt.FletTestApp):
     tester = flet_app.tester
     await tester.pump_and_settle()
@@ -34,7 +28,6 @@ async def test_update_selected_and_dry_run(flet_app: ftt.FletTestApp):
     assert (await tester.find_by_text(
         'Update completed successfully · Google AI Studio: ok, DeepSeek: ok, '
         'ChatGPT: ok, Claude: ok, Google Gemini: ok')).count == 1
-    await scroll_down(flet_app)
     await tester.tap(await tester.find_by_key('dry-run'))
     await asyncio.sleep(0.5)
     await tester.pump_and_settle()
@@ -45,7 +38,6 @@ async def test_update_selected_and_dry_run(flet_app: ftt.FletTestApp):
 async def test_rebuild_confirmation_and_failure(flet_app: ftt.FletTestApp):
     tester = flet_app.tester
     await tester.pump_and_settle()
-    await scroll_down(flet_app)
     await tester.tap(await tester.find_by_key('rebuild'))
     await tester.pump_and_settle()
     assert (await tester.find_by_key('confirm-rebuild')).count == 1
@@ -67,7 +59,6 @@ async def test_settings_open_and_archive_path_visible(flet_app: ftt.FletTestApp)
     await tester.tap(await tester.find_by_key('settings-kimi'))
     await tester.tap(await tester.find_by_key('save-settings'))
     await tester.pump_and_settle()
-    await scroll_down(flet_app)
     await tester.tap(await tester.find_by_key('update-all'))
     await asyncio.sleep(0.5)
     await tester.pump_and_settle()
