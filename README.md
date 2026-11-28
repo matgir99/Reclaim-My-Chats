@@ -180,7 +180,7 @@ inside that data folder by default. Set `RECLAIM_HOME` to use an existing
 checkout or another data folder. In the GUI, **Settings** configures enabled providers, the database folder, an
 optional login data folder (for reusing login sessions from a checkout without
 copying cookies), the Kimi region (`international` or `mainland`), an optional
-Chrome or Chromium executable path, the manual login wait time, whether to
+Chrome or Chromium executable path, the manual login wait (two minutes by default), whether to
 check for updates on startup without blocking on logins, whether to start
 the app at system login, and whether an update replaces older copies of a chat
 automatically (off by default; an older copy is removed only when everything it
@@ -201,7 +201,7 @@ database folder for compatibility):
   "profile": "/path/to/existing/.playwright-profile",
   "kimi_region": "international",
   "chrome_path": "/usr/bin/google-chrome",
-  "login_timeout": 900,
+  "login_timeout": 120,
   "check_on_startup": false,
   "start_at_login": false,
   "retire_older_copies": false

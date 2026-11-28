@@ -57,7 +57,7 @@ _GET_JS = """async (args) => {
 def ensure_logged_in(page):
     """Open DeepSeek and, when the page holds no login token, ask the user to
     log in in the browser window and wait for one."""
-    page.goto(BASE_URL, wait_until='domcontentloaded', timeout=60000)
+    browser.open_login_page(page, BASE_URL)
     time.sleep(3)
     browser.wait_for_login(page, PROVIDER, 'DeepSeek',
                            lambda: bool(page.evaluate(_HAS_TOKEN_JS)))

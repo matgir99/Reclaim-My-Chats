@@ -77,7 +77,7 @@ the saved path with *Open folder*. Open and check the file before sharing it.
 **Settings** writes the shared `.reclaim.json` (version 2, migrating older
 settings automatically). It can choose enabled providers, a database folder, an
 optional login data folder, the Kimi region (`international` vs `mainland`),
-an optional Chrome or Chromium executable path, the login wait in seconds,
+an optional Chrome or Chromium executable path, the login wait (120 seconds by default),
 whether to check for updates at startup without waiting for logins, whether
 to start the app when logging in to the computer, and whether an update replaces
 older copies of a chat automatically (off by default; see **Tidy duplicates**).

@@ -74,8 +74,7 @@ def extract_tokens(html: str) -> dict:
 
 
 def ensure_logged_in(page):
-    with contextlib.suppress(Exception):
-        page.goto(APP_URL, wait_until='domcontentloaded', timeout=60000)
+    browser.open_login_page(page, APP_URL)
     time.sleep(3)
     browser.interactive_login(page, 'accounts.google.com',
                               browser.on_host('gemini.google.com'), 'Google',
