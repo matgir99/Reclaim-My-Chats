@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import struct
 import subprocess
 import sys
 import tarfile
@@ -134,11 +135,36 @@ class TestDesktopPackaging(unittest.TestCase):
                            encoding='utf-8')
         return app_dir, desktop, icons
 
-    def test_write_icons_produces_valid_png_ico_icns_headers(self):
+    def test_write_icons_includes_native_sizes(self):
         icons = pack_desktop.write_icons(self.root)
-        self.assertTrue(icons['png'].read_bytes().startswith(b'\x89PNG\r\n\x1a\n'))
-        self.assertTrue(icons['ico'].read_bytes().startswith(b'\x00\x00\x01\x00'))
-        self.assertTrue(icons['icns'].read_bytes().startswith(b'icns'))
+        png = icons['png'].read_bytes()
+        self.assertTrue(png.startswith(b'\x89PNG\r\n\x1a\n'))
+        self.assertEqual(struct.unpack_from('>II', png, 16), (256, 256))
+
+        ico = icons['ico'].read_bytes()
+        self.assertEqual(struct.unpack_from('<HHH', ico), (0, 1, 6))
+        ico_sizes = []
+        for index in range(6):
+            width, height, _, _, _, depth, length, offset = struct.unpack_from(
+                '<BBBBHHII', ico, 6 + index * 16,
+            )
+            self.assertEqual((height, depth), (width, 32))
+            self.assertLessEqual(offset + length, len(ico))
+            ico_sizes.append(width or 256)
+        self.assertEqual(ico_sizes, [16, 32, 48, 64, 128, 256])
+
+        icns = icons['icns'].read_bytes()
+        self.assertEqual(struct.unpack_from('>4sI', icns), (b'icns', len(icns)))
+        mac_sizes = []
+        offset = 8
+        for _ in range(6):
+            _, length = struct.unpack_from('>4sI', icns, offset)
+            width, height = struct.unpack_from('>II', icns, offset + 24)
+            self.assertEqual(width, height)
+            mac_sizes.append(width)
+            offset += length
+        self.assertEqual(mac_sizes, [16, 32, 64, 128, 256, 512])
+        self.assertEqual(offset, len(icns))
 
     def test_linux_appimage_deb_and_tarball_builders(self):
         app_dir, desktop, icons = self._make_linux_app()
