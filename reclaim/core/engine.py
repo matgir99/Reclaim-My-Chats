@@ -80,6 +80,9 @@ class Fetched:
     raw: Any = None        # saved as raw.json unless --no-raw
     detail: str = ''       # shown under the chat with --log, e.g. 'images: 2'
     extra: dict = field(default_factory=dict)  # added to the chat's manifest entry
+    # Recorded instead of the listing's timestamp when set: a chat saved without
+    # a part that could not be read records a version the next update sees as changed.
+    version: Any = None
 
 
 class Provider:
@@ -91,6 +94,7 @@ class Provider:
     description = ''       # first line of `reclaim <name> --help`
     noun = 'chats'         # what the service calls its chats, in messages
     pace = 0.3             # pause between two downloads, in seconds
+    uses_browser = True    # False: reads files on this computer; `open` gets no page
 
     def open(self, page, /) -> Any:
         """Log in if needed; return the session handed to the other methods."""
@@ -110,6 +114,15 @@ class Provider:
 
     def found_text(self, refs: list[ChatRef], /) -> str:
         return f'Found {len(refs)} {self.noun}'
+
+    def checked_text(self, refs: list[ChatRef], /) -> str:
+        """The result of a live check (Diagnostics)."""
+        return f'logged in · {len(refs)} {self.noun} listed'
+
+    def present(self) -> bool:
+        """Whether this computer has what the provider reads. When the settings
+        name no providers, only present ones run; a web service always is."""
+        return True
 
 
 def build_parser(provider: Provider) -> argparse.ArgumentParser:
@@ -366,8 +379,7 @@ def check(provider: Provider, page, sink: EventSink | None = None) -> int:
     with routed(sink):
         session = provider.open(page)
         refs = provider.listing(session)
-    emit(sink, 'checked', provider.name,
-         message=f'logged in · {len(refs)} {provider.noun} listed')
+    emit(sink, 'checked', provider.name, message=provider.checked_text(refs))
     return 0
 
 
@@ -409,7 +421,8 @@ def _download_one(provider: Provider, session, ref: ChatRef, index: int, total: 
     t0 = time.time()
     try:
         got = provider.fetch(session, ref)
-        stats = save_chat(got.chat, out_dir, sync, ref.id, ref.updated_at,
+        version = ref.updated_at if got.version is None else got.version
+        stats = save_chat(got.chat, out_dir, sync, ref.id, version,
                           got.raw if save_raw else None, sink=sink, provider=name,
                           state=ref.state)
         detail = got.detail or f'assets: {stats["images"] + stats["docs"]}'

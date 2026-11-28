@@ -1,8 +1,13 @@
 # Desktop GUI
 
-The Flet window manages database updates for all six native providers in a
+The Flet window manages database updates for all seven providers in a
 provider table with per-row status chips, saved chat counts, **last download**
-and **last checked** times, and **Log in** / **Review** buttons. On startup
+and **last checked** times, and **Log in** / **Review** buttons. Google
+Antigravity's conversations are files on this computer, so its row has
+**Check** instead of **Log in**: it counts the conversations Antigravity keeps
+(the chip then says *Checked*), and its updates never open the browser. Without
+a providers list in the settings, its row is on only when Antigravity's folder
+exists; otherwise it reads *Not found on this computer*. On startup
 without settings or an initialized database, a **First-run setup** banner
 guides folder selection, Chrome detection, provider selection, and logging in.
 When any provider waits for manual sign-in, a banner shows which provider needs
@@ -69,7 +74,8 @@ and adds its result to the list, keeping the results already there.
 *Copy diagnostics* copies the results as text for a bug report. They contain
 folder paths, which can include your user name, but never chat content.
 `reclaim doctor [--live]` prints the same report. **Capture a chat** lets
-you choose a provider, enter a chat URL, and click *Capture* to record that
+you choose a provider (Antigravity is not offered: it has no responses to
+record), enter a chat URL, and click *Capture* to record that
 chat's sanitized API responses (saved even if fetching fails), then shows
 the saved path with *Open folder*. Open and check the file before sharing it.
 `reclaim capture PROVIDER URL [-o FILE]` runs the same capture from the CLI.

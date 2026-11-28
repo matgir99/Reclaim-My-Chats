@@ -12,7 +12,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from reclaim import __main__ as cli
-from reclaim.core import config, database, doctor, locks
+from reclaim.core import config, database, doctor, engine, locks
 from reclaim.core.events import ProgressEvent
 from reclaim.core.service import ArchiveController
 from reclaim.core.writer import write_chat
@@ -32,7 +32,7 @@ class _Playwright:
         return False
 
 
-class _Spec:
+class _Spec(engine.Provider):
     name = 'chatgpt'
     noun = 'conversations'
 
@@ -40,7 +40,7 @@ class _Spec:
         return None
 
     def listing(self, session):
-        return [object(), object()]
+        return [engine.ChatRef(id='a'), engine.ChatRef(id='b')]
 
 
 class _Module:

@@ -14,6 +14,7 @@ names:
 | `chatgpt` | `ChatGPT` |
 | `claude` | `Claude` |
 | `googlegemini` | `Google Gemini` |
+| `antigravity` | `Google Antigravity` |
 
 ```text
 chats/
@@ -90,6 +91,23 @@ to saved media. Provider thought content is omitted where the provider
 identifies it; a structural marker can indicate that omission. `raw.json`
 retains a scrubbed provider response to help recover from parser errors.
 
+Google Antigravity chats are read from Antigravity's own files, so they differ
+in three ways. The Source line names the client and the conversation instead of
+a web address, for example `Antigravity for VS Code, conversation <id>`
+(`Antigravity CLI` for the `agy` command line; `Antigravity` for the desktop
+app). An assistant turn lists the agent's actions as italic bullet lines
+between its replies, and the agent's artifacts (the files at the top of the
+conversation's `brain/<id>/` folder in Antigravity, such as plans and reports)
+are saved in the chat's folder under a final **Artifacts** heading. An
+artifact that cannot be read (no permission, or locked) is saved as a link to
+the file instead, with a warning, and the next update tries the chat again. `raw.json`
+holds every step decoded: its type, status and time, the text of messages and
+replies, the agent's thinking, tool names and arguments, and the first 20,000
+characters of each tool's output. Its `provider_updated_at` is the time of the
+last step, the number of steps and a fingerprint of the steps and artifacts
+(for example `2026-11-21T21:58:13Z · 909 steps · 3f9a0c1b2d4e`), so a
+conversation is saved again only when a step or an artifact changed.
+
 `chat.json` contains:
 
 | Field | Meaning |
@@ -126,7 +144,8 @@ chats it saved. If the file is missing or damaged, it is rebuilt from the
 A chat goes to `_Deleted/` only when it is missing from a complete listing
 and the provider says the chat does not exist: HTTP 404, or, from DeepSeek,
 which answers such a request with HTTP 200, the error "invalid chat session
-id". That includes a chat already in `_Archived/`, when the provider lists its
+id". For Google Antigravity it is when the conversation's file is no longer in
+Antigravity's `conversations/` folder. That includes a chat already in `_Archived/`, when the provider lists its
 archived chats (ChatGPT does) and the chat is missing from both lists: it moves
 from `_Archived/` to `_Deleted/`.
 

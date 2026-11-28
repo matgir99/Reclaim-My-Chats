@@ -10,13 +10,13 @@
 #
 # Usage:
 #   ./run.sh <googleaistudio|deepseek|kimi|chatgpt|claude|\
-#            googlegemini|all> [args...]                       # start
+#            googlegemini|antigravity|all> [args...]                       # start
 #   ./run.sh progress                                             # PID + log tail
 #   ./run.sh stop                                                 # stop + its Chrome
 #
 # Examples:
 #   ./run.sh googleaistudio              # background update of AI Studio
-#   ./run.sh all --rebuild               # rebuild all six providers
+#   ./run.sh all --rebuild               # rebuild every provider
 #   ./run.sh deepseek "latex" --log      # title-filtered, full log
 #   ./run.sh progress                    # how is it going?
 #
@@ -81,10 +81,10 @@ cmd_stop() {
 }
 
 case "${1:-}" in
-    googleaistudio|deepseek|kimi|chatgpt|claude|googlegemini|all)
+    googleaistudio|deepseek|kimi|chatgpt|claude|googlegemini|antigravity|all)
         cmd_start "$@" ;;
     progress)          cmd_progress ;;
     stop)              cmd_stop ;;
-    *) echo "usage: $0 {googleaistudio|deepseek|kimi|chatgpt|claude|googlegemini|all [args...]|progress|stop}"
+    *) echo "usage: $0 {googleaistudio|deepseek|kimi|chatgpt|claude|googlegemini|antigravity|all [args...]|progress|stop}"
        echo "  e.g. ./run.sh googleaistudio --rebuild | ./run.sh all | ./run.sh progress | ./run.sh stop"; exit 1 ;;
 esac

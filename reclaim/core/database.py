@@ -37,6 +37,7 @@ PROVIDER_DIRS = {
     'chatgpt': 'ChatGPT',
     'claude': 'Claude',
     'googlegemini': 'Google Gemini',
+    'antigravity': 'Google Antigravity',
 }
 # Files that do not make a folder "non-empty": sync tools, file managers, locks.
 _IGNORABLE = {'.stfolder', '.stignore', '.DS_Store', 'desktop.ini', 'Thumbs.db',

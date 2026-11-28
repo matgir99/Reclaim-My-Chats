@@ -16,9 +16,12 @@ reclaim gui                              launch the desktop application
 reclaim --version                        version derived from Git tags
 ```
 
-The six native provider names are `googleaistudio`, `deepseek`, `kimi`,
-`chatgpt`, `claude`, and `googlegemini`. Common options are `--rebuild`,
-`--dry-run`, `--list`, `--log`, `--skip N`, `--limit N`, `--no-raw`,
+The seven provider names are `googleaistudio`, `deepseek`, `kimi`,
+`chatgpt`, `claude`, `googlegemini`, and `antigravity`. The last reads
+Antigravity's conversations from this computer and never opens a browser;
+its `--url` takes a conversation id (or the path of its `.db` file). Common
+options are `--rebuild`, `--dry-run`, `--list`, `--log`, `--skip N`,
+`--limit N`, `--no-raw`,
 `--only-id ID` (repeatable to merge selected chats), and
 `-o/--output-dir`. A `TITLE` match or `--url URL` fetches only matching chats
 freshly. Default mode fetches new and changed chats according to the local

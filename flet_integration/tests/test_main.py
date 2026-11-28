@@ -9,8 +9,11 @@ async def test_opens_and_shows_every_provider(flet_app: ftt.FletTestApp):
     tester = flet_app.tester
     await tester.pump_and_settle()
     for provider in ('chatgpt', 'claude', 'googlegemini', 'googleaistudio',
-                     'deepseek', 'kimi'):
+                     'deepseek', 'kimi', 'antigravity'):
         assert (await tester.find_by_key(f'provider-{provider}')).count == 1
+    # main.py points Antigravity at a folder that does not exist.
+    assert (await tester.find_by_text('Not found on this computer')).count == 1
+    assert (await tester.find_by_text('Check')).count == 1
     assert (await tester.find_by_key('archive-path')).count == 1
     assert (await tester.find_by_text('0 chats in the database')).count == 1
 

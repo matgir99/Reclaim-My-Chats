@@ -843,7 +843,7 @@ class TestDispatch(unittest.TestCase):
         self.assertEqual(
             cli.ALL_PROVIDERS,
             ['googleaistudio', 'deepseek', 'kimi', 'chatgpt',
-             'claude', 'googlegemini'])
+             'claude', 'googlegemini', 'antigravity'])
 
     def test_configure_stdio_forces_utf8_on_wrapped_streams(self):
         import reclaim.__main__ as cli

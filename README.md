@@ -1,8 +1,8 @@
 # Reclaim My Chats
 
 Reclaim My Chats saves conversations from ChatGPT, Claude, Google Gemini,
-Google AI Studio, DeepSeek, and Kimi as local Markdown, JSON, and downloaded
-media. It has a desktop synchronization manager and a full command line
+Google AI Studio, DeepSeek, Kimi, and Google Antigravity (the desktop app and
+its VS Code extension) as local Markdown, JSON, and downloaded media. It has a desktop synchronization manager and a full command line
 interface (CLI). Your chats are saved in a local database: a folder on your
 computer, or one you choose.
 
@@ -84,6 +84,7 @@ reclaim googlegemini --rebuild        # fetch every Gemini chat again
 reclaim googleaistudio "latex"       # one title match
 reclaim deepseek --list               # list titles without saving
 reclaim kimi --url CHAT_URL           # one exact chat
+reclaim antigravity                   # Antigravity conversations on this computer
 reclaim all                           # update enabled providers in one browser session
 reclaim status                        # inspect the local database offline
 ```
@@ -108,6 +109,32 @@ Run `reclaim <provider> --help` for `--skip`, `--limit`, `--log`, `--no-raw`,
 `--only-id`, and `-o/--output-dir`. Single provider commands run even if that
 provider is disabled in settings; `reclaim all` uses the configured provider
 list.
+
+### Google Antigravity
+
+Antigravity (the desktop app, its Visual Studio Code extension, and its `agy`
+command line) keeps its conversations on your computer, in
+`~/.gemini/antigravity` (`%USERPROFILE%\.gemini\antigravity` on Windows).
+Reclaim My Chats reads them from there: no browser and no login, and nothing
+in that folder is changed. Its row in the window has **Check** instead of
+**Log in**; the check counts the conversations it finds. When the settings
+name no providers, Antigravity is included only if that folder exists, so
+computers without it are not affected. Set `RECLAIM_ANTIGRAVITY_DIR` if
+Antigravity keeps them somewhere else.
+
+Each conversation is saved with your messages and the agent's replies, one
+line for each action the agent took as Antigravity shows it (for example
+*Ran check git status* or *Edited `main.py` (+3 −1)*), the plans it put up
+for approval, its questions with your answers, and the files it wrote as
+artifacts (plans, reports). The agent's thinking is left out, as for the other
+providers. Antigravity projects become project folders, and the source line
+says which client the conversation came from. A conversation started by
+another one (a subagent) is saved too, titled as Antigravity shows it, with
+the instructions it received and the report it sent back. When a conversation
+disappears from Antigravity's folder (deleted in Antigravity, or by
+`agy conversations clean`), its saved copy moves to `_Deleted/`. Conversations
+that early versions of the desktop app saved as encrypted `.pb` files cannot
+be read; a run reports how many there are.
 
 See the [provider compatibility review](docs/UPSTREAM_REVIEW.md) for current
 format support, upstream sources, and limits on older or very long histories, and
@@ -187,7 +214,8 @@ automatically (off by default; an older copy is removed only when everything it
 says is in the current copy). Desktop notifications are sent when merges
 complete unless `RECLAIM_NO_NOTIFY=1` is set. Environment variables
 (`RECLAIM_KIMI_URL`, `RECLAIM_CHROME_PATH`, `RECLAIM_LOGIN_TIMEOUT`)
-remain available as overrides. Do not open two Reclaim processes with the same
+remain available as overrides, and `RECLAIM_ANTIGRAVITY_DIR` names
+Antigravity's folder. Do not open two Reclaim processes with the same
 profile simultaneously.
 
 For manual configuration (settings version 2; the `archive` key names the
@@ -255,7 +283,8 @@ PyInstaller and does not need that Flutter toolchain. A packaged executable
 must also be launched outside the development environment as a separate
 smoke test.
 
-The six native provider modules share browser, manifest, and writer code in
+The seven provider modules (six web services read through the browser, and
+Antigravity read from files on this computer) share manifest and writer code in
 `reclaim/core`. The CLI and Flet GUI use the same `ArchiveController`; the GUI
 runs its blocking provider work in a worker thread. See [architecture](docs/ARCHITECTURE.md).
 

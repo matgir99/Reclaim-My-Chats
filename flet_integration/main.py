@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import os
 import tempfile
 import time
 from pathlib import Path
 
 import flet as ft
 
+from reclaim.core import config, database
 from reclaim.core.events import ProgressEvent
 from reclaim.core.service import RunSummary
 from reclaim.gui import ReclaimWindow
@@ -58,6 +60,12 @@ class FakeController:
 
 async def main(page: ft.Page) -> None:
     root = Path(tempfile.mkdtemp(prefix='reclaim-flet-test-'))
+    # The same on every computer: no Antigravity folder, so its row is off.
+    os.environ['RECLAIM_ANTIGRAVITY_DIR'] = str(root / 'no-antigravity')
+    # An empty database, so no first-run banner: the test surface is 720 pixels
+    # high whatever the window size, and the remote tester cannot scroll, so
+    # the run buttons below seven provider rows must fit without it.
+    database.init(config.default_archive(root))
     window = ReclaimWindow(page, root, FakeController())
     await window.refresh_archive()
 
