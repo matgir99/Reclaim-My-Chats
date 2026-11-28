@@ -13,6 +13,20 @@ from reclaim.core.events import ProgressEvent
 from reclaim.core.service import RunSummary
 from reclaim import gui
 
+_ANTIGRAVITY = tempfile.TemporaryDirectory()
+_ANTIGRAVITY_ENV = patch.dict('os.environ', {'RECLAIM_ANTIGRAVITY_DIR': _ANTIGRAVITY.name})
+
+
+def setUpModule():
+    # Every computer the same: Antigravity is present, so all seven providers are on.
+    (Path(_ANTIGRAVITY.name) / 'conversations').mkdir(exist_ok=True)
+    _ANTIGRAVITY_ENV.start()
+
+
+def tearDownModule():
+    _ANTIGRAVITY_ENV.stop()
+    _ANTIGRAVITY.cleanup()
+
 
 class _Window:
     on_event: Any = None
