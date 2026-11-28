@@ -15,7 +15,7 @@ Usage:
   reclaim tidy [--apply] [-o DIR]          preview or retire duplicate chat folders
   reclaim unlock                           remove a lock left by a run that has ended
   reclaim gui                              launch the desktop application
-  reclaim all [options]                    update all six providers, in order
+  reclaim all [options]                    update every provider, in order
   reclaim all --rebuild                    rebuild all providers
   reclaim --version                        print version
   reclaim import kept VAULT [--providers kimi,claude] [-o DIR]
@@ -24,8 +24,8 @@ Usage:
   reclaim parse  googleaistudio --from-folder DIR [--titles MAP.json] [-o DIR]
   reclaim export haevn-md . chats.zip
 
-Providers: googleaistudio, deepseek, kimi, chatgpt, claude, googlegemini
-(all = every provider). Common options: --skip N, --limit N, --dry-run,
+Providers: googleaistudio, deepseek, kimi, chatgpt, claude, googlegemini,
+antigravity (all = every provider). Common options: --skip N, --limit N, --dry-run,
 --no-raw, -o/--output-dir.
 Output has exactly two levels: default = essential info + summary only;
 --log = full per-chat log + progress/ETA (failures always print).
@@ -38,6 +38,7 @@ Examples:
   reclaim chatgpt --dry-run               # preview, nothing downloaded
   reclaim claude --dry-run                # preview Claude, nothing downloaded
   reclaim googlegemini --list             # list Gemini chat titles
+  reclaim antigravity                     # Antigravity conversations on this computer
   reclaim status                          # offline database overview
 """
 
@@ -55,6 +56,7 @@ PROVIDERS = {
     'chatgpt': 'reclaim.providers.chatgpt',
     'claude': 'reclaim.providers.claude',
     'googlegemini': 'reclaim.providers.googlegemini',
+    'antigravity': 'reclaim.providers.antigravity',
 }
 ALL_PROVIDERS = list(PROVIDERS)
 PARSERS = {
@@ -233,7 +235,7 @@ def _capture(rest: list[str]) -> int:
         prog='reclaim capture',
         description='Record one chat’s provider responses with the chat’s text replaced, '
                     'for a bug report or test fixture.')
-    ap.add_argument('provider', choices=ALL_PROVIDERS,
+    ap.add_argument('provider', choices=[p for p in ALL_PROVIDERS if service.uses_browser(p)],
                     help='provider that owns the chat')
     ap.add_argument('url', help='URL of the chat to capture')
     ap.add_argument('-o', '--output', metavar='FILE',

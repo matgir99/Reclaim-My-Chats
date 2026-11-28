@@ -209,6 +209,50 @@ its chat organization; its API-console organization has no chats (HTTP 403).
 ChatGPT archives saved before this change need **one rebuild** to remove
 the markers: `reclaim chatgpt --rebuild`, or Rebuild in the GUI.
 
+## Google Antigravity
+
+Added in November 2026 from Antigravity's own files; no upstream project
+was used. Antigravity's desktop app, its VS Code extension
+(`google.google-antigravity` 1.13.0) and its `agy` command line (1.5.19) share
+one folder, `~/.gemini/antigravity`:
+
+| Path | Holds |
+|:--|:--|
+| `conversations/<id>.db` | SQLite, one file per conversation: `steps` (one row per step: `idx`, `step_type`, and the step as a protobuf `gemini_coder.Step` in `step_payload`) and `trajectory_meta` (`source`: 22 VS Code, 17 CLI) |
+| `conversation_summaries.db` | `conversation_summaries`: title, `project_id`, `parent_conversation_id` and `agent_name` (subagents) |
+| `annotations/<id>.pbtxt` | Protobuf text with the `title` Antigravity shows, also after a rename |
+| `brain/<id>/` | The agent's artifacts at the top; `.system_generated/` holds Antigravity's own logs |
+| `../config/projects/<id>.json` | Project `id` and `name` |
+
+The step schema is not published. `agy` (a Go program) embeds its protobuf
+file descriptors, which give every message and field name and number; the
+numbers the reader uses are listed at the top of
+`reclaim/providers/antigravity_steps.py`. To check them after an Antigravity
+update, extract the descriptors (search the binary for serialized
+`FileDescriptorProto`s, which start with a field 1 holding a name ending in
+`.proto`) and look up `gemini_coder.Step`. The plain-text transcript in
+`brain/<id>/.system_generated/logs/transcript_full.jsonl` is not used: it is
+an append-only log that keeps steps undone by a rewind and can miss the last
+steps, while `steps` is the conversation as Antigravity shows it.
+
+Verified read-only on 28 November 2026 against 17 conversations of the VS
+Code extension (4,804 steps). They held six step types: user input,
+planner response (reply, thinking, tool calls), generic tool steps with
+Antigravity's display line (`step_render_info`: "Ran", "Analyzed", "Edited"
+with file and line counts), error messages (quota), checkpoints, and system
+messages (reminders, plan-mode switches, messages between agents). Five were
+`research` subagents, whose instructions arrive as an `agent_message` system
+step and whose report leaves as a `send_message` tool call. All 17 were saved,
+a second update saved nothing, and a conversation removed from a copy of the
+folder was filed under `_Deleted/`.
+
+Not verified: the desktop app (not installed on the test computer; it writes
+the same store through the same agent server), conversations made with the
+`agy` command line (none existed), images in messages (decoded from the
+schema's `ImageData` and `Media` fields, none in the data), and the encrypted
+`.pb` files of early desktop app versions, which are counted and reported,
+never read.
+
 ## Weekly check
 
 `scripts/upstream_watch.py` compares every project linked above with the

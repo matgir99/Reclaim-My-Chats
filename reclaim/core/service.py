@@ -31,7 +31,8 @@ ALL_PROVIDERS = list(PROVIDER_DIRS)
 
 def provider_module(name: str):
     """Explicit imports keep every provider visible to PyInstaller."""
-    from ..providers import chatgpt, claude, deepseek, googleaistudio, googlegemini, kimi
+    from ..providers import (antigravity, chatgpt, claude, deepseek, googleaistudio,
+                             googlegemini, kimi)
     return {
         'googleaistudio': googleaistudio,
         'deepseek': deepseek,
@@ -39,7 +40,53 @@ def provider_module(name: str):
         'chatgpt': chatgpt,
         'claude': claude,
         'googlegemini': googlegemini,
+        'antigravity': antigravity,
     }[name]
+
+
+def uses_browser(name: str) -> bool:
+    """False for a provider that reads files on this computer (no browser, no login)."""
+    spec = getattr(provider_module(name), 'SPEC', None)
+    return bool(getattr(spec, 'uses_browser', True))
+
+
+class _Browser:
+    """The run's browser, opened when the first provider that needs it starts."""
+
+    def __init__(self, root: Path, profile: Path | None):
+        self.root, self.profile = root, profile
+        self._stack = ExitStack()
+        self._ctx = None
+        self.page = None
+        self.failed = False
+
+    def __enter__(self) -> _Browser:
+        return self
+
+    def get(self):
+        """The page, launching the browser first, or replacing a tab that failed."""
+        if self.page is None:
+            from playwright.sync_api import sync_playwright  # imported only when needed
+            if self.profile is None:
+                raise RuntimeError('no login data folder was locked for this run')
+            playwright = self._stack.enter_context(sync_playwright())
+            self._ctx, self.page = browser.launch(playwright, profile_dir=self.profile,
+                                                  root=self.root)
+        elif self.failed:
+            self.page = browser.replace_failed_page(self.page)
+        self.failed = False
+        return self.page
+
+    def closed(self) -> bool:
+        return self.page is not None and browser._page_closed(self.page)
+
+    def __exit__(self, *exc) -> None:
+        try:
+            if self._ctx is not None:
+                browser.clear_active_page()
+                self._ctx.close()
+        finally:
+            self._stack.close()
 
 
 @dataclass(frozen=True)
@@ -136,6 +183,9 @@ class ArchiveController:
         """Fetch one chat by URL and save its sanitized responses (see capture.py)."""
         if provider not in PROVIDER_DIRS:
             raise ValueError(f'unknown provider: {provider}')
+        if not uses_browser(provider):
+            raise ValueError(f'{PROVIDER_DIRS[provider]} chats are read from files on this '
+                             'computer, so there are no responses to capture')
         url = url.strip()
         if not url:
             raise ValueError('enter a chat URL')
@@ -173,8 +223,9 @@ class ArchiveController:
                  sink: EventSink | None, roots: set[Path], *, readonly: bool) -> RunSummary:
         """The checks every run passes, in this order: open the log and route
         the events; check each database folder; lock the login data folder
-        (one browser per profile); for runs that write, lock each database
-        and only then mark one made by an earlier version. Then run."""
+        (one browser per profile) when a provider needs the browser; for runs
+        that write, lock each database and only then mark one made by an
+        earlier version. Then run."""
         self._stop.clear()
         label = f'{mode} {", ".join(chosen)}'
         with ExitStack() as stack:
@@ -185,8 +236,10 @@ class ArchiveController:
             for db in sorted(roots):
                 database.prepare(db, create=_may_create(self.root, db), readonly=readonly,
                                  adopt_legacy=False)
-            profile = config.profile_root(self.root)
-            stack.enter_context(locks.hold(profile, 'browser'))
+            profile = None
+            if any(uses_browser(name) for name in chosen):
+                profile = config.profile_root(self.root)
+                stack.enter_context(locks.hold(profile, 'browser'))
             if not readonly:
                 for db in sorted(roots):
                     stack.enter_context(locks.hold(db, 'update'))
@@ -195,28 +248,22 @@ class ArchiveController:
         raise AssertionError('unreachable')  # ExitStack never suppresses here
 
     def _run_providers(self, chosen: list[str], parsed: dict, mode: str,
-                       sink: EventSink, profile: Path) -> RunSummary:
-        """All chosen providers in one browser window, one after another."""
-        from playwright.sync_api import sync_playwright  # imported only when a run starts
+                       sink: EventSink, profile: Path | None) -> RunSummary:
+        """All chosen providers one after another, those that need a browser
+        in one browser window (opened when the first of them starts)."""
         from . import engine
 
         emit(sink, 'run_started', total=len(chosen), message=mode)
         codes: list[tuple[str, int]] = []
-        with sync_playwright() as playwright, engine.stoppable(self._stop):
-            ctx, page = browser.launch(playwright, profile_dir=profile, root=self.root)
-            reset_page = False
-            try:
-                for index, name in enumerate(chosen, 1):
-                    if index > 1 and (self._stop.is_set() or browser._page_closed(page)):
-                        break
-                    if reset_page:
-                        page = browser.replace_failed_page(page)
-                    code, reset_page = self._run_one(name, parsed[name], mode, sink,
-                                                     page, index, len(chosen))
-                    codes.append((name, code))
-            finally:
-                browser.clear_active_page()
-                ctx.close()
+        with _Browser(self.root, profile) as pages, engine.stoppable(self._stop):
+            for index, name in enumerate(chosen, 1):
+                if index > 1 and (self._stop.is_set() or pages.closed()):
+                    break
+                page = pages.get() if uses_browser(name) else None
+                code, failed = self._run_one(name, parsed[name], mode, sink,
+                                             page, index, len(chosen))
+                pages.failed = pages.failed or failed
+                codes.append((name, code))
         summary = RunSummary(tuple(codes))
         emit(sink, 'run_completed', current=len(chosen), total=len(chosen),
              message=f'exit {summary.exit_code}')

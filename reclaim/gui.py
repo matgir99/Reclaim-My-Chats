@@ -20,7 +20,8 @@ else:
 
 from .core import autostart, browser, config, database, doctor, lifecycle, locks, logs, releases, render, status, tidy
 from .core.events import EventSink, ProgressEvent
-from .core.service import ALL_PROVIDERS, ArchiveController, BusyOperationError, RunSummary
+from .core.service import (ALL_PROVIDERS, ArchiveController, BusyOperationError, RunSummary,
+                           uses_browser)
 
 DISPLAY_NAMES = {
     'googleaistudio': 'Google AI Studio',
@@ -29,6 +30,7 @@ DISPLAY_NAMES = {
     'chatgpt': 'ChatGPT',
     'claude': 'Claude',
     'googlegemini': 'Google Gemini',
+    'antigravity': 'Google Antigravity',
 }
 # Events about one chat: they move the progress bar and the status line.
 CHAT_PROGRESS = frozenset({'chat_started', 'chat_skipped', 'chat_completed',
@@ -139,7 +141,9 @@ class ReclaimWindow:
         self._run_events: list[ProgressEvent] = []
         self._live_results: list[doctor.Check] = []
         self._captured_path: Path | None = None
-        self._capture_provider = self.enabled[0] if self.enabled else ALL_PROVIDERS[0]
+        capturable = [name for name in ALL_PROVIDERS if uses_browser(name)]
+        self._capture_provider = next((name for name in self.enabled if name in capturable),
+                                      capturable[0])
         self._capture_url = ''
         self._running = False
         self._stopping = False
@@ -191,7 +195,9 @@ class ReclaimWindow:
                                     padding=6, border_radius=12)
             text = ft.Text('Loading' if enabled else 'Disabled in settings',
                            key=f'provider-status-{name}', expand=True)
-            login_btn = ft.TextButton('Log in', on_click=self._make_provider_action(name, 'check'),
+            # A provider that reads files on this computer has no login: its live check lists them.
+            login_btn = ft.TextButton('Log in' if uses_browser(name) else 'Check',
+                                      on_click=self._make_provider_action(name, 'check'),
                                       key=f'provider-login-{name}', disabled=not enabled)
             review_btn = ft.TextButton('Review', on_click=self._make_provider_action(name, 'dry-run'),
                                        key=f'provider-review-{name}', disabled=not enabled)
@@ -860,7 +866,7 @@ class ReclaimWindow:
         provider_field = ft.Dropdown(
             label='Provider', value=self._capture_provider, width=210,
             options=[ft.DropdownOption(key=name, text=DISPLAY_NAMES[name])
-                     for name in ALL_PROVIDERS],
+                     for name in ALL_PROVIDERS if uses_browser(name)],
             key='capture-provider')
         url_field = ft.TextField(label='Chat URL', value=self._capture_url,
                                  expand=True, key='capture-url')

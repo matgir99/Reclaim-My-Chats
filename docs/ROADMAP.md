@@ -290,3 +290,30 @@ Decided on 20 November 2026 not to build for now:
   (the project's chats are saved inside that chat's folder). Moves and
   permanent deletes already leave the other chats alone ([output](OUTPUT.md)),
   and changing the layout would change where existing databases keep files.
+
+## Google Antigravity (November 2026)
+
+Goal: Antigravity's agent conversations (the desktop app and its VS Code
+extension) are saved like the other providers' chats, in the window and on
+the command line.
+
+- [x] A provider that reads Antigravity's folder on this computer, with no
+      browser and no login: titles as Antigravity shows them, projects as
+      folders, the client in the Source line, replies with one line per agent
+      action, plans, questions and answers, artifacts as files, subagents as
+      their own chats, and `_Deleted/` for a conversation Antigravity no
+      longer has ([format notes](UPSTREAM_REVIEW.md#google-antigravity)).
+- [x] Runs open the browser only for providers that need it; a run of only
+      Antigravity takes no lock on the login data folder.
+- [ ] Check the desktop app and the `agy` command line on a computer that has
+      them (only the VS Code extension's conversations have been read).
+
+Decided on 28 November 2026 not to build for now:
+
+- Tool output in the Markdown. Commands' output and file contents can be
+  megabytes per conversation; each action keeps its one-line summary, and
+  `raw.json` keeps the first 20,000 characters of each output.
+- Reading the encrypted `.pb` conversations of early desktop app versions.
+  A run says how many there are.
+- A window setting for Antigravity's folder. It is the same on every system;
+  `RECLAIM_ANTIGRAVITY_DIR` covers the exception.

@@ -9,7 +9,7 @@ async def test_opens_and_shows_every_provider(flet_app: ftt.FletTestApp):
     tester = flet_app.tester
     await tester.pump_and_settle()
     for provider in ('chatgpt', 'claude', 'googlegemini', 'googleaistudio',
-                     'deepseek', 'kimi'):
+                     'deepseek', 'kimi', 'antigravity'):
         assert (await tester.find_by_key(f'provider-{provider}')).count == 1
     assert (await tester.find_by_key('archive-path')).count == 1
     assert (await tester.find_by_text('0 chats in the database')).count == 1
@@ -24,7 +24,7 @@ async def test_update_selected_and_dry_run(flet_app: ftt.FletTestApp):
     await tester.pump_and_settle()
     assert (await tester.find_by_text(
         'Update completed successfully · Google AI Studio: ok, DeepSeek: ok, '
-        'ChatGPT: ok, Claude: ok, Google Gemini: ok')).count == 1
+        'ChatGPT: ok, Claude: ok, Google Gemini: ok, Google Antigravity: ok')).count == 1
     await tester.tap(await tester.find_by_key('dry-run'))
     await asyncio.sleep(0.5)
     await tester.pump_and_settle()
