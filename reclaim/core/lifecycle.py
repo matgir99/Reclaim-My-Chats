@@ -11,7 +11,7 @@ from pathlib import Path
 
 from . import database, writer
 from .engine import ChatRef, Provider, is_listing_complete
-from .fsutil import atomic_write_text
+from .fsutil import atomic_write_text, windows_retry_op
 from .manifest import SyncState
 
 ARCHIVED_DIR = '_Archived'
@@ -93,7 +93,7 @@ def _move_chat_files(old_dir: Path, target_dir: Path) -> None:
             'Rename or move them, then try again.')
     target_dir.mkdir(parents=True, exist_ok=True)
     for entry in sorted(files, key=lambda path: path.name == writer.CHAT_JSON):
-        entry.rename(target_dir / entry.name)
+        windows_retry_op(lambda src=entry, dst=target_dir / entry.name: src.rename(dst))
     with contextlib.suppress(OSError):  # not empty: subfolders stay in the old place
         old_dir.rmdir()
 
@@ -108,7 +108,7 @@ def _relocate_chat_folder(old_dir: Path, target_dir: Path) -> None:
     if target_dir.exists() or _has_subfolders(old_dir):
         _move_chat_files(old_dir, target_dir)
     else:
-        old_dir.rename(target_dir)
+        windows_retry_op(lambda: old_dir.rename(target_dir))
 
 
 def _existing_target(old_dir: Path, target_dir: Path, chat_id: str) -> Path:

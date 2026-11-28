@@ -117,10 +117,14 @@ def read_holder(path: Path) -> dict | None:
     return _parse(text)
 
 
+def _held_key(lock: Path) -> str:
+    return os.path.normcase(os.path.abspath(lock))
+
+
 def held_here(path: Path) -> bool:
     """True when a process on this computer holds the lock right now."""
     lock = Path(path) / LOCK_NAME
-    if str(lock) in _held:
+    if _held_key(lock) in _held:
         return True
     try:
         fd = os.open(lock, os.O_RDWR)
@@ -141,9 +145,10 @@ def acquire(path: Path, purpose: str) -> dict:
     # A new login data folder must stay private, as browser.launch makes it.
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
     lock = path / LOCK_NAME
+    key = _held_key(lock)
     fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
     try:
-        if str(lock) in _held or not _try_lock(fd):
+        if key in _held or not _try_lock(fd):
             raise LockedError(path, read_holder(path) or {}, removable=False, here=True)
         previous = _read_fd(fd)
         if previous and previous.get('host') not in (None, socket.gethostname()):
@@ -157,13 +162,13 @@ def acquire(path: Path, purpose: str) -> dict:
     except BaseException:
         os.close(fd)
         raise
-    _held[str(lock)] = (fd, mine['token'])
+    _held[key] = (fd, mine['token'])
     return mine
 
 
 def release(path: Path, mine: dict) -> None:
     """Give the lock back: empty the file, then release the operating-system lock."""
-    entry = _held.pop(str(Path(path) / LOCK_NAME), None)
+    entry = _held.pop(_held_key(Path(path) / LOCK_NAME), None)
     if entry is None:
         return
     fd, token = entry
@@ -188,7 +193,7 @@ def remove(path: Path) -> dict | None:
     lock = Path(path) / LOCK_NAME
     fd = os.open(lock, os.O_RDWR)
     try:
-        if str(lock) in _held or not _try_lock(fd):
+        if _held_key(lock) in _held or not _try_lock(fd):
             raise LockedError(path, holder, removable=False, here=True)
         try:
             _write_fd(fd, '')

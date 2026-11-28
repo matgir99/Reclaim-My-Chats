@@ -195,6 +195,15 @@ def _ref_sources(ref: dict) -> list[dict]:
     return _dedupe(sources)
 
 
+def _writing_block(data: dict) -> str:
+    content = _str(data.get('content')).strip()
+    subject = _str(data.get('subject')).strip()
+    if not subject:
+        return content
+    heading = f'**{_escape_text(subject)}**'
+    return f'{heading}\n\n{content}' if content else heading
+
+
 def _inline(ref: dict) -> str:
     """What ChatGPT displays in place of one content reference."""
     kind = ref.get('type')
@@ -202,8 +211,11 @@ def _inline(ref: dict) -> str:
         return ''
     if kind == 'client_defined_widget':
         data = _dict(ref.get('data'))
-        if data.get('widget_type') == 'charts_widget_v2':
+        widget_type = data.get('widget_type')
+        if widget_type == 'charts_widget_v2':
             return _chart(data.get('content'))
+        if widget_type == 'writing_block':
+            return _writing_block(data)
     if kind == 'url':
         return _url_ref(ref)
     if kind == 'entity':

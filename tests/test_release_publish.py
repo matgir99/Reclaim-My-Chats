@@ -1,9 +1,11 @@
 """Published downloads are immutable; incomplete drafts can be resumed."""
 
 import hashlib
+import importlib.util
 import json
 import os
 import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -124,6 +126,9 @@ class TestDesktopPackaging(unittest.TestCase):
         exe = app_dir / 'ReclaimMyChats'
         exe.write_text('#!/bin/sh\necho "hello:$1"\n', encoding='utf-8')
         exe.chmod(0o755)
+        client = app_dir / '_internal' / 'flet_desktop' / 'app' / 'flet' / 'flet'
+        client.parent.mkdir(parents=True)
+        client.write_text('#!/bin/sh\n', encoding='utf-8')
         desktop = self.root / f'{pack_desktop.BUNDLE_ID}.desktop'
         desktop.write_text('[Desktop Entry]\nExec=/tmp/build/ReclaimMyChats\nIcon=/tmp/icon\n',
                            encoding='utf-8')
@@ -180,6 +185,9 @@ class TestDesktopPackaging(unittest.TestCase):
         win_app = self.root / 'win-app'
         win_app.mkdir()
         (win_app / 'ReclaimMyChats.exe').write_bytes(b'MZ-stub')
+        win_client = win_app / '_internal' / 'flet_desktop' / 'app' / 'flet' / 'flet.exe'
+        win_client.parent.mkdir(parents=True)
+        win_client.write_bytes(b'MZ-flet')
         iss = pack_desktop.write_inno_script(
             win_app, icons['ico'], '3.3.5',
             out / 'Reclaim-My-Chats-3.3.5-windows-x86_64-setup.exe',
@@ -187,6 +195,7 @@ class TestDesktopPackaging(unittest.TestCase):
         )
         script_text = iss.read_text(encoding='utf-8')
         self.assertIn('PrivilegesRequired=lowest', script_text)
+        self.assertIn('runasoriginaluser', script_text)
         self.assertIn(r'Software\Microsoft\Windows\CurrentVersion\Run', script_text)
         self.assertIn('ValueName: "ReclaimMyChats"', script_text)
 
@@ -213,3 +222,118 @@ class TestDesktopPackaging(unittest.TestCase):
         with patch.object(verify_desktop_artifacts, 'MIN_SIZE', 10):
             found = verify_desktop_artifacts.verify(out, '3.3.5')
         self.assertEqual(len(found), 9)
+
+    def test_unpack_bundled_flet_client_windows_and_linux(self):
+        win_dir = self.root / 'win'
+        win_app = win_dir / '_internal' / 'flet_desktop' / 'app'
+        win_app.mkdir(parents=True)
+        with self.assertRaisesRegex(RuntimeError, 'not found'):
+            pack_desktop.unpack_bundled_flet_client(win_dir, 'windows')
+
+        evil_zip = win_app / 'flet-windows.zip'
+        with zipfile.ZipFile(evil_zip, 'w') as zf:
+            zf.writestr('../evil.txt', 'bad')
+        with self.assertRaisesRegex(RuntimeError, 'unsafe zip entry'):
+            pack_desktop.unpack_bundled_flet_client(win_dir, 'windows')
+
+        with zipfile.ZipFile(evil_zip, 'w') as zf:
+            zf.writestr('flet/flet.exe', 'exe')
+        (win_app / 'flet-windows.zip.sha256').write_text('abc 123', encoding='utf-8')
+        (win_app / '.last-used').write_text('', encoding='utf-8')
+        client = pack_desktop.unpack_bundled_flet_client(win_dir, 'windows')
+        self.assertTrue((client / 'flet.exe').is_file())
+        self.assertFalse(evil_zip.exists())
+        self.assertFalse((win_app / 'flet-windows.zip.sha256').exists())
+        self.assertFalse((win_app / '.last-used').exists())
+
+        linux_dir = self.root / 'linux'
+        linux_app = linux_dir / '_internal' / 'flet_desktop' / 'app'
+        linux_app.mkdir(parents=True)
+        stage_flet = self.root / 'stage-flet' / 'flet'
+        stage_flet.mkdir(parents=True)
+        (stage_flet / 'flet').write_text('#!/bin/sh\n', encoding='utf-8')
+        tar_path = linux_app / 'flet-linux-ubuntu22.04-x86_64.tar.gz'
+        with tarfile.open(tar_path, 'w:gz') as tf:
+            tf.add(stage_flet, arcname='flet')
+        (linux_app / f'{tar_path.name}.sha256').write_text('abc 123', encoding='utf-8')
+        linux_client = pack_desktop.unpack_bundled_flet_client(linux_dir, 'linux')
+        self.assertTrue((linux_client / 'flet').is_file())
+        self.assertFalse(tar_path.exists())
+        self.assertFalse((linux_app / f'{tar_path.name}.sha256').exists())
+
+    def test_verify_desktop_artifacts_rejects_unpacked_missing_or_compressed_client(self):
+        win_zip = self.root / 'bad-win.zip'
+        with zipfile.ZipFile(win_zip, 'w') as zf:
+            zf.writestr('ReclaimMyChats/ReclaimMyChats.exe', b'MZ' + b'\x00' * 32)
+        with patch.object(verify_desktop_artifacts, 'MIN_SIZE', 10):
+            with self.assertRaisesRegex(ValueError, 'missing unpacked Flet client'):
+                verify_desktop_artifacts._verify_windows_zip(win_zip)
+
+        with zipfile.ZipFile(win_zip, 'w') as zf:
+            zf.writestr('ReclaimMyChats/ReclaimMyChats.exe', b'MZ')
+            zf.writestr('ReclaimMyChats/_internal/flet_desktop/app/flet/flet.exe', b'MZ')
+            zf.writestr('ReclaimMyChats/_internal/flet_desktop/app/flet-windows.zip', b'PK')
+        with patch.object(verify_desktop_artifacts, 'MIN_SIZE', 10):
+            with self.assertRaisesRegex(ValueError, 'compressed flet-windows.zip'):
+                verify_desktop_artifacts._verify_windows_zip(win_zip)
+
+        linux_tar = self.root / 'bad-linux.tar.gz'
+        dummy = self.root / 'dummy'
+        dummy.write_text('x', encoding='utf-8')
+        with tarfile.open(linux_tar, 'w:gz') as tf:
+            tf.add(dummy, arcname='ReclaimMyChats/ReclaimMyChats')
+            tf.add(dummy, arcname='ReclaimMyChats/org.reclaimmychats.app.desktop')
+            tf.add(dummy, arcname='ReclaimMyChats/_internal/flet_desktop/app/flet/flet')
+            tf.add(
+                dummy,
+                arcname='ReclaimMyChats/_internal/flet_desktop/app/flet-linux-ubuntu22.04-x86_64.tar.gz',
+            )
+        with patch.object(verify_desktop_artifacts, 'MIN_SIZE', 10):
+            with self.assertRaisesRegex(ValueError, 'compressed Flet client archive'):
+                verify_desktop_artifacts._verify_linux_tarball(linux_tar)
+
+    def test_desktop_main_configures_flet_view_path_when_frozen(self):
+        main_path = Path(__file__).resolve().parents[1] / 'desktop' / 'main.py'
+        spec = importlib.util.spec_from_file_location('reclaim_desktop_main', main_path)
+        assert spec is not None and spec.loader is not None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        meipass = self.root / '_internal'
+        exe_name = 'flet.exe' if os.name == 'nt' else 'flet'
+        client_dir = meipass / 'flet_desktop' / 'app' / 'flet'
+        client_dir.mkdir(parents=True)
+        (client_dir / exe_name).write_bytes(b'client')
+
+        with (patch.object(sys, 'frozen', True, create=True),
+              patch.object(sys, '_MEIPASS', str(meipass), create=True),
+              patch.dict(os.environ, {}, clear=True)):
+            mod._configure_frozen_env()
+            self.assertEqual(os.environ.get('FLET_VIEW_PATH'), str(client_dir))
+
+        with (patch.object(sys, 'frozen', True, create=True),
+              patch.object(sys, '_MEIPASS', str(meipass), create=True),
+              patch.dict(os.environ, {'FLET_VIEW_PATH': 'custom-view'}, clear=True)):
+            mod._configure_frozen_env()
+            self.assertEqual(os.environ.get('FLET_VIEW_PATH'), 'custom-view')
+
+    def test_build_macos_dmg_passes_explicit_megabytes_headroom(self):
+        app_bundle = self.root / 'ReclaimMyChats.app'
+        app_bundle.mkdir()
+        dmg_out = self.root / 'out' / 'Reclaim.dmg'
+        calls = []
+
+        def fake_run(cmd, check=False):
+            calls.append(cmd)
+            if cmd[0] == 'ditto':
+                Path(cmd[2]).mkdir(parents=True, exist_ok=True)
+                (Path(cmd[2]) / 'payload.bin').write_bytes(b'x' * 2048)
+
+        with (patch.object(pack_desktop.subprocess, 'run', side_effect=fake_run),
+              patch.object(pack_desktop.Path, 'symlink_to')):
+            pack_desktop.build_macos_dmg(app_bundle, dmg_out)
+        hdiutil_cmd = calls[-1]
+        self.assertEqual(hdiutil_cmd[0], 'hdiutil')
+        self.assertIn('-megabytes', hdiutil_cmd)
+        idx = hdiutil_cmd.index('-megabytes')
+        self.assertGreaterEqual(int(hdiutil_cmd[idx + 1]), 64)

@@ -40,6 +40,9 @@ _GET_JS = """async (args) => {
     let token;
     try { token = JSON.parse(localStorage.getItem('userToken') || '{}').value; }
     catch { /* handled below */ }
+    if (typeof token === 'string') {
+        token = token.trim().replace(/^(?:bearer\\s+)+/i, '').trim();
+    }
     if (typeof token !== 'string' || !token) throw new Error('DeepSeek login required');
     const response = await fetch(args.url, {
         credentials: 'include',
