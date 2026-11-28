@@ -247,14 +247,18 @@ def list_conversations(root: Path) -> tuple[list[Conversation], int]:
     return found, old
 
 
-def _artifacts(folder: Path) -> list[Attachment]:
-    files = []
+def _artifacts(folder: Path) -> tuple[list[Attachment], list[str]]:
+    """The agent's artifacts, and what went wrong with each one that could not be
+    read: that one is saved as a link to the file instead."""
+    files, unread = [], []
     for path in _artifact_files(folder):
-        with suppress(OSError):
-            files.append(Attachment(filename=path.name, data=path.read_bytes(),
-                                    kind='image' if path.suffix.lower() in _IMAGES
-                                    else 'document'))
-    return files
+        kind = 'image' if path.suffix.lower() in _IMAGES else 'document'
+        try:
+            files.append(Attachment(filename=path.name, data=path.read_bytes(), kind=kind))
+        except OSError as exc:
+            files.append(Attachment(filename=path.name, kind=kind, source_url=path.as_uri()))
+            unread.append(f'{path.name} ({exc.strerror or exc})')
+    return files, unread
 
 
 def _source(path: Path) -> str:
@@ -263,8 +267,9 @@ def _source(path: Path) -> str:
     return _SOURCES.get(int(row['source'] or 0) if row else 0, 'Antigravity')
 
 
-def read_chat(root: Path, conv: Conversation) -> tuple[Chat, dict, int]:
-    """The chat, its raw.json content, and how many artifacts it has."""
+def read_chat(root: Path, conv: Conversation,
+              ) -> tuple[Chat, dict, list[Attachment], list[str]]:
+    """The chat, its raw.json content, its artifacts, and those that could not be read."""
     steps = _read_steps(conv.path)
     source = _source(conv.path)
     transcript = Transcript(parent_id=conv.parent, parent_title=conv.parent_title)
@@ -279,7 +284,7 @@ def read_chat(root: Path, conv: Conversation) -> tuple[Chat, dict, int]:
     if steps and not any(t.text or t.images for t in turns):
         raise RuntimeError(f'Antigravity conversation {conv.id} has {len(steps)} steps but no '
                            'readable messages; its format may have changed')
-    artifacts = _artifacts(root / 'brain' / conv.id)
+    artifacts, unread = _artifacts(root / 'brain' / conv.id)
     if artifacts:
         turns.append(Turn(role='model', text='**Artifacts**', attachments=artifacts))
     chat = Chat(id=conv.id, title=conv.title or transcript.checkpoint_title or '(untitled)',
@@ -287,7 +292,8 @@ def read_chat(root: Path, conv: Conversation) -> tuple[Chat, dict, int]:
                 provider=PROVIDER, project=conv.project)
     meta = {k: str(v) if isinstance(v, Path) else v for k, v in asdict(conv).items()}
     meta['path'] = conv.path.name
-    return chat, {'conversation': {**meta, 'source': source}, 'steps': raw_steps}, len(artifacts)
+    raw = {'conversation': {**meta, 'source': source}, 'steps': raw_steps}
+    return chat, raw, artifacts, unread
 
 
 class Antigravity(engine.Provider):
@@ -345,9 +351,15 @@ class Antigravity(engine.Provider):
 
     def fetch(self, s, ref: engine.ChatRef) -> engine.Fetched:
         conv = ref.data if isinstance(ref.data, Conversation) else self.from_url(s, ref.id).data
-        chat, raw, artifacts = read_chat(s.root, conv)
-        return engine.Fetched(chat, raw=raw,
-                              detail=f'steps: {len(raw["steps"])} · artifacts: {artifacts}')
+        chat, raw, artifacts, unread = read_chat(s.root, conv)
+        version = None
+        if unread:  # saved with a link instead; a new version makes the next update retry
+            emit(None, 'warning', PROVIDER, chat.title, message=(
+                f'could not read artifact {", ".join(unread)}; a link to it was saved '
+                'instead, and the next update tries again'))
+            version = f'{ref.updated_at} · {len(unread)} artifact(s) not read'
+        return engine.Fetched(chat, raw=raw, version=version,
+                              detail=f'steps: {len(raw["steps"])} · artifacts: {len(artifacts)}')
 
     def confirm_status(self, s, chat_id: str) -> str:
         """'deleted' when the conversation's file is gone from Antigravity's folder."""

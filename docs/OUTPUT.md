@@ -98,7 +98,9 @@ a web address, for example `Antigravity for VS Code, conversation <id>`
 app). An assistant turn lists the agent's actions as italic bullet lines
 between its replies, and the agent's artifacts (the files at the top of the
 conversation's `brain/<id>/` folder in Antigravity, such as plans and reports)
-are saved in the chat's folder under a final **Artifacts** heading. `raw.json`
+are saved in the chat's folder under a final **Artifacts** heading. An
+artifact that cannot be read (no permission, or locked) is saved as a link to
+the file instead, with a warning, and the next update tries the chat again. `raw.json`
 holds every step decoded: its type, status and time, the text of messages and
 replies, the agent's thinking, tool names and arguments, and the first 20,000
 characters of each tool's output. Its `provider_updated_at` is the time of the

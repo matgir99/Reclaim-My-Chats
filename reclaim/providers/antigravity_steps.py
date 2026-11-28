@@ -23,6 +23,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import unquote, urlparse
+from urllib.request import url2pathname
 
 from ..core.model import Turn
 
@@ -240,10 +241,16 @@ def _questions(args: dict[str, str]) -> str:
 
 
 def _answers(step: Message) -> str:
-    """The user's answers to the agent's questions (lines `A1: ...` of the result)."""
+    """The user's answers to the agent's questions: from each `A1:` line of the
+    result up to the next one, so an answer over several lines is kept whole."""
     result = step.message(STEP_GENERIC).message(GENERIC_RESULT).text(RESULT_TEXT)
-    return '\n\n'.join(line.strip() for line in result.splitlines()
-                       if _ANSWER.match(line.strip()))
+    answers: list[list[str]] = []
+    for line in result.splitlines():
+        if _ANSWER.match(line.strip()):
+            answers.append([line.strip()])
+        elif answers:
+            answers[-1].append(line.rstrip())
+    return '\n\n'.join('\n'.join(answer).strip() for answer in answers)
 
 
 def tool_blocks(step: Message, parent_id: str = '') -> list[tuple[str, str]]:
@@ -286,9 +293,19 @@ def _decode_image(data: str) -> bytes:
         return b''
 
 
+def native_path(uri: str) -> str:
+    """The path a file URI names on this system (`file:///C:/x` is `C:\\x` on
+    Windows; a host is a network share); anything else is a path already."""
+    parsed = urlparse(uri)
+    if parsed.scheme != 'file':
+        return uri
+    host = parsed.netloc if parsed.netloc not in ('', 'localhost') else ''
+    return url2pathname(f'//{host}{parsed.path}' if host else parsed.path)
+
+
 def _read_uri(uri: str) -> bytes:
     """Bytes of a local file a message refers to (empty when it is gone)."""
-    path = Path(unquote(urlparse(uri).path)) if uri.startswith('file:') else Path(uri)
+    path = Path(native_path(uri))
     try:
         return path.read_bytes() if uri and path.is_file() else b''
     except OSError:

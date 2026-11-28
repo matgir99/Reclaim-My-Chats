@@ -13,6 +13,7 @@ import sqlite3
 import tempfile
 import time
 import unittest
+import warnings
 from pathlib import Path
 from unittest.mock import patch
 
@@ -211,14 +212,28 @@ class TestSteps(unittest.TestCase):
             user('set it up', PNG),
             tool('exit_plan_mode', {'plan': 'Step 1. Read the docs.'}),
             tool('ask_question', {'questions': questions},
-                 result='Created At: now\nCompleted At: later\nA1: Keep it\n'),
+                 result=('Created At: now\nCompleted At: later\nA1: Use these settings:\n'
+                         'port: 8080\nhost: localhost\nA2: Keep it\n')),
             planner(response='Keeping the folder.'))
         self.assertEqual([t.role for t in turns], ['user', 'model', 'user', 'model'])
         self.assertEqual(turns[0].images, [PNG])
         self.assertIn('**Plan**\n\nStep 1. Read the docs.', turns[1].text)
         self.assertIn('1. Which folder?\n   - Keep\n   - Move', turns[1].text)
-        self.assertEqual(turns[2].text, 'A1: Keep it')
+        self.assertEqual(turns[2].text, 'A1: Use these settings:\nport: 8080\nhost: localhost'
+                                        '\n\nA2: Keep it')
         self.assertEqual(turns[3].text, 'Keeping the folder.')
+
+    def test_file_uris_become_paths_of_this_system(self):
+        self.assertEqual(S.native_path('file:///home/u/my%20image.png'), '/home/u/my image.png')
+        self.assertEqual(S.native_path('/home/u/image.png'), '/home/u/image.png')
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', DeprecationWarning)
+            import nturl2path  # what urllib.request uses on Windows
+        with patch.object(S, 'url2pathname', nturl2path.url2pathname):
+            self.assertEqual(S.native_path('file:///C:/Users/u/my%20image.png'),
+                             'C:\\Users\\u\\my image.png')
+            self.assertEqual(S.native_path('file://server/share/image.png'),
+                             '\\\\server\\share\\image.png')
 
     def test_a_subagent_gets_its_instructions_from_the_parent_and_reports_back(self):
         parent = ID['parent']
@@ -377,6 +392,31 @@ class TestProvider(unittest.TestCase):
         self.assertEqual(saved, ['Printer Fix'])
         md = self.app / 'chats' / 'Google Antigravity' / 'Home Server' / 'Printer Fix'
         self.assertIn(b'revised', (md / 'walkthrough.md').read_bytes())
+
+    def test_an_artifact_that_cannot_be_read_is_linked_and_tried_again(self):
+        self.fill()
+        real_read = Path.read_bytes
+
+        def locked(path: Path) -> bytes:
+            if path.name == 'walkthrough.md':
+                raise PermissionError(13, 'Permission denied', str(path))
+            return real_read(path)
+
+        folder = self.app / 'chats' / 'Google Antigravity' / 'Home Server' / 'Printer Fix'
+        for _ in range(2):  # saved each time, as long as it cannot be read
+            with patch.object(Path, 'read_bytes', locked):
+                code, events = self.update()
+            self.assertEqual(code, 0)
+            self.assertIn('Printer Fix', [e.title for e in events if e.kind == 'chat_completed'])
+            warnings_ = [e.message for e in events if e.kind == 'warning']
+            self.assertTrue(any('walkthrough.md (Permission denied)' in m for m in warnings_))
+            md = (folder / 'Printer Fix.md').read_text(encoding='utf-8')
+            self.assertIn('**Attachment (not downloaded):** [walkthrough.md](file://', md)
+            self.assertFalse((folder / 'walkthrough.md').exists())
+        saved = [e.title for e in self.update()[1] if e.kind == 'chat_completed']
+        self.assertEqual(saved, ['Printer Fix'])  # readable again: saved with the file
+        self.assertTrue((folder / 'walkthrough.md').is_file())
+        self.assertEqual([e for e in self.update()[1] if e.kind == 'chat_completed'], [])
 
     def test_a_subagent_of_a_subagent_names_its_parent_the_same_way_every_time(self):
         store = self.store

@@ -80,6 +80,9 @@ class Fetched:
     raw: Any = None        # saved as raw.json unless --no-raw
     detail: str = ''       # shown under the chat with --log, e.g. 'images: 2'
     extra: dict = field(default_factory=dict)  # added to the chat's manifest entry
+    # Recorded instead of the listing's timestamp when set: a chat saved without
+    # a part that could not be read records a version the next update sees as changed.
+    version: Any = None
 
 
 class Provider:
@@ -418,7 +421,8 @@ def _download_one(provider: Provider, session, ref: ChatRef, index: int, total: 
     t0 = time.time()
     try:
         got = provider.fetch(session, ref)
-        stats = save_chat(got.chat, out_dir, sync, ref.id, ref.updated_at,
+        version = ref.updated_at if got.version is None else got.version
+        stats = save_chat(got.chat, out_dir, sync, ref.id, version,
                           got.raw if save_raw else None, sink=sink, provider=name,
                           state=ref.state)
         detail = got.detail or f'assets: {stats["images"] + stats["docs"]}'
