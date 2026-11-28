@@ -37,9 +37,9 @@ def message(text: str, **metadata) -> dict:
 
 class TestVisibleAnswers(unittest.TestCase):
     def test_saved_answers_survive_mixed_reasoning_messages(self):
-        claude_data = json.loads((FIXTURES / 'claude_sample.json').read_text())
-        kimi_data = json.loads((FIXTURES / 'kimi_messages_sample.json').read_text())
-        gemini_data = json.loads((FIXTURES / 'gemini_read_sample.json').read_text())
+        claude_data = json.loads((FIXTURES / 'claude_sample.json').read_text(encoding='utf-8'))
+        kimi_data = json.loads((FIXTURES / 'kimi_messages_sample.json').read_text(encoding='utf-8'))
+        gemini_data = json.loads((FIXTURES / 'gemini_read_sample.json').read_text(encoding='utf-8'))
         kimi_chat, _ = kimi.parse_chat({'id': 'synthetic-kimi'}, list(reversed(kimi_data['messages'])))
         chats = [
             (claude.parse_chat(claude_data, 'synthetic-claude', 'https://example.com'),
@@ -53,8 +53,8 @@ class TestVisibleAnswers(unittest.TestCase):
             for chat, answer, hidden in chats:
                 with self.subTest(provider=chat.provider):
                     saved = write_chat(chat, Path(directory) / chat.provider)
-                    markdown = Path(saved['md']).read_text()
-                    canonical = json.loads((Path(saved['dir']) / 'chat.json').read_text())
+                    markdown = Path(saved['md']).read_text(encoding='utf-8')
+                    canonical = json.loads((Path(saved['dir']) / 'chat.json').read_text(encoding='utf-8'))
                     visible = '\n'.join(turn['text'] for turn in canonical['turns'])
                     self.assertIn(answer, markdown)
                     self.assertIn(answer, visible)
