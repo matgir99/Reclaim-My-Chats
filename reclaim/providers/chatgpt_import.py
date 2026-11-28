@@ -144,6 +144,9 @@ def _node_to_turn(node: dict) -> Turn | None:
                 texts.append(part['text'])
 
     text = '\n\n'.join(t for t in texts if t and t.strip())
+    content_type = (msg.get('content') or {}).get('content_type')
+    if role == 'model' and content_type == 'text' and not (msg.get('metadata') or {}).get('is_canvas_block'):
+        text = chatgpt_references.render_writing_directives(text)
     if images_notes:
         text = (text + '\n\n' if text else '') + '\n\n'.join(images_notes)
     if not text.strip():

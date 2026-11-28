@@ -243,6 +243,12 @@ November update:
 | [HAEVN, e09c97d](https://github.com/aiamblichus/haevn/tree/e09c97de056ec1234debeba89570294cc8ec42f1) | CLI/extension fragment recovery, rough `date:` frontmatter, model metadata, AI Studio picker selector, UI, and documentation work; HAEVN Markdown import and DeepSeek API reader remain compatible. Aligned `reclaim export haevn-md` source names for native `claude`, `googlegemini`, and `kimi`. |
 | [better-deepseek, bf0aba3](https://github.com/EdgeTypE/better-deepseek/tree/bf0aba32d452f84d43b46a4d6ecd6c22f6d26ac8) | Defensive bearer-token normalization in page requests; rest is UI cards, announcement panel, and system-prompt scheduling. Adopted token prefix cleanup in DeepSeek page fetches. |
 
+**28 November 2026.** [chatgpt-exporter, 0cf6b87](https://github.com/pionxzh/chatgpt-exporter/tree/0cf6b876619f38a05e5e0fa6d1cb4ed05b35827d)
+found that official ChatGPT exports store some drafts as `:::writing` directives
+without widget metadata. The official import now renders those drafts using
+the same subject and body formatting as interactive drafts. The userscript's
+folder export and release changes are specific to its browser interface.
+
 ## Runtime and bot updates
 
 Playwright uses a version range rather than vendored provider code. The

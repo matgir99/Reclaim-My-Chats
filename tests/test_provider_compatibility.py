@@ -388,6 +388,22 @@ class TestChatGPTOfficialExport(unittest.TestCase):
         self.assertEqual(native.text, expected)
         self.assertEqual(imported.text, expected)
 
+    def test_official_export_writing_directives_keep_drafts_and_literal_examples(self):
+        email = ':::writing{variant="email" id="draft-1" subject="Plan [Q4]"}\nDraft text.\n:::'
+        note = ':::writing{variant="chat_message" id="draft-2"}\nShort note.\n:::'
+        example = f'~~~~markdown\n{email}\n~~~~'
+        incomplete = ':::writing{variant="email"}\nIncomplete draft.'
+        conv = export_chain(
+            'drafts', export_text('user', email),
+            export_text('assistant', f'Options:\n\n{email}\n\n{note}\n\n{example}\n\n{incomplete}'),
+        )
+        chat = chatgpt_import.parse_conversation({**conv, 'id': 'drafts'})
+        assert chat is not None
+        self.assertEqual(chat.turns[0].text, email)
+        self.assertEqual(chat.turns[1].text,
+                         f'Options:\n\n**Plan \\[Q4\\]**\n\nDraft text.\n\nShort note.\n\n'
+                         f'{example}\n\n{incomplete}')
+
     def test_canvas_create_update_and_version_gap_replay(self):
         create_call = {
             'author': {'role': 'assistant'}, 'recipient': 'canmore.create_textdoc',
